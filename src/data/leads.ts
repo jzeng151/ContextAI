@@ -73,7 +73,7 @@ export const leads: LeadPacket[] = [
       label: "Series B funding announced",
       source: "Crunchbase",
       days_ago: 8,
-      evidence: [evidence("Crunchbase", "public_signal", "High", "Series B funding announced on July 1, 2026", 8, false, "https://example.com/enterprisecorp-series-b")]
+      evidence: [evidence("Crunchbase", "public_signal", "High", "Series B funding announced on July 1, 2026", 8, false, "https://example.com/enterprisecorp-series-b", undefined, { label: "Series B funding announced" })]
     }],
     score_breakdown: {
       icp_fit: 30,

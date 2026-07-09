@@ -244,6 +244,7 @@ test("runtime contract validation ties derived fields to evidence", () => {
     { ...lead, enrichment_fields: { ...lead.enrichment_fields, last_updated_days_ago: 1 } },
     { ...lead, intent_signals: { ...lead.intent_signals, opens: 3 } },
     { ...lead, intent_signals: { ...lead.intent_signals, surge: true } },
+    { ...lead, public_signals: [{ ...lead.public_signals[0], label: "Acquisition announced" }] },
     { ...lead, public_signals: [{ ...lead.public_signals[0], source: "OtherSource" }] },
     { ...lead, public_signals: [{ ...lead.public_signals[0], evidence: [{ ...lead.public_signals[0].evidence[0], source_url: "not a url" }] }] },
     { ...lead, public_signals: [] }

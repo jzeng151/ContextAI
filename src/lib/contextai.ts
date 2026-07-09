@@ -149,7 +149,8 @@ const isPublicSignal = (value: unknown, evaluatedAt: string) => {
     value.days_ago === Math.min(...ages) &&
     value.evidence.some((item, index) =>
       ages[index] === value.days_ago &&
-      item.source_name.trim().toLowerCase() === String(value.source).trim().toLowerCase()
+      item.source_name.trim().toLowerCase() === String(value.source).trim().toLowerCase() &&
+      item.field_values?.label === value.label
     );
 };
 const isEnrichmentFields = (value: unknown, evaluatedAt: string) => {
