@@ -117,6 +117,20 @@ test("HubSpot writeback requires an eligible lead and allowlisted properties", a
 
   await assert.rejects(writeHubSpotEnrichment(stale, "1", { company: "SafeCo" }, ["company"], config), /not eligible/i);
   await assert.rejects(writeHubSpotEnrichment(eligible, "1", { hubspot_owner_id: "2" }, ["company"], config), /not allowlisted/i);
+  await assert.rejects(writeHubSpotEnrichment(eligible, "1", { annualrevenue: "900" }, ["annualrevenue"], config), /lack eligible evidence/i);
+
+  const originalFetch = globalThis.fetch;
+  let body = "";
+  globalThis.fetch = async (_input, init) => {
+    body = String(init?.body);
+    return new Response(JSON.stringify({ id: "1", properties: { numberofemployees: "900" } }), { status: 200 });
+  };
+  try {
+    await writeHubSpotEnrichment(eligible, "1", { numberofemployees: "900" }, ["numberofemployees"], config);
+    assert.deepEqual(JSON.parse(body), { properties: { numberofemployees: "900" } });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("fixtures include required lead packet contract fields", () => {

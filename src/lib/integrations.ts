@@ -1,4 +1,4 @@
-import { assertLeadPacket, isWritebackEligible, type LeadPacket } from "./contextai.ts";
+import { assertLeadPacket, hasWritebackEvidence, isWritebackEligible, type LeadPacket } from "./contextai.ts";
 
 type Env = Record<string, string | undefined>;
 
@@ -182,6 +182,10 @@ export const writeHubSpotEnrichment = async (
   if (!isWritebackEligible(lead)) throw new Error("Lead is not eligible for CRM writeback");
   const blocked = Object.keys(properties).filter((property) => !allowedProperties.includes(property));
   if (blocked.length > 0) throw new Error(`HubSpot properties are not allowlisted: ${blocked.join(", ")}`);
+  const unsupported = Object.entries(properties)
+    .filter(([property, value]) => !hasWritebackEvidence(lead, property, value))
+    .map(([property]) => property);
+  if (unsupported.length > 0) throw new Error(`HubSpot properties lack eligible evidence: ${unsupported.join(", ")}`);
   const response = await fetch(`https://api.hubapi.com/crm/v3/objects/contacts/${contactId}`, {
     method: "PATCH",
     headers: {

@@ -8,6 +8,7 @@ type EvidenceValue = string | number | boolean | string[];
 type EvidenceBase = {
   source_name: string;
   source_type: SourceType;
+  field_name?: string;
   source_url?: string;
   retrieved_at: string;
   source_published_at?: string;
@@ -106,6 +107,7 @@ const isEvidence = (value: unknown, sourceTypes: SourceType | SourceType[]) => {
   const allowedTypes = Array.isArray(sourceTypes) ? sourceTypes : [sourceTypes];
   if (!isRecord(value) || !allowedTypes.includes(value.source_type as SourceType) || !hasStrings(value, ["source_name"]) || !isDate(value.retrieved_at)) return false;
   if (!(["High", "Medium", "Low"] as unknown[]).includes(value.confidence) || typeof value.eligible_for_crm_writeback !== "boolean") return false;
+  if (value.eligible_for_crm_writeback && !hasStrings(value, ["field_name"])) return false;
   const hasField = Object.hasOwn(value, "field_value");
   const hasEvent = Object.hasOwn(value, "event_value");
   if (hasField === hasEvent || !isEvidenceValue(value[hasField ? "field_value" : "event_value"])) return false;
@@ -214,6 +216,13 @@ const isFreshHighConfidenceWritebackEvidence = (item: Evidence, evaluatedAt: str
     ageMs <= maxWritebackAgeMs
   );
 };
+
+export const hasWritebackEvidence = (lead: LeadPacket, fieldName: string, fieldValue: string) =>
+  lead.enrichment_fields.evidence.some((item) =>
+    isFreshHighConfidenceWritebackEvidence(item, lead.evaluation_timestamp) &&
+    item.field_name === fieldName &&
+    normalized(item.field_value ?? item.event_value).trim() === normalized(fieldValue).trim()
+  );
 
 export const isWritebackEligible = (lead: LeadPacket) =>
   lead.writeback_recommendation.decision === "Eligible" &&

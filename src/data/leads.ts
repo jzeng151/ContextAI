@@ -10,12 +10,14 @@ const evidence = (
   value: string | number | boolean | string[],
   daysAgo: number,
   eligible_for_crm_writeback = false,
-  source_url?: string
+  source_url?: string,
+  field_name?: string
 ): Evidence => {
   const sourceDate = new Date(Date.parse(evaluatedAt) - daysAgo * 24 * 60 * 60 * 1000).toISOString();
   return {
     source_name,
     source_type,
+    field_name,
     source_url,
     retrieved_at: evaluatedAt,
     ...(source_type === "public_signal" ? { source_published_at: sourceDate } : { source_updated_at: sourceDate }),
@@ -54,7 +56,7 @@ export const leads: LeadPacket[] = [
       revenue_band: "$50M-$100M",
       tech_stack: ["Salesforce"],
       last_updated_days_ago: 18,
-      evidence: [evidence("Clearbit", "enrichment", "High", "500 employees", 18, true)]
+      evidence: [evidence("Clearbit", "enrichment", "High", 500, 18, true, undefined, "numberofemployees")]
     },
     intent_signals: {
       opens: 2,
@@ -225,7 +227,7 @@ export const leads: LeadPacket[] = [
       revenue_band: "$100M-$250M",
       tech_stack: ["HubSpot", "Salesforce"],
       last_updated_days_ago: 31,
-      evidence: [evidence("ZoomInfo", "enrichment", "High", "900 employees", 31, true)]
+      evidence: [evidence("ZoomInfo", "enrichment", "High", 900, 31, true, undefined, "numberofemployees")]
     },
     intent_signals: {
       opens: 1,
@@ -283,7 +285,7 @@ export const leads: LeadPacket[] = [
       revenue_band: "$25M-$50M",
       tech_stack: ["Salesforce"],
       last_updated_days_ago: 46,
-      evidence: [evidence("Clearbit", "enrichment", "High", "420 employees", 46, true)]
+      evidence: [evidence("Clearbit", "enrichment", "High", 420, 46, true, undefined, "numberofemployees")]
     },
     intent_signals: {
       opens: 5,
