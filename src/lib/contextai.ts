@@ -97,7 +97,9 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 const hasStrings = (value: Record<string, unknown>, keys: string[]) =>
   keys.every((key) => typeof value[key] === "string" && value[key].trim().length > 0);
+const dayMs = 24 * 60 * 60 * 1000;
 const isDate = (value: unknown) => typeof value === "string" && Number.isFinite(Date.parse(value));
+const isNonNegativeInteger = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0;
 const isEvidenceValue = (value: unknown) =>
   typeof value === "boolean" ||
   (typeof value === "number" && Number.isFinite(value)) ||
@@ -115,8 +117,20 @@ const isEvidence = (value: unknown, sourceTypes: SourceType | SourceType[]) => {
     ? hasStrings(value, ["source_url"]) && isDate(value.source_published_at) && value.source_updated_at === undefined
     : isDate(value.source_updated_at);
 };
-const hasEvidence = (value: unknown, sourceTypes: SourceType | SourceType[]): value is Record<string, unknown> =>
-  isRecord(value) && Array.isArray(value.evidence) && value.evidence.every((item) => isEvidence(item, sourceTypes));
+const hasEvidence = (
+  value: unknown,
+  sourceTypes: SourceType | SourceType[],
+  required = false
+): value is Record<string, unknown> & { evidence: Evidence[] } =>
+  isRecord(value) &&
+  Array.isArray(value.evidence) &&
+  (!required || value.evidence.length > 0) &&
+  value.evidence.every((item) => isEvidence(item, sourceTypes));
+const isPublicSignal = (value: unknown, evaluatedAt: string) => {
+  if (!isRecord(value) || !hasStrings(value, ["label", "source"]) || !isNonNegativeInteger(value.days_ago) || !hasEvidence(value, "public_signal", true)) return false;
+  const ages = value.evidence.map((item) => Math.floor((Date.parse(evaluatedAt) - Date.parse(item.source_published_at ?? "")) / dayMs));
+  return ages.every((age) => age >= 0) && value.days_ago === Math.min(...ages);
+};
 const scoreCaps: ScoreBreakdown = {
   icp_fit: 30,
   high_intent_actions: 25,
@@ -147,9 +161,9 @@ export const assertLeadPacket = (value: unknown): asserts value is LeadPacket =>
     !hasValidScore(value) ||
     !isRecord(value.lead_identity) || !hasStrings(value.lead_identity, ["name", "title", "company", "email", "domain"]) ||
     !hasEvidence(value.crm_context, "crm") || !hasStrings(value.crm_context, ["owner", "source", "stage"]) ||
-    !hasEvidence(value.enrichment_fields, ["enrichment", "crm"]) || !Array.isArray(value.enrichment_fields.tech_stack) || !value.enrichment_fields.tech_stack.every((item) => typeof item === "string" && item.trim().length > 0) ||
-    !hasEvidence(value.intent_signals, "intent") || !["opens", "clicks", "replies"].every((key) => Number.isSafeInteger(value.intent_signals[key]) && (value.intent_signals[key] as number) >= 0) || !["demo_request", "pricing_page_visit", "surge"].every((key) => typeof value.intent_signals[key] === "boolean") ||
-    !Array.isArray(value.public_signals) || !value.public_signals.every((signal) => isRecord(signal) && hasStrings(signal, ["label", "source"]) && typeof signal.days_ago === "number" && hasEvidence(signal, "public_signal")) ||
+    !hasEvidence(value.enrichment_fields, ["enrichment", "crm"]) || !Array.isArray(value.enrichment_fields.tech_stack) || !value.enrichment_fields.tech_stack.every((item) => typeof item === "string" && item.trim().length > 0) || (value.enrichment_fields.last_updated_days_ago !== undefined && !isNonNegativeInteger(value.enrichment_fields.last_updated_days_ago)) ||
+    !hasEvidence(value.intent_signals, "intent") || !["opens", "clicks", "replies"].every((key) => isNonNegativeInteger(value.intent_signals[key])) || !["demo_request", "pricing_page_visit", "surge"].every((key) => typeof value.intent_signals[key] === "boolean") ||
+    !Array.isArray(value.public_signals) || !value.public_signals.every((signal) => isPublicSignal(signal, String(value.evaluation_timestamp))) ||
     ![value.missing_fields, value.stale_fields, value.source_conflicts, value.disallowed_claims].every((items) => Array.isArray(items) && items.every((item) => typeof item === "string" && item.trim().length > 0)) ||
     !isRecord(value.writeback_recommendation) || !hasStrings(value.writeback_recommendation, ["reason"]) || !(["Eligible", "Review", "Skipped", "Blocked"] as unknown[]).includes(value.writeback_recommendation.decision) ||
     !Array.isArray(value.allowed_claims) || !value.allowed_claims.every((claim) => isRecord(claim) && hasStrings(claim, ["text", "evidence_source"]))) {
@@ -168,7 +182,7 @@ export const freshnessLabel = (daysAgo?: number) => {
 
 const fallbackHook = "No grounded hook available - no recent verified signal found.";
 const normalized = (value: EvidenceValue) => String(value).toLowerCase();
-const maxWritebackAgeMs = 90 * 24 * 60 * 60 * 1000;
+const maxWritebackAgeMs = 90 * dayMs;
 const keywords = (value: string) => normalized(value).split(/[^a-z0-9]+/).filter((word) => word.length > 3);
 const hasPhrase = (text: string, value: string) => {
   const phrase = normalized(value).replace(/[^a-z0-9]+/g, " ").trim();

@@ -216,6 +216,24 @@ test("runtime contract validation rejects invalid intent counters", () => {
   }
 });
 
+test("runtime contract validation requires dated public-signal evidence", () => {
+  const lead = leads[0];
+  assert.throws(() => assertLeadPacket({
+    ...lead,
+    public_signals: [{ ...lead.public_signals[0], evidence: [] }]
+  }), /invalid lead packet contract/i);
+  for (const days_ago of [-1, Infinity, 7]) {
+    assert.throws(() => assertLeadPacket({
+      ...lead,
+      public_signals: [{ ...lead.public_signals[0], days_ago }]
+    }), /invalid lead packet contract/i);
+  }
+  assert.throws(() => assertLeadPacket({
+    ...lead,
+    enrichment_fields: { ...lead.enrichment_fields, last_updated_days_ago: -1 }
+  }), /invalid lead packet contract/i);
+});
+
 test("scored fixtures match score breakdown totals", () => {
   for (const lead of leads) {
     if (lead.priority_score === null) continue;
