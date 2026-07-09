@@ -24,6 +24,12 @@ test("missing public signal uses grounded hook fallback", () => {
   assert.equal(groundedHook(lead), "No grounded hook available - no recent verified signal found.");
 });
 
+test("non-hook allowed claims do not ground hooks", () => {
+  const lead = leads.find((item) => item.lead_id === "weak-opens");
+  assert.ok(lead);
+  assert.equal(groundedHook({ ...lead, hook: "Reference the observed email opens." }), "No grounded hook available - no recent verified signal found.");
+});
+
 test("fixtures include required lead packet contract fields", () => {
   for (const lead of leads) {
     assert.ok(lead.lead_id);
@@ -116,6 +122,7 @@ test("golden fixture grounds its score drivers", () => {
   assert.match(allowedText, /500 employees/i);
   assert.match(allowedText, /demo request and pricing-page visit/i);
   assert.match(allowedText, /Series B funding round on July 1, 2026/i);
+  assert.equal(groundedHook(lead), lead.hook);
   assert.equal(lead.public_signals[0].days_ago, 8);
   assert.equal(lead.public_signals[0].evidence[0].source_published_at, "2026-07-01T09:00:00.000Z");
 });
@@ -125,6 +132,10 @@ test("fixtures mark unavailable data as missing", () => {
   assert.ok(lead);
   assert.equal(lead.enrichment_fields.revenue_band, "Data unavailable");
   assert.ok(lead.missing_fields.includes("revenue_band"));
+  const allowedText = lead.allowed_claims.map((claim) => claim.text).join(" ");
+  assert.match(allowedText, /12 employees/i);
+  assert.match(allowedText, /category surge/i);
+  assert.equal(lead.score_breakdown.engagement_quality, 0);
 });
 
 test("source conflict fixture requires manual review", () => {
@@ -153,7 +164,9 @@ test("no-public-signal fixture matches demo-request eval case", () => {
 test("fixtures expose allowed claims for missing data and weak opens", () => {
   const noData = leads.find((item) => item.lead_id === "no-usable-data");
   assert.ok(noData);
-  assert.match(noData.allowed_claims.map((claim) => claim.text).join(" "), /employees, revenue band, intent signals, and public signals/i);
+  const noDataClaims = noData.allowed_claims.map((claim) => claim.text).join(" ");
+  assert.match(noDataClaims, /employees, revenue band, and intent signals/i);
+  assert.doesNotMatch(noDataClaims, /required.*public signals/i);
 
   const weakOpens = leads.find((item) => item.lead_id === "weak-opens");
   assert.ok(weakOpens);

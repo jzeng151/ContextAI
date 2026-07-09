@@ -108,8 +108,8 @@ export const leads: LeadPacket[] = [
       stage: "Open",
       evidence: [evidence("HubSpot", "crm", "High", "Open", 0)]
     },
-    priority_score: 60,
-    priority_band: "Warm",
+    priority_score: 50,
+    priority_band: "Cold",
     confidence: "Medium",
     reason: "Below headcount fit threshold, but strong recent category intent.",
     hook: "No grounded hook available - no recent verified signal found.",
@@ -133,7 +133,7 @@ export const leads: LeadPacket[] = [
     score_breakdown: {
       icp_fit: 10,
       high_intent_actions: 25,
-      engagement_quality: 10,
+      engagement_quality: 0,
       public_timing_signals: 0,
       crm_process_context: 10,
       data_confidence: 5
@@ -142,7 +142,10 @@ export const leads: LeadPacket[] = [
     stale_fields: [],
     source_conflicts: [],
     writeback_recommendation: { decision: "Review", reason: "Company size is verified, but account is below fit threshold." },
-    allowed_claims: [{ text: "Bombora reported a category surge for LeanTech 2 days before evaluation.", evidence_source: "Bombora" }],
+    allowed_claims: [
+      { text: "Apollo reports LeanTech has 12 employees.", evidence_source: "Apollo" },
+      { text: "Bombora reported a category surge for LeanTech 2 days before evaluation.", evidence_source: "Bombora" }
+    ],
     disallowed_claims: ["LeanTech is ready to buy because category intent increased."]
   },
   {
@@ -191,7 +194,7 @@ export const leads: LeadPacket[] = [
     stale_fields: [],
     source_conflicts: [],
     writeback_recommendation: { decision: "Skipped", reason: "No schema-valid enrichment available." },
-    allowed_claims: [{ text: "Required scoring fields are missing for test-error.com: employees, revenue band, intent signals, and public signals.", evidence_source: "ContextAI validation" }],
+    allowed_claims: [{ text: "Required scoring fields are missing for test-error.com: employees, revenue band, and intent signals.", evidence_source: "ContextAI validation" }],
     disallowed_claims: ["The lead has enough verified context for outreach."]
   },
   {

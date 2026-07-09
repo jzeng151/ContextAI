@@ -98,10 +98,13 @@ export const freshnessLabel = (daysAgo?: number) => {
   return `Fresh (${daysAgo} days old)`;
 };
 
+const fallbackHook = "No grounded hook available - no recent verified signal found.";
+
 export const groundedHook = (lead: LeadPacket) =>
-  lead.allowed_claims.length > 0
+  lead.hook !== fallbackHook &&
+  (lead.public_signals.length > 0 || lead.intent_signals.demo_request || lead.intent_signals.pricing_page_visit)
     ? lead.hook
-    : "No grounded hook available - no recent verified signal found.";
+    : fallbackHook;
 
 export const isWritebackEligible = (lead: LeadPacket) =>
   lead.writeback_recommendation.decision === "Eligible" &&
