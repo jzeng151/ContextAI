@@ -101,15 +101,21 @@ export const freshnessLabel = (daysAgo?: number) => {
 const fallbackHook = "No grounded hook available - no recent verified signal found.";
 
 export const groundedHook = (lead: LeadPacket) =>
-  lead.hook !== fallbackHook &&
-  (lead.public_signals.length > 0 || lead.intent_signals.demo_request || lead.intent_signals.pricing_page_visit)
+  lead.hook !== fallbackHook && lead.public_signals.some((signal) => signal.evidence.length > 0)
     ? lead.hook
     : fallbackHook;
+
+const isFreshHighConfidenceWritebackEvidence = (item: Evidence) =>
+  item.source_type === "enrichment" && item.confidence === "High" && item.eligible_for_crm_writeback;
 
 export const isWritebackEligible = (lead: LeadPacket) =>
   lead.writeback_recommendation.decision === "Eligible" &&
   (lead.enrichment_fields.last_updated_days_ago ?? Infinity) <= 90 &&
-  lead.source_conflicts.length === 0;
+  lead.source_conflicts.length === 0 &&
+  lead.enrichment_fields.evidence.some(isFreshHighConfidenceWritebackEvidence) &&
+  lead.enrichment_fields.evidence
+    .filter((item) => item.source_type === "enrichment")
+    .every(isFreshHighConfidenceWritebackEvidence);
 
 export const hasOnlyWeakOpenIntent = (lead: LeadPacket) =>
   lead.intent_signals.opens > 0 &&

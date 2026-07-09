@@ -30,6 +30,34 @@ test("non-hook allowed claims do not ground hooks", () => {
   assert.equal(groundedHook({ ...lead, hook: "Reference the observed email opens." }), "No grounded hook available - no recent verified signal found.");
 });
 
+test("intent evidence does not ground arbitrary hooks", () => {
+  const lead = leads.find((item) => item.lead_id === "no-public-signal");
+  assert.ok(lead);
+  assert.equal(lead.intent_signals.demo_request, true);
+  assert.equal(lead.intent_signals.pricing_page_visit, true);
+  assert.equal(groundedHook({ ...lead, hook: "Reference recent public expansion news." }), "No grounded hook available - no recent verified signal found.");
+});
+
+test("writeback eligibility requires high-confidence eligible enrichment evidence", () => {
+  const lead = leads.find((item) => item.lead_id === "no-public-signal");
+  assert.ok(lead);
+  assert.equal(isWritebackEligible(lead), true);
+  assert.equal(
+    isWritebackEligible({
+      ...lead,
+      enrichment_fields: {
+        ...lead.enrichment_fields,
+        evidence: lead.enrichment_fields.evidence.map((item) => ({
+          ...item,
+          confidence: "Medium",
+          eligible_for_crm_writeback: false
+        }))
+      }
+    }),
+    false
+  );
+});
+
 test("fixtures include required lead packet contract fields", () => {
   for (const lead of leads) {
     assert.ok(lead.lead_id);
