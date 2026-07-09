@@ -1,0 +1,17 @@
+{
+  "name": "contextai-dashboard",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "ASTRO_TELEMETRY_DISABLED=1 astro dev",
+    "build": "ASTRO_TELEMETRY_DISABLED=1 astro build",
+    "test": "node --test --experimental-strip-types tests/contextai.test.ts"
+  },
+  "dependencies": {
+    "astro": "^7.0.7"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}
