@@ -99,11 +99,18 @@ export const freshnessLabel = (daysAgo?: number) => {
 };
 
 const fallbackHook = "No grounded hook available - no recent verified signal found.";
+const normalized = (value: EvidenceValue) => String(value).toLowerCase();
+
+const hasHookEvidence = (lead: LeadPacket) => {
+  const hook = normalized(lead.hook);
+  return lead.public_signals.some((signal) => {
+    if (signal.evidence.length === 0 || !hook.includes(normalized(signal.label))) return false;
+    return signal.evidence.some((item) => hook.includes(normalized(item.field_value ?? item.event_value ?? signal.label)));
+  });
+};
 
 export const groundedHook = (lead: LeadPacket) =>
-  lead.hook !== fallbackHook && lead.public_signals.some((signal) => signal.evidence.length > 0)
-    ? lead.hook
-    : fallbackHook;
+  lead.hook !== fallbackHook && hasHookEvidence(lead) ? lead.hook : fallbackHook;
 
 const isFreshHighConfidenceWritebackEvidence = (item: Evidence) =>
   item.source_type === "enrichment" && item.confidence === "High" && item.eligible_for_crm_writeback;

@@ -38,6 +38,12 @@ test("intent evidence does not ground arbitrary hooks", () => {
   assert.equal(groundedHook({ ...lead, hook: "Reference recent public expansion news." }), "No grounded hook available - no recent verified signal found.");
 });
 
+test("public evidence must match the hook text", () => {
+  const lead = leads.find((item) => item.lead_id === "golden-normal");
+  assert.ok(lead);
+  assert.equal(groundedHook({ ...lead, hook: "Reference recent public expansion news." }), "No grounded hook available - no recent verified signal found.");
+});
+
 test("writeback eligibility requires high-confidence eligible enrichment evidence", () => {
   const lead = leads.find((item) => item.lead_id === "no-public-signal");
   assert.ok(lead);
