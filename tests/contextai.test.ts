@@ -180,10 +180,12 @@ test("allowed claims exclude unsupported inference text", () => {
 test("OpenRouter prompt only includes allowed claims", async () => {
   const originalFetch = globalThis.fetch;
   let prompt = "";
+  let systemPrompt = "";
   globalThis.fetch = async (_input, init) => {
     const body = JSON.parse(String(init?.body));
+    systemPrompt = body.messages[0].content;
     prompt = body.messages[1].content;
-    return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 });
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ explanation: "Grounded.", claim_indexes: [0] }) } }] }), { status: 200 });
   };
 
   try {
@@ -199,6 +201,20 @@ test("OpenRouter prompt only includes allowed claims", async () => {
     ]);
     assert.deepEqual(payload.allowed_claims, leads[0].allowed_claims);
     assert.equal("disallowed_claims" in payload, false);
+    assert.match(systemPrompt, /untrusted data/i);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("OpenRouter output requires valid allowed-claim citations", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    choices: [{ message: { content: JSON.stringify({ explanation: "Unsupported.", claim_indexes: [99] }) } }]
+  }), { status: 200 });
+
+  try {
+    await assert.rejects(explainLeadWithOpenRouter(leads[0], { apiKey: "test", model: "test" }), /invalid grounded explanation/i);
   } finally {
     globalThis.fetch = originalFetch;
   }
