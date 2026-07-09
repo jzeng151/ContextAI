@@ -42,6 +42,7 @@ test("public evidence must match the hook text", () => {
   const lead = leads.find((item) => item.lead_id === "golden-normal");
   assert.ok(lead);
   assert.equal(groundedHook({ ...lead, hook: "Reference recent public expansion news." }), "No grounded hook available - no recent verified signal found.");
+  assert.equal(groundedHook({ ...lead, hook: "Reference OtherCorp's Series B funding announced on July 1, 2026." }), "No grounded hook available - no recent verified signal found.");
 });
 
 test("writeback eligibility requires high-confidence eligible enrichment evidence", () => {

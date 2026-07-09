@@ -104,6 +104,7 @@ const maxWritebackAgeMs = 90 * 24 * 60 * 60 * 1000;
 
 const hasHookEvidence = (lead: LeadPacket) => {
   const hook = normalized(lead.hook);
+  if (!hook.includes(normalized(lead.lead_identity.company))) return false;
   return lead.public_signals.some((signal) => {
     if (signal.evidence.length === 0 || !hook.includes(normalized(signal.label))) return false;
     return signal.evidence.some((item) => hook.includes(normalized(item.field_value ?? item.event_value ?? signal.label)));
