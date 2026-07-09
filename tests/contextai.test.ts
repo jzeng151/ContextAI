@@ -44,9 +44,9 @@ test("public evidence must match the hook text", () => {
   assert.equal(groundedHook({ ...lead, hook: "Reference recent public expansion news." }), "No grounded hook available - no recent verified signal found.");
   assert.equal(groundedHook({ ...lead, hook: "Reference OtherCorp's Series B funding announced on July 1, 2026." }), "No grounded hook available - no recent verified signal found.");
   assert.equal(groundedHook({ ...lead, allowed_claims: [] }), "No grounded hook available - no recent verified signal found.");
-  assert.equal(groundedHook({ ...lead, allowed_claims: [{ text: "EnterpriseCorp announced layoffs.", evidence_source: "Crunchbase" }] }), "No grounded hook available - no recent verified signal found.");
+  assert.equal(groundedHook({ ...lead, allowed_claims: [{ text: "EnterpriseCorp announced layoffs.", evidence_ids: [lead.public_signals[0].evidence[0].evidence_id] }] }), "No grounded hook available - no recent verified signal found.");
   assert.equal(groundedHook({ ...lead, lead_identity: { ...lead.lead_identity, company: "Corp" } }), "No grounded hook available - no recent verified signal found.");
-  assert.equal(groundedHook({ ...lead, allowed_claims: [{ ...lead.allowed_claims[2], evidence_source: "Not Crunchbase" }] }), "No grounded hook available - no recent verified signal found.");
+  assert.equal(groundedHook({ ...lead, allowed_claims: [{ ...lead.allowed_claims[2], evidence_ids: ["missing-evidence"] }] }), "No grounded hook available - no recent verified signal found.");
   assert.equal(groundedHook({ ...lead, allowed_claims: [{ ...lead.allowed_claims[2], text: lead.allowed_claims[2].text.replace("July 1", "July 8") }] }), "No grounded hook available - no recent verified signal found.");
 });
 
@@ -61,13 +61,13 @@ test("short public signal labels can ground hooks", () => {
     ...lead,
     hook,
     public_signals: [publicSignal],
-    allowed_claims: [{ text: "EnterpriseCorp announced an AI initiative.", evidence_source: evidence.source_name }]
+    allowed_claims: [{ text: "EnterpriseCorp announced an AI initiative.", evidence_ids: [evidence.evidence_id] }]
   }), hook);
   assert.equal(groundedHook({
     ...lead,
     hook,
     public_signals: [publicSignal],
-    allowed_claims: [{ text: "EnterpriseCorp said results improved.", evidence_source: evidence.source_name }]
+    allowed_claims: [{ text: "EnterpriseCorp said results improved.", evidence_ids: [evidence.evidence_id] }]
   }), "No grounded hook available - no recent verified signal found.");
 });
 
@@ -184,6 +184,21 @@ test("runtime contract validation rejects malformed evidence", () => {
   }), /invalid lead packet contract/i);
   assert.throws(() => assertLeadPacket({
     ...lead,
+    allowed_claims: [{ ...lead.allowed_claims[0], evidence_ids: ["missing-evidence"] }]
+  }), /invalid lead packet contract/i);
+  assert.throws(() => assertLeadPacket({
+    ...lead,
+    allowed_claims: [{ ...lead.allowed_claims[0], evidence_ids: ["gn-enrichment", "gn-enrichment"] }]
+  }), /invalid lead packet contract/i);
+  assert.throws(() => assertLeadPacket({
+    ...lead,
+    intent_signals: {
+      ...lead.intent_signals,
+      evidence: [{ ...lead.intent_signals.evidence[0], evidence_id: lead.enrichment_fields.evidence[0].evidence_id }]
+    }
+  }), /invalid lead packet contract/i);
+  assert.throws(() => assertLeadPacket({
+    ...lead,
     enrichment_fields: {
       ...lead.enrichment_fields,
       evidence: [{ ...lead.enrichment_fields.evidence[0], field_value: "" }]
@@ -268,11 +283,13 @@ test("evidence objects carry source and freshness metadata", () => {
     ...lead.crm_context.evidence,
     ...lead.enrichment_fields.evidence,
     ...lead.intent_signals.evidence,
-    ...lead.public_signals.flatMap((signal) => signal.evidence)
+    ...lead.public_signals.flatMap((signal) => signal.evidence),
+    ...lead.validation_evidence
   ]);
 
   assert.ok(allEvidence.length > 0);
   for (const item of allEvidence) {
+    assert.ok(item.evidence_id);
     assert.ok(item.source_name);
     assert.ok(item.source_type);
     assert.ok(item.retrieved_at);

@@ -4,6 +4,7 @@ const evaluatedAt = "2026-07-09T09:00:00.000Z";
 const scoreVersion = "score-v0.1";
 
 const evidence = (
+  evidence_id: string,
   source_name: string,
   source_type: SourceType,
   confidence: Confidence,
@@ -16,6 +17,7 @@ const evidence = (
 ): Evidence => {
   const sourceDate = new Date(Date.parse(evaluatedAt) - daysAgo * 24 * 60 * 60 * 1000).toISOString();
   return {
+    evidence_id,
     source_name,
     source_type,
     field_name,
@@ -46,7 +48,7 @@ export const leads: LeadPacket[] = [
       owner: "Maya Chen",
       source: "Inbound demo",
       stage: "Open",
-      evidence: [evidence("HubSpot", "crm", "High", "Open", 0)]
+      evidence: [evidence("gn-crm-stage", "HubSpot", "crm", "High", "Open", 0)]
     },
     priority_score: 94,
     priority_band: "Hot",
@@ -58,7 +60,7 @@ export const leads: LeadPacket[] = [
       revenue_band: "$50M-$100M",
       tech_stack: ["Salesforce"],
       last_updated_days_ago: 18,
-      evidence: [evidence("Clearbit", "enrichment", "High", 500, 18, true, undefined, "numberofemployees", { employees: 500, revenue_band: "$50M-$100M", tech_stack: ["Salesforce"] })]
+      evidence: [evidence("gn-enrichment", "Clearbit", "enrichment", "High", 500, 18, true, undefined, "numberofemployees", { employees: 500, revenue_band: "$50M-$100M", tech_stack: ["Salesforce"] })]
     },
     intent_signals: {
       opens: 2,
@@ -67,13 +69,13 @@ export const leads: LeadPacket[] = [
       demo_request: true,
       pricing_page_visit: true,
       surge: false,
-      evidence: [evidence("HubSpot", "intent", "High", "Demo request and pricing page visit", 1, false, undefined, undefined, { opens: 2, clicks: 1, demo_request: true, pricing_page_visit: true })]
+      evidence: [evidence("gn-intent", "HubSpot", "intent", "High", "Demo request and pricing page visit", 1, false, undefined, undefined, { opens: 2, clicks: 1, demo_request: true, pricing_page_visit: true })]
     },
     public_signals: [{
       label: "Series B funding announced",
       source: "Crunchbase",
       days_ago: 8,
-      evidence: [evidence("Crunchbase", "public_signal", "High", "Series B funding announced on July 1, 2026", 8, false, "https://example.com/enterprisecorp-series-b", undefined, { label: "Series B funding announced" })]
+      evidence: [evidence("gn-public-series-b", "Crunchbase", "public_signal", "High", "Series B funding announced on July 1, 2026", 8, false, "https://example.com/enterprisecorp-series-b", undefined, { label: "Series B funding announced" })]
     }],
     score_breakdown: {
       icp_fit: 30,
@@ -83,14 +85,15 @@ export const leads: LeadPacket[] = [
       crm_process_context: 5,
       data_confidence: 5
     },
+    validation_evidence: [],
     missing_fields: [],
     stale_fields: [],
     source_conflicts: [],
     writeback_recommendation: { decision: "Eligible", reason: "Verified enrichment is fresh and source-backed." },
     allowed_claims: [
-      { text: "Clearbit reports EnterpriseCorp has 500 employees.", evidence_source: "Clearbit" },
-      { text: "HubSpot recorded a demo request and pricing-page visit for EnterpriseCorp.", evidence_source: "HubSpot" },
-      { text: "EnterpriseCorp announced a Series B funding round on July 1, 2026, according to Crunchbase.", evidence_source: "Crunchbase" }
+      { text: "Clearbit reports EnterpriseCorp has 500 employees.", evidence_ids: ["gn-enrichment"] },
+      { text: "HubSpot recorded a demo request and pricing-page visit for EnterpriseCorp.", evidence_ids: ["gn-intent"] },
+      { text: "EnterpriseCorp announced a Series B funding round on July 1, 2026, according to Crunchbase.", evidence_ids: ["gn-public-series-b"] }
     ],
     disallowed_claims: ["EnterpriseCorp is likely investing in sales automation after its Series B."]
   },
@@ -110,7 +113,7 @@ export const leads: LeadPacket[] = [
       owner: "Sam Rivera",
       source: "Intent surge",
       stage: "Open",
-      evidence: [evidence("HubSpot", "crm", "High", "Open", 0)]
+      evidence: [evidence("shi-crm-stage", "HubSpot", "crm", "High", "Open", 0)]
     },
     priority_score: 50,
     priority_band: "Cold",
@@ -121,7 +124,7 @@ export const leads: LeadPacket[] = [
       employees: 12,
       tech_stack: [],
       last_updated_days_ago: 22,
-      evidence: [evidence("Apollo", "enrichment", "Medium", 12, 22, false, undefined, undefined, { employees: 12 })]
+      evidence: [evidence("shi-enrichment", "Apollo", "enrichment", "Medium", 12, 22, false, undefined, undefined, { employees: 12 })]
     },
     intent_signals: {
       opens: 0,
@@ -130,7 +133,7 @@ export const leads: LeadPacket[] = [
       demo_request: false,
       pricing_page_visit: false,
       surge: true,
-      evidence: [evidence("Bombora", "intent", "Medium", "Category surge", 2, false, undefined, undefined, { surge: true })]
+      evidence: [evidence("shi-intent", "Bombora", "intent", "Medium", "Category surge", 2, false, undefined, undefined, { surge: true })]
     },
     public_signals: [],
     score_breakdown: {
@@ -141,13 +144,14 @@ export const leads: LeadPacket[] = [
       crm_process_context: 10,
       data_confidence: 5
     },
+    validation_evidence: [],
     missing_fields: ["revenue_band", "public_signals"],
     stale_fields: [],
     source_conflicts: [],
     writeback_recommendation: { decision: "Review", reason: "Company size is verified, but account is below fit threshold." },
     allowed_claims: [
-      { text: "Apollo reports LeanTech has 12 employees.", evidence_source: "Apollo" },
-      { text: "Bombora reported a category surge for LeanTech 2 days before evaluation.", evidence_source: "Bombora" }
+      { text: "Apollo reports LeanTech has 12 employees.", evidence_ids: ["shi-enrichment"] },
+      { text: "Bombora reported a category surge for LeanTech 2 days before evaluation.", evidence_ids: ["shi-intent"] }
     ],
     disallowed_claims: ["LeanTech is ready to buy because category intent increased."]
   },
@@ -167,7 +171,7 @@ export const leads: LeadPacket[] = [
       owner: "Maya Chen",
       source: "Reassigned lead",
       stage: "Needs research",
-      evidence: [evidence("HubSpot", "crm", "Medium", "Needs research", 0)]
+      evidence: [evidence("nud-crm-stage", "HubSpot", "crm", "Medium", "Needs research", 0)]
     },
     priority_score: null,
     priority_band: "Needs Manual Review",
@@ -193,11 +197,12 @@ export const leads: LeadPacket[] = [
       crm_process_context: 0,
       data_confidence: 0
     },
+    validation_evidence: [evidence("nud-validation-missing", "ContextAI validation", "validation", "High", ["employees", "revenue_band", "intent_signals"], 0)],
     missing_fields: ["employees", "revenue_band", "intent_signals", "public_signals"],
     stale_fields: [],
     source_conflicts: [],
     writeback_recommendation: { decision: "Skipped", reason: "No schema-valid enrichment available." },
-    allowed_claims: [{ text: "Required scoring fields are missing for test-error.com: employees, revenue band, and intent signals.", evidence_source: "ContextAI validation" }],
+    allowed_claims: [{ text: "Required scoring fields are missing for test-error.com: employees, revenue band, and intent signals.", evidence_ids: ["nud-validation-missing"] }],
     disallowed_claims: ["The lead has enough verified context for outreach."]
   },
   {
@@ -216,7 +221,7 @@ export const leads: LeadPacket[] = [
       owner: "Jordan Lee",
       source: "Outbound assist",
       stage: "Open",
-      evidence: [evidence("HubSpot", "crm", "High", "Open", 0)]
+      evidence: [evidence("nps-crm-stage", "HubSpot", "crm", "High", "Open", 0)]
     },
     priority_score: 83,
     priority_band: "Hot",
@@ -228,7 +233,7 @@ export const leads: LeadPacket[] = [
       revenue_band: "$100M-$250M",
       tech_stack: ["HubSpot", "Salesforce"],
       last_updated_days_ago: 31,
-      evidence: [evidence("ZoomInfo", "enrichment", "High", 900, 31, true, undefined, "numberofemployees", { employees: 900, revenue_band: "$100M-$250M", tech_stack: ["HubSpot", "Salesforce"] })]
+      evidence: [evidence("nps-enrichment", "ZoomInfo", "enrichment", "High", 900, 31, true, undefined, "numberofemployees", { employees: 900, revenue_band: "$100M-$250M", tech_stack: ["HubSpot", "Salesforce"] })]
     },
     intent_signals: {
       opens: 1,
@@ -237,7 +242,7 @@ export const leads: LeadPacket[] = [
       demo_request: true,
       pricing_page_visit: true,
       surge: false,
-      evidence: [evidence("HubSpot", "intent", "High", "Demo request, pricing page visit, and reply", 3, false, undefined, undefined, { opens: 1, clicks: 2, replies: 1, demo_request: true, pricing_page_visit: true })]
+      evidence: [evidence("nps-intent", "HubSpot", "intent", "High", "Demo request, pricing page visit, and reply", 3, false, undefined, undefined, { opens: 1, clicks: 2, replies: 1, demo_request: true, pricing_page_visit: true })]
     },
     public_signals: [],
     score_breakdown: {
@@ -248,13 +253,14 @@ export const leads: LeadPacket[] = [
       crm_process_context: 8,
       data_confidence: 5
     },
+    validation_evidence: [],
     missing_fields: ["public_signals"],
     stale_fields: [],
     source_conflicts: [],
     writeback_recommendation: { decision: "Eligible", reason: "Firmographic fields are fresh and verified." },
     allowed_claims: [
-      { text: "ZoomInfo reports ScaleGrid has 900 employees.", evidence_source: "ZoomInfo" },
-      { text: "HubSpot recorded a demo request, pricing-page visit, and reply for ScaleGrid.", evidence_source: "HubSpot" }
+      { text: "ZoomInfo reports ScaleGrid has 900 employees.", evidence_ids: ["nps-enrichment"] },
+      { text: "HubSpot recorded a demo request, pricing-page visit, and reply for ScaleGrid.", evidence_ids: ["nps-intent"] }
     ],
     disallowed_claims: ["ScaleGrid has recent public news."]
   },
@@ -274,7 +280,7 @@ export const leads: LeadPacket[] = [
       owner: "Sam Rivera",
       source: "Sequence",
       stage: "Open",
-      evidence: [evidence("HubSpot", "crm", "High", "Open", 0)]
+      evidence: [evidence("wo-crm-stage", "HubSpot", "crm", "High", "Open", 0)]
     },
     priority_score: 54,
     priority_band: "Cold",
@@ -286,7 +292,7 @@ export const leads: LeadPacket[] = [
       revenue_band: "$25M-$50M",
       tech_stack: ["Salesforce"],
       last_updated_days_ago: 46,
-      evidence: [evidence("Clearbit", "enrichment", "High", 420, 46, true, undefined, "numberofemployees", { employees: 420, revenue_band: "$25M-$50M", tech_stack: ["Salesforce"] })]
+      evidence: [evidence("wo-enrichment", "Clearbit", "enrichment", "High", 420, 46, true, undefined, "numberofemployees", { employees: 420, revenue_band: "$25M-$50M", tech_stack: ["Salesforce"] })]
     },
     intent_signals: {
       opens: 5,
@@ -295,7 +301,7 @@ export const leads: LeadPacket[] = [
       demo_request: false,
       pricing_page_visit: false,
       surge: false,
-      evidence: [evidence("Outreach", "intent", "Medium", "5 email opens", 4, false, undefined, undefined, { opens: 5 })]
+      evidence: [evidence("wo-intent", "Outreach", "intent", "Medium", "5 email opens", 4, false, undefined, undefined, { opens: 5 })]
     },
     public_signals: [],
     score_breakdown: {
@@ -306,13 +312,14 @@ export const leads: LeadPacket[] = [
       crm_process_context: 9,
       data_confidence: 5
     },
+    validation_evidence: [],
     missing_fields: ["public_signals"],
     stale_fields: [],
     source_conflicts: [],
     writeback_recommendation: { decision: "Eligible", reason: "Firmographic enrichment is fresh; intent is not written back." },
     allowed_claims: [
-      { text: "Clearbit reports Northstar Apps has 420 employees.", evidence_source: "Clearbit" },
-      { text: "Outreach recorded 5 email opens for Northstar Apps.", evidence_source: "Outreach" }
+      { text: "Clearbit reports Northstar Apps has 420 employees.", evidence_ids: ["wo-enrichment"] },
+      { text: "Outreach recorded 5 email opens for Northstar Apps.", evidence_ids: ["wo-intent"] }
     ],
     disallowed_claims: ["Northstar Apps is showing buying intent from email opens alone."]
   },
@@ -332,7 +339,7 @@ export const leads: LeadPacket[] = [
       owner: "Jordan Lee",
       source: "List import",
       stage: "Open",
-      evidence: [evidence("HubSpot", "crm", "High", "Open", 0)]
+      evidence: [evidence("sw-crm-stage", "HubSpot", "crm", "High", "Open", 0)]
     },
     priority_score: null,
     priority_band: "Needs Manual Review",
@@ -345,8 +352,8 @@ export const leads: LeadPacket[] = [
       tech_stack: [],
       last_updated_days_ago: 420,
       evidence: [
-        evidence("Clearbit", "enrichment", "Low", 300, 420, false, undefined, undefined, { employees: 300, revenue_band: "$10M-$25M" }),
-        evidence("HubSpot", "crm", "Medium", 75, 10, false, undefined, undefined, { employees: 75 })
+        evidence("sw-clearbit-enrichment", "Clearbit", "enrichment", "Low", 300, 420, false, undefined, undefined, { employees: 300, revenue_band: "$10M-$25M" }),
+        evidence("sw-hubspot-employees", "HubSpot", "crm", "Medium", 75, 10, false, undefined, undefined, { employees: 75 })
       ]
     },
     intent_signals: {
@@ -367,13 +374,14 @@ export const leads: LeadPacket[] = [
       crm_process_context: 5,
       data_confidence: 0
     },
+    validation_evidence: [],
     missing_fields: ["public_signals"],
     stale_fields: ["employees"],
     source_conflicts: ["Company size differs between Clearbit and HubSpot."],
     writeback_recommendation: { decision: "Review", reason: "Company-size data is stale and conflicts with CRM." },
     allowed_claims: [
-      { text: "Clearbit reports HarborWorks has 300 employees, but HubSpot reports 75 employees.", evidence_source: "Clearbit; HubSpot" },
-      { text: "Clearbit company-size data for HarborWorks is 420 days old.", evidence_source: "Clearbit" }
+      { text: "Clearbit reports HarborWorks has 300 employees, but HubSpot reports 75 employees.", evidence_ids: ["sw-clearbit-enrichment", "sw-hubspot-employees"] },
+      { text: "Clearbit company-size data for HarborWorks is 420 days old.", evidence_ids: ["sw-clearbit-enrichment"] }
     ],
     disallowed_claims: ["HarborWorks has 300 employees without qualification."]
   }

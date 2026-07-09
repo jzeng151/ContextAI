@@ -1,11 +1,12 @@
 export type Band = "Hot" | "Warm" | "Cold" | "Needs Manual Review";
 export type Confidence = "High" | "Medium" | "Low";
-export type SourceType = "crm" | "enrichment" | "intent" | "public_signal";
+export type SourceType = "crm" | "enrichment" | "intent" | "public_signal" | "validation";
 export type WritebackDecision = "Eligible" | "Review" | "Skipped" | "Blocked";
 
 type EvidenceValue = string | number | boolean | string[];
 
 type EvidenceBase = {
+  evidence_id: string;
   source_name: string;
   source_type: SourceType;
   field_name?: string;
@@ -25,7 +26,7 @@ export type Evidence = EvidenceBase & (
 
 export type Claim = {
   text: string;
-  evidence_source: string;
+  evidence_ids: string[];
 };
 
 export type ScoreBreakdown = {
@@ -83,6 +84,7 @@ export type LeadPacket = {
     days_ago: number;
     evidence: Evidence[];
   }>;
+  validation_evidence: Evidence[];
   missing_fields: string[];
   stale_fields: string[];
   source_conflicts: string[];
@@ -122,7 +124,7 @@ const equalFieldValue = (left: unknown, right: unknown) =>
     : left === right;
 const isEvidence = (value: unknown, sourceTypes: SourceType | SourceType[]) => {
   const allowedTypes = Array.isArray(sourceTypes) ? sourceTypes : [sourceTypes];
-  if (!isRecord(value) || !allowedTypes.includes(value.source_type as SourceType) || !hasStrings(value, ["source_name"]) || !isDate(value.retrieved_at)) return false;
+  if (!isRecord(value) || !allowedTypes.includes(value.source_type as SourceType) || !hasStrings(value, ["evidence_id", "source_name"]) || !isDate(value.retrieved_at)) return false;
   if (!(["High", "Medium", "Low"] as unknown[]).includes(value.confidence) || typeof value.eligible_for_crm_writeback !== "boolean") return false;
   if (value.eligible_for_crm_writeback && !hasStrings(value, ["field_name"])) return false;
   if (value.field_values !== undefined && (!isRecord(value.field_values) || Object.keys(value.field_values).length === 0 || !Object.values(value.field_values).every(isFieldValue))) return false;
@@ -214,11 +216,29 @@ export const assertLeadPacket = (value: unknown): asserts value is LeadPacket =>
     !isEnrichmentFields(value.enrichment_fields, String(value.evaluation_timestamp)) ||
     !isIntentSignals(value.intent_signals) ||
     !Array.isArray(value.public_signals) || !value.public_signals.every((signal) => isPublicSignal(signal, String(value.evaluation_timestamp))) ||
+    !Array.isArray(value.validation_evidence) || !value.validation_evidence.every((item) => isEvidence(item, "validation")) ||
     ![value.missing_fields, value.stale_fields, value.source_conflicts, value.disallowed_claims].every((items) => Array.isArray(items) && items.every((item) => typeof item === "string" && item.trim().length > 0)) ||
     !isRecord(value.writeback_recommendation) || !hasStrings(value.writeback_recommendation, ["reason"]) || !(["Eligible", "Review", "Skipped", "Blocked"] as unknown[]).includes(value.writeback_recommendation.decision) ||
-    !Array.isArray(value.allowed_claims) || !value.allowed_claims.every((claim) => isRecord(claim) && hasStrings(claim, ["text", "evidence_source"]))) {
+    !Array.isArray(value.allowed_claims)) {
     throw new Error("Invalid lead packet contract");
   }
+  const lead = value as unknown as LeadPacket;
+  const evidence = [
+    ...lead.crm_context.evidence,
+    ...lead.enrichment_fields.evidence,
+    ...lead.intent_signals.evidence,
+    ...lead.public_signals.flatMap((signal) => signal.evidence),
+    ...lead.validation_evidence
+  ];
+  const evidenceIds = new Set(evidence.map((item) => item.evidence_id));
+  if (evidenceIds.size !== evidence.length || lead.allowed_claims.some((claim) =>
+    !isRecord(claim) ||
+    !hasStrings(claim, ["text"]) ||
+    !Array.isArray(claim.evidence_ids) ||
+    claim.evidence_ids.length === 0 ||
+    new Set(claim.evidence_ids).size !== claim.evidence_ids.length ||
+    claim.evidence_ids.some((id) => typeof id !== "string" || !evidenceIds.has(id))
+  )) throw new Error("Invalid lead packet contract");
 };
 
 export const scoreLabel = (lead: LeadPacket) =>
@@ -249,12 +269,11 @@ const dates = (value: string) => [...value.matchAll(/\b(?:jan(?:uary)?|feb(?:rua
 
 const hasAllowedHookClaim = (lead: LeadPacket, signal: LeadPacket["public_signals"][number], item: Evidence) => {
   const company = normalized(lead.lead_identity.company);
-  const source = normalized(item.source_name);
   const evidenceValue = String(item.field_value ?? item.event_value);
   const evidenceDates = dates(evidenceValue);
   return lead.allowed_claims.some((claim) => {
     const text = normalized(claim.text);
-    return normalized(claim.evidence_source) === source &&
+    return claim.evidence_ids.includes(item.evidence_id) &&
       hasPhrase(text, company) &&
       hasTerms(text, signal.label) &&
       hasTerms(text, evidenceValue) &&
