@@ -1,4 +1,4 @@
-import { isWritebackEligible, type LeadPacket } from "./contextai.ts";
+import { assertLeadPacket, isWritebackEligible, type LeadPacket } from "./contextai.ts";
 
 type Env = Record<string, string | undefined>;
 
@@ -63,6 +63,7 @@ export const explainLeadWithOpenRouter = async (
   lead: LeadPacket,
   config = openRouterConfigFromEnv()
 ) => {
+  assertLeadPacket(lead);
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -176,6 +177,7 @@ export const writeHubSpotEnrichment = async (
   allowedProperties: readonly string[],
   config = hubSpotConfigFromEnv()
 ) => {
+  assertLeadPacket(lead);
   if (Object.keys(properties).length === 0) throw new Error("No HubSpot properties to write");
   if (!isWritebackEligible(lead)) throw new Error("Lead is not eligible for CRM writeback");
   const blocked = Object.keys(properties).filter((property) => !allowedProperties.includes(property));

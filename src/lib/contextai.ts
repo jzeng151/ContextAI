@@ -17,8 +17,8 @@ type EvidenceBase = {
 };
 
 export type Evidence = EvidenceBase & (
-  | { field_value: EvidenceValue; event_value?: EvidenceValue }
-  | { field_value?: EvidenceValue; event_value: EvidenceValue }
+  | { field_value: EvidenceValue; event_value?: never }
+  | { field_value?: never; event_value: EvidenceValue }
 );
 
 export type Claim = {
@@ -90,6 +90,50 @@ export type LeadPacket = {
   };
   allowed_claims: Claim[];
   disallowed_claims: string[];
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+const hasStrings = (value: Record<string, unknown>, keys: string[]) =>
+  keys.every((key) => typeof value[key] === "string" && value[key].trim().length > 0);
+const isDate = (value: unknown) => typeof value === "string" && Number.isFinite(Date.parse(value));
+const isEvidenceValue = (value: unknown) =>
+  typeof value === "boolean" ||
+  (typeof value === "number" && Number.isFinite(value)) ||
+  (typeof value === "string" && value.trim().length > 0) ||
+  (Array.isArray(value) && value.length > 0 && value.every((item) => typeof item === "string" && item.trim().length > 0));
+const isEvidence = (value: unknown, sourceTypes: SourceType | SourceType[]) => {
+  const allowedTypes = Array.isArray(sourceTypes) ? sourceTypes : [sourceTypes];
+  if (!isRecord(value) || !allowedTypes.includes(value.source_type as SourceType) || !hasStrings(value, ["source_name"]) || !isDate(value.retrieved_at)) return false;
+  if (!(["High", "Medium", "Low"] as unknown[]).includes(value.confidence) || typeof value.eligible_for_crm_writeback !== "boolean") return false;
+  const hasField = Object.hasOwn(value, "field_value");
+  const hasEvent = Object.hasOwn(value, "event_value");
+  if (hasField === hasEvent || !isEvidenceValue(value[hasField ? "field_value" : "event_value"])) return false;
+  return value.source_type === "public_signal"
+    ? hasStrings(value, ["source_url"]) && isDate(value.source_published_at) && value.source_updated_at === undefined
+    : isDate(value.source_updated_at);
+};
+const hasEvidence = (value: unknown, sourceTypes: SourceType | SourceType[]): value is Record<string, unknown> =>
+  isRecord(value) && Array.isArray(value.evidence) && value.evidence.every((item) => isEvidence(item, sourceTypes));
+
+export const assertLeadPacket = (value: unknown): asserts value is LeadPacket => {
+  if (!isRecord(value) ||
+    !hasStrings(value, ["lead_id", "account_id", "score_version", "reason", "hook"]) ||
+    !isDate(value.evaluation_timestamp) ||
+    !(value.priority_score === null || typeof value.priority_score === "number") ||
+    !(["Hot", "Warm", "Cold", "Needs Manual Review"] as unknown[]).includes(value.priority_band) ||
+    !(["High", "Medium", "Low"] as unknown[]).includes(value.confidence) ||
+    !isRecord(value.score_breakdown) ||
+    !isRecord(value.lead_identity) || !hasStrings(value.lead_identity, ["name", "title", "company", "email", "domain"]) ||
+    !hasEvidence(value.crm_context, "crm") || !hasStrings(value.crm_context, ["owner", "source", "stage"]) ||
+    !hasEvidence(value.enrichment_fields, ["enrichment", "crm"]) || !Array.isArray(value.enrichment_fields.tech_stack) || !value.enrichment_fields.tech_stack.every((item) => typeof item === "string" && item.trim().length > 0) ||
+    !hasEvidence(value.intent_signals, "intent") || !["opens", "clicks", "replies"].every((key) => typeof value.intent_signals[key] === "number") || !["demo_request", "pricing_page_visit", "surge"].every((key) => typeof value.intent_signals[key] === "boolean") ||
+    !Array.isArray(value.public_signals) || !value.public_signals.every((signal) => isRecord(signal) && hasStrings(signal, ["label", "source"]) && typeof signal.days_ago === "number" && hasEvidence(signal, "public_signal")) ||
+    ![value.missing_fields, value.stale_fields, value.source_conflicts, value.disallowed_claims].every((items) => Array.isArray(items) && items.every((item) => typeof item === "string" && item.trim().length > 0)) ||
+    !isRecord(value.writeback_recommendation) || !hasStrings(value.writeback_recommendation, ["reason"]) || !(["Eligible", "Review", "Skipped", "Blocked"] as unknown[]).includes(value.writeback_recommendation.decision) ||
+    !Array.isArray(value.allowed_claims) || !value.allowed_claims.every((claim) => isRecord(claim) && hasStrings(claim, ["text", "evidence_source"]))) {
+    throw new Error("Invalid lead packet contract");
+  }
 };
 
 export const scoreLabel = (lead: LeadPacket) =>

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { leads } from "../src/data/leads.ts";
-import { groundedHook, hasOnlyWeakOpenIntent, isWritebackEligible } from "../src/lib/contextai.ts";
+import { assertLeadPacket, groundedHook, hasOnlyWeakOpenIntent, isWritebackEligible } from "../src/lib/contextai.ts";
 import { explainLeadWithOpenRouter, hubSpotConfigFromEnv, listHubSpotContacts, openRouterConfigFromEnv, writeHubSpotEnrichment } from "../src/lib/integrations.ts";
 
 test("stale enrichment is not eligible for CRM writeback", () => {
@@ -131,6 +131,25 @@ test("fixtures include required lead packet contract fields", () => {
     assert.ok(Array.isArray(lead.disallowed_claims));
     assert.ok(Array.isArray(lead.source_conflicts));
   }
+});
+
+test("runtime contract validation rejects malformed evidence", () => {
+  const lead = leads[0];
+  assert.doesNotThrow(() => assertLeadPacket(lead));
+  assert.throws(() => assertLeadPacket({
+    ...lead,
+    public_signals: [{
+      ...lead.public_signals[0],
+      evidence: [{ ...lead.public_signals[0].evidence[0], source_url: undefined }]
+    }]
+  }), /invalid lead packet contract/i);
+  assert.throws(() => assertLeadPacket({
+    ...lead,
+    enrichment_fields: {
+      ...lead.enrichment_fields,
+      evidence: [{ ...lead.enrichment_fields.evidence[0], field_value: "" }]
+    }
+  }), /invalid lead packet contract/i);
 });
 
 test("scored fixtures match score breakdown totals", () => {
