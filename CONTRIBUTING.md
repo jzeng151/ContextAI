@@ -2,7 +2,7 @@
 
 ## Local Setup
 
-1. Install Node.js 20 or newer and npm.
+1. Install Node.js 22.12.0 or newer and npm.
 2. Install dependencies:
 
    ```sh

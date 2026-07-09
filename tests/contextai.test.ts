@@ -38,6 +38,14 @@ test("fixtures include required lead packet contract fields", () => {
   }
 });
 
+test("scored fixtures match score breakdown totals", () => {
+  for (const lead of leads) {
+    if (lead.priority_score === null) continue;
+    const total = Object.values(lead.score_breakdown).reduce((sum, value) => sum + value, 0);
+    assert.equal(lead.priority_score, total, lead.lead_id);
+  }
+});
+
 test("evidence objects carry source and freshness metadata", () => {
   const allEvidence = leads.flatMap((lead) => [
     ...lead.crm_context.evidence,
@@ -54,6 +62,16 @@ test("evidence objects carry source and freshness metadata", () => {
     assert.ok(item.source_updated_at || item.source_published_at);
     assert.ok(item.confidence);
     assert.equal(typeof item.eligible_for_crm_writeback, "boolean");
+  }
+});
+
+test("public signals use publication metadata", () => {
+  const publicEvidence = leads.flatMap((lead) => lead.public_signals.flatMap((signal) => signal.evidence));
+  assert.ok(publicEvidence.length > 0);
+  for (const item of publicEvidence) {
+    assert.equal(item.source_type, "public_signal");
+    assert.ok(item.source_published_at);
+    assert.equal(item.source_updated_at, undefined);
   }
 });
 
@@ -99,7 +117,7 @@ test("golden fixture grounds its score drivers", () => {
   assert.match(allowedText, /demo request and pricing-page visit/i);
   assert.match(allowedText, /Series B funding round on July 1, 2026/i);
   assert.equal(lead.public_signals[0].days_ago, 8);
-  assert.equal(lead.public_signals[0].evidence[0].source_updated_at, "2026-07-01T09:00:00.000Z");
+  assert.equal(lead.public_signals[0].evidence[0].source_published_at, "2026-07-01T09:00:00.000Z");
 });
 
 test("fixtures mark unavailable data as missing", () => {
@@ -130,6 +148,18 @@ test("no-public-signal fixture matches demo-request eval case", () => {
   assert.match(allowedText, /900 employees/i);
   assert.match(allowedText, /demo request/i);
   assert.equal(groundedHook(lead), "No grounded hook available - no recent verified signal found.");
+});
+
+test("fixtures expose allowed claims for missing data and weak opens", () => {
+  const noData = leads.find((item) => item.lead_id === "no-usable-data");
+  assert.ok(noData);
+  assert.match(noData.allowed_claims.map((claim) => claim.text).join(" "), /employees, revenue band, intent signals, and public signals/i);
+
+  const weakOpens = leads.find((item) => item.lead_id === "weak-opens");
+  assert.ok(weakOpens);
+  const weakOpenClaims = weakOpens.allowed_claims.map((claim) => claim.text).join(" ");
+  assert.match(weakOpenClaims, /420 employees/i);
+  assert.match(weakOpenClaims, /5 email opens/i);
 });
 
 test("integration config requires secrets without hard-coding them", () => {

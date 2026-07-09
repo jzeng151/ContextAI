@@ -11,16 +11,19 @@ const evidence = (
   daysAgo: number,
   eligible_for_crm_writeback = false,
   source_url?: string
-): Evidence => ({
-  source_name,
-  source_type,
-  source_url,
-  retrieved_at: evaluatedAt,
-  source_updated_at: new Date(Date.parse(evaluatedAt) - daysAgo * 24 * 60 * 60 * 1000).toISOString(),
-  confidence,
-  field_value: value,
-  eligible_for_crm_writeback
-});
+): Evidence => {
+  const sourceDate = new Date(Date.parse(evaluatedAt) - daysAgo * 24 * 60 * 60 * 1000).toISOString();
+  return {
+    source_name,
+    source_type,
+    source_url,
+    retrieved_at: evaluatedAt,
+    ...(source_type === "public_signal" ? { source_published_at: sourceDate } : { source_updated_at: sourceDate }),
+    confidence,
+    field_value: value,
+    eligible_for_crm_writeback
+  };
+};
 
 export const leads: LeadPacket[] = [
   {
@@ -188,7 +191,7 @@ export const leads: LeadPacket[] = [
     stale_fields: [],
     source_conflicts: [],
     writeback_recommendation: { decision: "Skipped", reason: "No schema-valid enrichment available." },
-    allowed_claims: [],
+    allowed_claims: [{ text: "Required scoring fields are missing for test-error.com: employees, revenue band, intent signals, and public signals.", evidence_source: "ContextAI validation" }],
     disallowed_claims: ["The lead has enough verified context for outreach."]
   },
   {
@@ -209,7 +212,7 @@ export const leads: LeadPacket[] = [
       stage: "Open",
       evidence: [evidence("HubSpot", "crm", "High", "Open", 0)]
     },
-    priority_score: 88,
+    priority_score: 83,
     priority_band: "Hot",
     confidence: "High",
     reason: "Strong fit and high engagement from verified intent signals.",
@@ -235,7 +238,7 @@ export const leads: LeadPacket[] = [
       icp_fit: 30,
       high_intent_actions: 25,
       engagement_quality: 15,
-      public_timing_signals: 5,
+      public_timing_signals: 0,
       crm_process_context: 8,
       data_confidence: 5
     },
@@ -301,7 +304,10 @@ export const leads: LeadPacket[] = [
     stale_fields: [],
     source_conflicts: [],
     writeback_recommendation: { decision: "Eligible", reason: "Firmographic enrichment is fresh; intent is not written back." },
-    allowed_claims: [],
+    allowed_claims: [
+      { text: "Clearbit reports Northstar Apps has 420 employees.", evidence_source: "Clearbit" },
+      { text: "Outreach recorded 5 email opens for Northstar Apps.", evidence_source: "Outreach" }
+    ],
     disallowed_claims: ["Northstar Apps is showing buying intent from email opens alone."]
   },
   {
