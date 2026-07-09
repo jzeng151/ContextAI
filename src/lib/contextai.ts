@@ -105,6 +105,10 @@ const fallbackHook = "No grounded hook available - no recent verified signal fou
 const normalized = (value: EvidenceValue) => String(value).toLowerCase();
 const maxWritebackAgeMs = 90 * 24 * 60 * 60 * 1000;
 const keywords = (value: string) => normalized(value).split(/[^a-z0-9]+/).filter((word) => word.length > 3);
+const hasPhrase = (text: string, value: string) => {
+  const phrase = normalized(value).replace(/[^a-z0-9]+/g, " ").trim();
+  return phrase.length > 0 && ` ${normalized(text).replace(/[^a-z0-9]+/g, " ")} `.includes(` ${phrase} `);
+};
 
 const hasAllowedHookClaim = (lead: LeadPacket, signal: LeadPacket["public_signals"][number], item: Evidence) => {
   const company = normalized(lead.lead_identity.company);
@@ -112,7 +116,10 @@ const hasAllowedHookClaim = (lead: LeadPacket, signal: LeadPacket["public_signal
   const signalWords = keywords(signal.label);
   return lead.allowed_claims.some((claim) => {
     const text = normalized(claim.text);
-    return normalized(claim.evidence_source).includes(source) && text.includes(company) && signalWords.some((word) => text.includes(word));
+    const hasSignal = signalWords.length > 0
+      ? signalWords.some((word) => text.includes(word))
+      : hasPhrase(text, signal.label);
+    return normalized(claim.evidence_source).includes(source) && text.includes(company) && hasSignal;
   });
 };
 

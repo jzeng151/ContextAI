@@ -46,6 +46,27 @@ test("public evidence must match the hook text", () => {
   assert.equal(groundedHook({ ...lead, allowed_claims: [] }), "No grounded hook available - no recent verified signal found.");
 });
 
+test("short public signal labels can ground hooks", () => {
+  const lead = leads.find((item) => item.lead_id === "golden-normal");
+  assert.ok(lead);
+  const evidence = { ...lead.public_signals[0].evidence[0], field_value: "AI" };
+  const publicSignal = { ...lead.public_signals[0], label: "AI", evidence: [evidence] };
+  const hook = "Reference EnterpriseCorp's AI announcement.";
+
+  assert.equal(groundedHook({
+    ...lead,
+    hook,
+    public_signals: [publicSignal],
+    allowed_claims: [{ text: "EnterpriseCorp announced an AI initiative.", evidence_source: evidence.source_name }]
+  }), hook);
+  assert.equal(groundedHook({
+    ...lead,
+    hook,
+    public_signals: [publicSignal],
+    allowed_claims: [{ text: "EnterpriseCorp said results improved.", evidence_source: evidence.source_name }]
+  }), "No grounded hook available - no recent verified signal found.");
+});
+
 test("writeback eligibility requires high-confidence eligible enrichment evidence", () => {
   const lead = leads.find((item) => item.lead_id === "no-public-signal");
   assert.ok(lead);
