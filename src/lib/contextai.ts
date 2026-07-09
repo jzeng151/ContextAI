@@ -5,7 +5,7 @@ export type WritebackDecision = "Eligible" | "Review" | "Skipped" | "Blocked";
 
 type EvidenceValue = string | number | boolean | string[];
 
-export type Evidence = {
+type EvidenceBase = {
   source_name: string;
   source_type: SourceType;
   source_url?: string;
@@ -13,10 +13,13 @@ export type Evidence = {
   source_published_at?: string;
   source_updated_at?: string;
   confidence: Confidence;
-  field_value?: EvidenceValue;
-  event_value?: EvidenceValue;
   eligible_for_crm_writeback: boolean;
 };
+
+export type Evidence = EvidenceBase & (
+  | { field_value: EvidenceValue; event_value?: EvidenceValue }
+  | { field_value?: EvidenceValue; event_value: EvidenceValue }
+);
 
 export type Claim = {
   text: string;
@@ -101,13 +104,26 @@ export const freshnessLabel = (daysAgo?: number) => {
 const fallbackHook = "No grounded hook available - no recent verified signal found.";
 const normalized = (value: EvidenceValue) => String(value).toLowerCase();
 const maxWritebackAgeMs = 90 * 24 * 60 * 60 * 1000;
+const keywords = (value: string) => normalized(value).split(/[^a-z0-9]+/).filter((word) => word.length > 3);
+
+const hasAllowedHookClaim = (lead: LeadPacket, signal: LeadPacket["public_signals"][number], item: Evidence) => {
+  const company = normalized(lead.lead_identity.company);
+  const source = normalized(item.source_name);
+  const signalWords = keywords(signal.label);
+  return lead.allowed_claims.some((claim) => {
+    const text = normalized(claim.text);
+    return normalized(claim.evidence_source).includes(source) && text.includes(company) && signalWords.some((word) => text.includes(word));
+  });
+};
 
 const hasHookEvidence = (lead: LeadPacket) => {
   const hook = normalized(lead.hook);
   if (!hook.includes(normalized(lead.lead_identity.company))) return false;
   return lead.public_signals.some((signal) => {
     if (signal.evidence.length === 0 || !hook.includes(normalized(signal.label))) return false;
-    return signal.evidence.some((item) => hook.includes(normalized(item.field_value ?? item.event_value ?? signal.label)));
+    return signal.evidence.some((item) =>
+      hook.includes(normalized(item.field_value ?? item.event_value ?? signal.label)) && hasAllowedHookClaim(lead, signal, item)
+    );
   });
 };
 
