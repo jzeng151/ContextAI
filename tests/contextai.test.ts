@@ -110,6 +110,29 @@ test("writeback eligibility requires fresh enrichment evidence dates", () => {
   );
 });
 
+test("writeback eligibility allows safe fields alongside non-writable evidence", () => {
+  const lead = leads.find((item) => item.lead_id === "no-public-signal");
+  assert.ok(lead);
+  assert.equal(isWritebackEligible({
+    ...lead,
+    enrichment_fields: {
+      ...lead.enrichment_fields,
+      last_updated_days_ago: 420,
+      evidence: [
+        ...lead.enrichment_fields.evidence,
+        {
+          ...lead.enrichment_fields.evidence[0],
+          field_name: undefined,
+          field_value: ["UnverifiedTech"],
+          confidence: "Low",
+          eligible_for_crm_writeback: false,
+          source_updated_at: "2025-05-15T09:00:00.000Z"
+        }
+      ]
+    }
+  }), true);
+});
+
 test("HubSpot writeback requires an eligible lead and allowlisted properties", async () => {
   const eligible = leads.find((item) => item.lead_id === "no-public-signal");
   const stale = leads.find((item) => item.lead_id === "stale-writeback");

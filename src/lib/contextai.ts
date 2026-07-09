@@ -232,12 +232,8 @@ export const hasWritebackEvidence = (lead: LeadPacket, fieldName: string, fieldV
 
 export const isWritebackEligible = (lead: LeadPacket) =>
   lead.writeback_recommendation.decision === "Eligible" &&
-  (lead.enrichment_fields.last_updated_days_ago ?? Infinity) <= 90 &&
   lead.source_conflicts.length === 0 &&
-  lead.enrichment_fields.evidence.some((item) => isFreshHighConfidenceWritebackEvidence(item, lead.evaluation_timestamp)) &&
-  lead.enrichment_fields.evidence
-    .filter((item) => item.source_type === "enrichment")
-    .every((item) => isFreshHighConfidenceWritebackEvidence(item, lead.evaluation_timestamp));
+  lead.enrichment_fields.evidence.some((item) => isFreshHighConfidenceWritebackEvidence(item, lead.evaluation_timestamp));
 
 export const hasOnlyWeakOpenIntent = (lead: LeadPacket) =>
   lead.intent_signals.opens > 0 &&
