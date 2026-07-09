@@ -53,9 +53,15 @@
 
 ## Coding Standards
 
+- Ship the smallest change that solves the real problem. Delete or reuse before adding new code.
+- Reuse existing helpers, types, and patterns before writing another version. Use standard library or platform features before dependencies.
+- Use semantic variable names that describe the domain value or intent.
+- Do not add abstractions, config, scaffolding, or flexibility for hypothetical future needs.
+- Fix bugs at the shared root cause, not at each caller. Check sibling callers before patching behavior.
 - Keep TypeScript types aligned with `ROADMAP.md`.
 - Keep scoring deterministic. The LLM may explain a score, but it must not calculate scores, change bands, decide writeback, route leads, disqualify leads, or draft full emails.
 - Ground hooks and explanations in `allowed_claims`. Treat `disallowed_claims` as unavailable.
 - Keep CRM writeback allowlisted, audited, and blocked from ownership, lifecycle, routing, deal, forecast, sequence, and other prospect-visible automation fields.
-- Prefer focused modules and tests by concern. Avoid expanding shared files when a small scoring, writeback, evidence, or eval module would prevent merge conflicts.
+- Add the smallest useful test for non-trivial logic. Skip test scaffolding for trivial text-only or one-line changes.
+- Mark deliberate shortcuts with a `ponytail:` comment that names the ceiling and the upgrade path.
 - Update `ROADMAP.md` in the same change when implementation status changes.
