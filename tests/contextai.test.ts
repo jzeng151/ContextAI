@@ -360,6 +360,7 @@ test("no-public-signal fixture matches demo-request eval case", () => {
   const lead = leads.find((item) => item.lead_id === "no-public-signal");
   assert.ok(lead);
   assert.equal(lead.intent_signals.demo_request, true);
+  assert.equal(lead.intent_signals.surge, false);
   assert.match(String(lead.intent_signals.evidence[0].field_value), /Demo request/i);
   const allowedText = lead.allowed_claims.map((claim) => claim.text).join(" ");
   assert.match(allowedText, /900 employees/i);

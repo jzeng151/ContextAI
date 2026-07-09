@@ -235,7 +235,7 @@ export const leads: LeadPacket[] = [
       replies: 1,
       demo_request: true,
       pricing_page_visit: true,
-      surge: true,
+      surge: false,
       evidence: [evidence("HubSpot", "intent", "High", "Demo request, pricing page visit, and reply", 3)]
     },
     public_signals: [],
