@@ -9,6 +9,7 @@ type EvidenceBase = {
   source_name: string;
   source_type: SourceType;
   field_name?: string;
+  field_values?: Record<string, EvidenceValue>;
   source_url?: string;
   retrieved_at: string;
   source_published_at?: string;
@@ -100,6 +101,14 @@ const hasStrings = (value: Record<string, unknown>, keys: string[]) =>
 const dayMs = 24 * 60 * 60 * 1000;
 const isDate = (value: unknown) => typeof value === "string" && Number.isFinite(Date.parse(value));
 const isNonNegativeInteger = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0;
+const isHttpUrl = (value: unknown) => {
+  if (typeof value !== "string") return false;
+  try {
+    return ["http:", "https:"].includes(new URL(value).protocol);
+  } catch {
+    return false;
+  }
+};
 const isEvidenceValue = (value: unknown) =>
   typeof value === "boolean" ||
   (typeof value === "number" && Number.isFinite(value)) ||
@@ -110,11 +119,12 @@ const isEvidence = (value: unknown, sourceTypes: SourceType | SourceType[]) => {
   if (!isRecord(value) || !allowedTypes.includes(value.source_type as SourceType) || !hasStrings(value, ["source_name"]) || !isDate(value.retrieved_at)) return false;
   if (!(["High", "Medium", "Low"] as unknown[]).includes(value.confidence) || typeof value.eligible_for_crm_writeback !== "boolean") return false;
   if (value.eligible_for_crm_writeback && !hasStrings(value, ["field_name"])) return false;
+  if (value.field_values !== undefined && (!isRecord(value.field_values) || Object.keys(value.field_values).length === 0 || !Object.values(value.field_values).every(isEvidenceValue))) return false;
   const hasField = Object.hasOwn(value, "field_value");
   const hasEvent = Object.hasOwn(value, "event_value");
   if (hasField === hasEvent || !isEvidenceValue(value[hasField ? "field_value" : "event_value"])) return false;
   return value.source_type === "public_signal"
-    ? hasStrings(value, ["source_url"]) && isDate(value.source_published_at) && value.source_updated_at === undefined
+    ? isHttpUrl(value.source_url) && isDate(value.source_published_at) && value.source_updated_at === undefined
     : isDate(value.source_updated_at);
 };
 const hasEvidence = (
@@ -129,7 +139,30 @@ const hasEvidence = (
 const isPublicSignal = (value: unknown, evaluatedAt: string) => {
   if (!isRecord(value) || !hasStrings(value, ["label", "source"]) || !isNonNegativeInteger(value.days_ago) || !hasEvidence(value, "public_signal", true)) return false;
   const ages = value.evidence.map((item) => Math.floor((Date.parse(evaluatedAt) - Date.parse(item.source_published_at ?? "")) / dayMs));
-  return ages.every((age) => age >= 0) && value.days_ago === Math.min(...ages);
+  return ages.every((age) => age >= 0) &&
+    value.days_ago === Math.min(...ages) &&
+    value.evidence.some((item, index) =>
+      ages[index] === value.days_ago &&
+      item.source_name.trim().toLowerCase() === String(value.source).trim().toLowerCase()
+    );
+};
+const isEnrichmentFields = (value: unknown, evaluatedAt: string) => {
+  if (!hasEvidence(value, ["enrichment", "crm"]) || !Array.isArray(value.tech_stack) || !value.tech_stack.every((item) => typeof item === "string" && item.trim().length > 0)) return false;
+  if (value.employees !== undefined && !isNonNegativeInteger(value.employees)) return false;
+  const ages = value.evidence
+    .filter((item) => item.source_type === "enrichment")
+    .map((item) => Math.floor((Date.parse(evaluatedAt) - Date.parse(item.source_updated_at ?? "")) / dayMs));
+  return ages.length === 0
+    ? value.last_updated_days_ago === undefined
+    : ages.every((age) => age >= 0) && value.last_updated_days_ago === Math.min(...ages);
+};
+const isIntentSignals = (value: unknown) => {
+  const fields = ["opens", "clicks", "replies", "demo_request", "pricing_page_visit", "surge"];
+  if (!hasEvidence(value, "intent") || !fields.slice(0, 3).every((key) => isNonNegativeInteger(value[key])) || !fields.slice(3).every((key) => typeof value[key] === "boolean")) return false;
+  const observed = value.evidence.flatMap((item) => Object.entries(item.field_values ?? {}));
+  if (observed.some(([field, fieldValue]) => !fields.includes(field) || fieldValue !== value[field])) return false;
+  return fields.filter((field) => value[field] !== 0 && value[field] !== false)
+    .every((field) => observed.some(([observedField]) => observedField === field));
 };
 const scoreCaps: ScoreBreakdown = {
   icp_fit: 30,
@@ -146,6 +179,11 @@ const hasValidScore = (value: Record<string, unknown>) => {
   if (scoreKeys.length !== scoreEntries.length || scoreKeys.some((key) => !Object.hasOwn(scoreCaps, key))) return false;
   const points = scoreEntries.map(([key]) => value.score_breakdown[key] as number);
   if (points.some((point, index) => !Number.isFinite(point) || point < 0 || point > scoreEntries[index][1])) return false;
+  const hasItems = (container: unknown) => isRecord(container) && Array.isArray(container.evidence) && container.evidence.length > 0;
+  if ((points[0] > 0 && !hasItems(value.enrichment_fields)) ||
+    ((points[1] > 0 || points[2] > 0) && !hasItems(value.intent_signals)) ||
+    (points[3] > 0 && (!Array.isArray(value.public_signals) || value.public_signals.length === 0)) ||
+    (points[4] > 0 && !hasItems(value.crm_context))) return false;
   if (value.priority_band === "Needs Manual Review") return value.priority_score === null;
   const score = value.priority_score;
   if (typeof score !== "number" || !Number.isFinite(score) || score !== points.reduce((sum, point) => sum + point, 0)) return false;
@@ -161,8 +199,8 @@ export const assertLeadPacket = (value: unknown): asserts value is LeadPacket =>
     !hasValidScore(value) ||
     !isRecord(value.lead_identity) || !hasStrings(value.lead_identity, ["name", "title", "company", "email", "domain"]) ||
     !hasEvidence(value.crm_context, "crm") || !hasStrings(value.crm_context, ["owner", "source", "stage"]) ||
-    !hasEvidence(value.enrichment_fields, ["enrichment", "crm"]) || !Array.isArray(value.enrichment_fields.tech_stack) || !value.enrichment_fields.tech_stack.every((item) => typeof item === "string" && item.trim().length > 0) || (value.enrichment_fields.last_updated_days_ago !== undefined && !isNonNegativeInteger(value.enrichment_fields.last_updated_days_ago)) ||
-    !hasEvidence(value.intent_signals, "intent") || !["opens", "clicks", "replies"].every((key) => isNonNegativeInteger(value.intent_signals[key])) || !["demo_request", "pricing_page_visit", "surge"].every((key) => typeof value.intent_signals[key] === "boolean") ||
+    !isEnrichmentFields(value.enrichment_fields, String(value.evaluation_timestamp)) ||
+    !isIntentSignals(value.intent_signals) ||
     !Array.isArray(value.public_signals) || !value.public_signals.every((signal) => isPublicSignal(signal, String(value.evaluation_timestamp))) ||
     ![value.missing_fields, value.stale_fields, value.source_conflicts, value.disallowed_claims].every((items) => Array.isArray(items) && items.every((item) => typeof item === "string" && item.trim().length > 0)) ||
     !isRecord(value.writeback_recommendation) || !hasStrings(value.writeback_recommendation, ["reason"]) || !(["Eligible", "Review", "Skipped", "Blocked"] as unknown[]).includes(value.writeback_recommendation.decision) ||

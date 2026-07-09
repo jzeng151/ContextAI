@@ -11,13 +11,15 @@ const evidence = (
   daysAgo: number,
   eligible_for_crm_writeback = false,
   source_url?: string,
-  field_name?: string
+  field_name?: string,
+  field_values?: Record<string, string | number | boolean | string[]>
 ): Evidence => {
   const sourceDate = new Date(Date.parse(evaluatedAt) - daysAgo * 24 * 60 * 60 * 1000).toISOString();
   return {
     source_name,
     source_type,
     field_name,
+    field_values,
     source_url,
     retrieved_at: evaluatedAt,
     ...(source_type === "public_signal" ? { source_published_at: sourceDate } : { source_updated_at: sourceDate }),
@@ -65,7 +67,7 @@ export const leads: LeadPacket[] = [
       demo_request: true,
       pricing_page_visit: true,
       surge: false,
-      evidence: [evidence("HubSpot", "intent", "High", "Demo request and pricing page visit", 1)]
+      evidence: [evidence("HubSpot", "intent", "High", "Demo request and pricing page visit", 1, false, undefined, undefined, { opens: 2, clicks: 1, demo_request: true, pricing_page_visit: true })]
     },
     public_signals: [{
       label: "Series B funding announced",
@@ -129,7 +131,7 @@ export const leads: LeadPacket[] = [
       demo_request: false,
       pricing_page_visit: false,
       surge: true,
-      evidence: [evidence("Bombora", "intent", "Medium", "Category surge", 2)]
+      evidence: [evidence("Bombora", "intent", "Medium", "Category surge", 2, false, undefined, undefined, { surge: true })]
     },
     public_signals: [],
     score_breakdown: {
@@ -236,7 +238,7 @@ export const leads: LeadPacket[] = [
       demo_request: true,
       pricing_page_visit: true,
       surge: false,
-      evidence: [evidence("HubSpot", "intent", "High", "Demo request, pricing page visit, and reply", 3)]
+      evidence: [evidence("HubSpot", "intent", "High", "Demo request, pricing page visit, and reply", 3, false, undefined, undefined, { opens: 1, clicks: 2, replies: 1, demo_request: true, pricing_page_visit: true })]
     },
     public_signals: [],
     score_breakdown: {
@@ -294,7 +296,7 @@ export const leads: LeadPacket[] = [
       demo_request: false,
       pricing_page_visit: false,
       surge: false,
-      evidence: [evidence("Outreach", "intent", "Medium", "5 email opens", 4)]
+      evidence: [evidence("Outreach", "intent", "Medium", "5 email opens", 4, false, undefined, undefined, { opens: 5 })]
     },
     public_signals: [],
     score_breakdown: {

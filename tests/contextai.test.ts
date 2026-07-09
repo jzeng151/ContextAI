@@ -117,7 +117,7 @@ test("writeback eligibility allows safe fields alongside non-writable evidence",
     ...lead,
     enrichment_fields: {
       ...lead.enrichment_fields,
-      last_updated_days_ago: 420,
+      last_updated_days_ago: 31,
       evidence: [
         ...lead.enrichment_fields.evidence,
         {
@@ -232,6 +232,22 @@ test("runtime contract validation requires dated public-signal evidence", () => 
     ...lead,
     enrichment_fields: { ...lead.enrichment_fields, last_updated_days_ago: -1 }
   }), /invalid lead packet contract/i);
+});
+
+test("runtime contract validation ties derived fields to evidence", () => {
+  const lead = leads[0];
+  const invalidPackets = [
+    { ...lead, enrichment_fields: { ...lead.enrichment_fields, employees: -1 } },
+    { ...lead, enrichment_fields: { ...lead.enrichment_fields, last_updated_days_ago: 1 } },
+    { ...lead, intent_signals: { ...lead.intent_signals, opens: 3 } },
+    { ...lead, intent_signals: { ...lead.intent_signals, surge: true } },
+    { ...lead, public_signals: [{ ...lead.public_signals[0], source: "OtherSource" }] },
+    { ...lead, public_signals: [{ ...lead.public_signals[0], evidence: [{ ...lead.public_signals[0].evidence[0], source_url: "not a url" }] }] },
+    { ...lead, public_signals: [] }
+  ];
+  for (const packet of invalidPackets) {
+    assert.throws(() => assertLeadPacket(packet), /invalid lead packet contract/i);
+  }
 });
 
 test("scored fixtures match score breakdown totals", () => {
