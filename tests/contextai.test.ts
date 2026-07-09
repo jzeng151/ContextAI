@@ -152,6 +152,18 @@ test("runtime contract validation rejects malformed evidence", () => {
   }), /invalid lead packet contract/i);
 });
 
+test("runtime contract validation enforces score caps, totals, and bands", () => {
+  const lead = leads[0];
+  assert.throws(() => assertLeadPacket({ ...lead, priority_score: 95 }), /invalid lead packet contract/i);
+  assert.throws(() => assertLeadPacket({ ...lead, priority_band: "Cold" }), /invalid lead packet contract/i);
+  assert.throws(() => assertLeadPacket({
+    ...lead,
+    priority_score: 95,
+    score_breakdown: { ...lead.score_breakdown, data_confidence: 6 }
+  }), /invalid lead packet contract/i);
+  assert.throws(() => assertLeadPacket({ ...lead, priority_score: 94, priority_band: "Needs Manual Review" }), /invalid lead packet contract/i);
+});
+
 test("scored fixtures match score breakdown totals", () => {
   for (const lead of leads) {
     if (lead.priority_score === null) continue;

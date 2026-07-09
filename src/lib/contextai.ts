@@ -115,15 +115,32 @@ const isEvidence = (value: unknown, sourceTypes: SourceType | SourceType[]) => {
 };
 const hasEvidence = (value: unknown, sourceTypes: SourceType | SourceType[]): value is Record<string, unknown> =>
   isRecord(value) && Array.isArray(value.evidence) && value.evidence.every((item) => isEvidence(item, sourceTypes));
+const scoreCaps: ScoreBreakdown = {
+  icp_fit: 30,
+  high_intent_actions: 25,
+  engagement_quality: 15,
+  public_timing_signals: 15,
+  crm_process_context: 10,
+  data_confidence: 5
+};
+const hasValidScore = (value: Record<string, unknown>) => {
+  if (!isRecord(value.score_breakdown)) return false;
+  const scoreEntries = Object.entries(scoreCaps);
+  const points = scoreEntries.map(([key]) => value.score_breakdown[key] as number);
+  if (points.some((point, index) => !Number.isFinite(point) || point < 0 || point > scoreEntries[index][1])) return false;
+  if (value.priority_band === "Needs Manual Review") return value.priority_score === null;
+  const score = value.priority_score;
+  if (typeof score !== "number" || !Number.isFinite(score) || score !== points.reduce((sum, point) => sum + point, 0)) return false;
+  return value.priority_band === (score >= 80 ? "Hot" : score >= 60 ? "Warm" : "Cold");
+};
 
 export const assertLeadPacket = (value: unknown): asserts value is LeadPacket => {
   if (!isRecord(value) ||
     !hasStrings(value, ["lead_id", "account_id", "score_version", "reason", "hook"]) ||
     !isDate(value.evaluation_timestamp) ||
-    !(value.priority_score === null || typeof value.priority_score === "number") ||
     !(["Hot", "Warm", "Cold", "Needs Manual Review"] as unknown[]).includes(value.priority_band) ||
     !(["High", "Medium", "Low"] as unknown[]).includes(value.confidence) ||
-    !isRecord(value.score_breakdown) ||
+    !hasValidScore(value) ||
     !isRecord(value.lead_identity) || !hasStrings(value.lead_identity, ["name", "title", "company", "email", "domain"]) ||
     !hasEvidence(value.crm_context, "crm") || !hasStrings(value.crm_context, ["owner", "source", "stage"]) ||
     !hasEvidence(value.enrichment_fields, ["enrichment", "crm"]) || !Array.isArray(value.enrichment_fields.tech_stack) || !value.enrichment_fields.tech_stack.every((item) => typeof item === "string" && item.trim().length > 0) ||
