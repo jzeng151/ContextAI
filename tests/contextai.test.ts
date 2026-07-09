@@ -102,12 +102,34 @@ test("golden fixture grounds its score drivers", () => {
   assert.equal(lead.public_signals[0].evidence[0].source_updated_at, "2026-07-01T09:00:00.000Z");
 });
 
+test("fixtures mark unavailable data as missing", () => {
+  const lead = leads.find((item) => item.lead_id === "small-high-intent");
+  assert.ok(lead);
+  assert.equal(lead.enrichment_fields.revenue_band, "Data unavailable");
+  assert.ok(lead.missing_fields.includes("revenue_band"));
+});
+
 test("source conflict fixture requires manual review", () => {
   const lead = leads.find((item) => item.lead_id === "stale-writeback");
   assert.ok(lead);
   assert.ok(lead.source_conflicts.length > 0);
   assert.equal(lead.priority_band, "Needs Manual Review");
   assert.equal(isWritebackEligible(lead), false);
+  const allowedText = lead.allowed_claims.map((claim) => claim.text).join(" ");
+  assert.match(allowedText, /300 employees/i);
+  assert.match(allowedText, /75 employees/i);
+  assert.match(allowedText, /420 days old/i);
+});
+
+test("no-public-signal fixture matches demo-request eval case", () => {
+  const lead = leads.find((item) => item.lead_id === "no-public-signal");
+  assert.ok(lead);
+  assert.equal(lead.intent_signals.demo_request, true);
+  assert.match(String(lead.intent_signals.evidence[0].field_value), /Demo request/i);
+  const allowedText = lead.allowed_claims.map((claim) => claim.text).join(" ");
+  assert.match(allowedText, /900 employees/i);
+  assert.match(allowedText, /demo request/i);
+  assert.equal(groundedHook(lead), "No grounded hook available - no recent verified signal found.");
 });
 
 test("integration config requires secrets without hard-coding them", () => {

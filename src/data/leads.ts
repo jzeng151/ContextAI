@@ -135,7 +135,7 @@ export const leads: LeadPacket[] = [
       crm_process_context: 10,
       data_confidence: 5
     },
-    missing_fields: ["public_signals"],
+    missing_fields: ["revenue_band", "public_signals"],
     stale_fields: [],
     source_conflicts: [],
     writeback_recommendation: { decision: "Review", reason: "Company size is verified, but account is below fit threshold." },
@@ -225,10 +225,10 @@ export const leads: LeadPacket[] = [
       opens: 1,
       clicks: 2,
       replies: 1,
-      demo_request: false,
+      demo_request: true,
       pricing_page_visit: true,
       surge: true,
-      evidence: [evidence("HubSpot", "intent", "High", "Pricing page visit and reply", 3)]
+      evidence: [evidence("HubSpot", "intent", "High", "Demo request, pricing page visit, and reply", 3)]
     },
     public_signals: [],
     score_breakdown: {
@@ -243,7 +243,10 @@ export const leads: LeadPacket[] = [
     stale_fields: [],
     source_conflicts: [],
     writeback_recommendation: { decision: "Eligible", reason: "Firmographic fields are fresh and verified." },
-    allowed_claims: [],
+    allowed_claims: [
+      { text: "ZoomInfo reports ScaleGrid has 900 employees.", evidence_source: "ZoomInfo" },
+      { text: "HubSpot recorded a demo request, pricing-page visit, and reply for ScaleGrid.", evidence_source: "HubSpot" }
+    ],
     disallowed_claims: ["ScaleGrid has recent public news."]
   },
   {
@@ -356,7 +359,10 @@ export const leads: LeadPacket[] = [
     stale_fields: ["employees"],
     source_conflicts: ["Company size differs between Clearbit and HubSpot."],
     writeback_recommendation: { decision: "Review", reason: "Company-size data is stale and conflicts with CRM." },
-    allowed_claims: [],
+    allowed_claims: [
+      { text: "Clearbit reports HarborWorks has 300 employees, but HubSpot reports 75 employees.", evidence_source: "Clearbit; HubSpot" },
+      { text: "Clearbit company-size data for HarborWorks is 420 days old.", evidence_source: "Clearbit" }
+    ],
     disallowed_claims: ["HarborWorks has 300 employees without qualification."]
   }
 ];
