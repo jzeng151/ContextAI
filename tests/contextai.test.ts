@@ -76,11 +76,30 @@ test("OpenRouter prompt only includes allowed claims", async () => {
   try {
     await explainLeadWithOpenRouter(leads[0], { apiKey: "test", model: "test" });
     const payload = JSON.parse(prompt);
+    assert.deepEqual(Object.keys(payload).sort(), [
+      "allowed_claims",
+      "band",
+      "confidence",
+      "score",
+      "score_breakdown",
+      "score_version"
+    ]);
     assert.deepEqual(payload.allowed_claims, leads[0].allowed_claims);
     assert.equal("disallowed_claims" in payload, false);
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("golden fixture grounds its score drivers", () => {
+  const lead = leads.find((item) => item.lead_id === "golden-normal");
+  assert.ok(lead);
+  const allowedText = lead.allowed_claims.map((claim) => claim.text).join(" ");
+  assert.match(allowedText, /500 employees/i);
+  assert.match(allowedText, /demo request and pricing-page visit/i);
+  assert.match(allowedText, /Series B funding round on July 1, 2026/i);
+  assert.equal(lead.public_signals[0].days_ago, 8);
+  assert.equal(lead.public_signals[0].evidence[0].source_updated_at, "2026-07-01T09:00:00.000Z");
 });
 
 test("source conflict fixture requires manual review", () => {

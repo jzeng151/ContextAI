@@ -77,7 +77,7 @@ export const explainLeadWithOpenRouter = async (
       messages: [
         {
           role: "system",
-          content: "You are ContextAI. Explain the provided deterministic score. Do not calculate a score, invent facts, or draft a full email."
+          content: "You are ContextAI. Explain the provided deterministic score. Only reference facts in allowed_claims. Do not calculate a score, invent facts, or draft a full email."
         },
         {
           role: "user",
@@ -87,14 +87,6 @@ export const explainLeadWithOpenRouter = async (
             confidence: lead.confidence,
             score_version: lead.score_version,
             score_breakdown: lead.score_breakdown,
-            lead_identity: lead.lead_identity,
-            crm_context: lead.crm_context,
-            enrichment_fields: lead.enrichment_fields,
-            intent_signals: lead.intent_signals,
-            public_signals: lead.public_signals,
-            missing_fields: lead.missing_fields,
-            stale_fields: lead.stale_fields,
-            source_conflicts: lead.source_conflicts,
             allowed_claims: lead.allowed_claims
           })
         }

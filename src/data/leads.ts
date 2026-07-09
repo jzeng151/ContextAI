@@ -65,8 +65,8 @@ export const leads: LeadPacket[] = [
     public_signals: [{
       label: "Series B funding announced",
       source: "Crunchbase",
-      days_ago: 9,
-      evidence: [evidence("Crunchbase", "public_signal", "High", "Series B funding announced on July 1, 2026", 9, false, "https://example.com/enterprisecorp-series-b")]
+      days_ago: 8,
+      evidence: [evidence("Crunchbase", "public_signal", "High", "Series B funding announced on July 1, 2026", 8, false, "https://example.com/enterprisecorp-series-b")]
     }],
     score_breakdown: {
       icp_fit: 30,
@@ -80,7 +80,11 @@ export const leads: LeadPacket[] = [
     stale_fields: [],
     source_conflicts: [],
     writeback_recommendation: { decision: "Eligible", reason: "Verified enrichment is fresh and source-backed." },
-    allowed_claims: [{ text: "EnterpriseCorp announced a Series B funding round on July 1, 2026, according to Crunchbase.", evidence_source: "Crunchbase" }],
+    allowed_claims: [
+      { text: "Clearbit reports EnterpriseCorp has 500 employees.", evidence_source: "Clearbit" },
+      { text: "HubSpot recorded a demo request and pricing-page visit for EnterpriseCorp.", evidence_source: "HubSpot" },
+      { text: "EnterpriseCorp announced a Series B funding round on July 1, 2026, according to Crunchbase.", evidence_source: "Crunchbase" }
+    ],
     disallowed_claims: ["EnterpriseCorp is likely investing in sales automation after its Series B."]
   },
   {
