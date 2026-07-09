@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { leads } from "../src/data/leads.ts";
 import { groundedHook, hasOnlyWeakOpenIntent, isWritebackEligible } from "../src/lib/contextai.ts";
-import { hubSpotConfigFromEnv, listHubSpotContacts, openRouterConfigFromEnv } from "../src/lib/integrations.ts";
+import { explainLeadWithOpenRouter, hubSpotConfigFromEnv, listHubSpotContacts, openRouterConfigFromEnv } from "../src/lib/integrations.ts";
 
 test("stale enrichment is not eligible for CRM writeback", () => {
   const lead = leads.find((item) => item.lead_id === "stale-writeback");
@@ -61,6 +61,25 @@ test("allowed claims exclude unsupported inference text", () => {
   for (const lead of leads) {
     const allowedText = lead.allowed_claims.map((claim) => claim.text).join(" ");
     assert.doesNotMatch(allowedText, /likely|ready to buy|investing in sales automation/i);
+  }
+});
+
+test("OpenRouter prompt only includes allowed claims", async () => {
+  const originalFetch = globalThis.fetch;
+  let prompt = "";
+  globalThis.fetch = async (_input, init) => {
+    const body = JSON.parse(String(init?.body));
+    prompt = body.messages[1].content;
+    return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 });
+  };
+
+  try {
+    await explainLeadWithOpenRouter(leads[0], { apiKey: "test", model: "test" });
+    const payload = JSON.parse(prompt);
+    assert.deepEqual(payload.allowed_claims, leads[0].allowed_claims);
+    assert.equal("disallowed_claims" in payload, false);
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });
 

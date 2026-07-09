@@ -101,7 +101,7 @@ export const leads: LeadPacket[] = [
       stage: "Open",
       evidence: [evidence("HubSpot", "crm", "High", "Open", 0)]
     },
-    priority_score: 65,
+    priority_score: 60,
     priority_band: "Warm",
     confidence: "Medium",
     reason: "Below headcount fit threshold, but strong recent category intent.",
@@ -111,7 +111,7 @@ export const leads: LeadPacket[] = [
       revenue_band: "Data unavailable",
       tech_stack: [],
       last_updated_days_ago: 22,
-      evidence: [evidence("Apollo", "enrichment", "Medium", "12 employees", 22, true)]
+      evidence: [evidence("Apollo", "enrichment", "Medium", "12 employees", 22)]
     },
     intent_signals: {
       opens: 0,
@@ -129,13 +129,13 @@ export const leads: LeadPacket[] = [
       engagement_quality: 10,
       public_timing_signals: 0,
       crm_process_context: 10,
-      data_confidence: 10
+      data_confidence: 5
     },
     missing_fields: ["public_signals"],
     stale_fields: [],
     source_conflicts: [],
     writeback_recommendation: { decision: "Review", reason: "Company size is verified, but account is below fit threshold." },
-    allowed_claims: [],
+    allowed_claims: [{ text: "Bombora reported a category surge for LeanTech 2 days before evaluation.", evidence_source: "Bombora" }],
     disallowed_claims: ["LeanTech is ready to buy because category intent increased."]
   },
   {
