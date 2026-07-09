@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { leads } from "../src/data/leads.ts";
 import { groundedHook, hasOnlyWeakOpenIntent, isWritebackEligible } from "../src/lib/contextai.ts";
+import { hubSpotConfigFromEnv, openRouterConfigFromEnv } from "../src/lib/integrations.ts";
 
 test("stale enrichment is not eligible for CRM writeback", () => {
   const lead = leads.find((item) => item.id === "stale-writeback");
@@ -20,4 +21,10 @@ test("missing public signal uses grounded hook fallback", () => {
   const lead = leads.find((item) => item.id === "no-public-signal");
   assert.ok(lead);
   assert.equal(groundedHook(lead), "No grounded hook available - no recent verified signal found.");
+});
+
+test("integration config requires secrets without hard-coding them", () => {
+  assert.throws(() => openRouterConfigFromEnv({}), /OPENROUTER_API_KEY/);
+  assert.throws(() => hubSpotConfigFromEnv({}), /HUBSPOT_ACCESS_TOKEN/);
+  assert.equal(openRouterConfigFromEnv({ OPENROUTER_API_KEY: "test" }).model, "openai/gpt-4.1-mini");
 });
