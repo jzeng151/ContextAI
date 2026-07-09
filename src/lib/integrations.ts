@@ -82,14 +82,21 @@ export const explainLeadWithOpenRouter = async (
         {
           role: "user",
           content: JSON.stringify({
-            score: lead.score,
-            band: lead.band,
+            score: lead.priority_score,
+            band: lead.priority_band,
             confidence: lead.confidence,
-            scoreBreakdown: lead.scoreBreakdown,
-            enrichment: lead.enrichment,
-            intent: lead.intent,
-            publicSignal: lead.publicSignal,
-            missingOrStale: lead.missingOrStale
+            score_version: lead.score_version,
+            score_breakdown: lead.score_breakdown,
+            lead_identity: lead.lead_identity,
+            crm_context: lead.crm_context,
+            enrichment_fields: lead.enrichment_fields,
+            intent_signals: lead.intent_signals,
+            public_signals: lead.public_signals,
+            missing_fields: lead.missing_fields,
+            stale_fields: lead.stale_fields,
+            source_conflicts: lead.source_conflicts,
+            allowed_claims: lead.allowed_claims,
+            disallowed_claims: lead.disallowed_claims
           })
         }
       ],

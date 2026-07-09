@@ -1,54 +1,96 @@
-export type Band = "Hot" | "Warm" | "Low Warm" | "Cold" | "Needs Manual Review";
-export type Confidence = "High" | "Medium" | "Medium-Low" | "Low";
+export type Band = "Hot" | "Warm" | "Cold" | "Needs Manual Review";
+export type Confidence = "High" | "Medium" | "Low";
+export type SourceType = "crm" | "enrichment" | "intent" | "public_signal";
+export type WritebackDecision = "Eligible" | "Review" | "Skipped" | "Blocked";
+
+type EvidenceValue = string | number | boolean | string[];
+
+export type Evidence = {
+  source_name: string;
+  source_type: SourceType;
+  source_url?: string;
+  retrieved_at: string;
+  source_published_at?: string;
+  source_updated_at?: string;
+  confidence: Confidence;
+  field_value?: EvidenceValue;
+  event_value?: EvidenceValue;
+  eligible_for_crm_writeback: boolean;
+};
+
+export type Claim = {
+  text: string;
+  evidence_source: string;
+};
+
+export type ScoreBreakdown = {
+  icp_fit: number;
+  high_intent_actions: number;
+  engagement_quality: number;
+  public_timing_signals: number;
+  crm_process_context: number;
+  data_confidence: number;
+};
 
 export type LeadPacket = {
-  id: string;
-  name: string;
-  title: string;
-  company: string;
-  email: string;
-  domain: string;
-  owner: string;
-  source: string;
-  stage: string;
-  score: number | null;
-  band: Band;
+  lead_id: string;
+  account_id: string;
+  evaluation_timestamp: string;
+  score_version: string;
+  priority_score: number | null;
+  priority_band: Band;
   confidence: Confidence;
   reason: string;
   hook: string;
-  missingOrStale?: string;
-  enrichment: {
-    employees?: number;
-    revenueBand?: string;
-    techStack: string[];
-    lastUpdatedDaysAgo?: number;
+  score_breakdown: ScoreBreakdown;
+  lead_identity: {
+    name: string;
+    title: string;
+    company: string;
+    email: string;
+    domain: string;
   };
-  intent: {
+  crm_context: {
+    owner: string;
+    source: string;
+    stage: string;
+    evidence: Evidence[];
+  };
+  enrichment_fields: {
+    employees?: number;
+    revenue_band?: string;
+    tech_stack: string[];
+    last_updated_days_ago?: number;
+    evidence: Evidence[];
+  };
+  intent_signals: {
     opens: number;
     clicks: number;
     replies: number;
-    demoRequest: boolean;
-    pricingPageVisit: boolean;
+    demo_request: boolean;
+    pricing_page_visit: boolean;
     surge: boolean;
+    evidence: Evidence[];
   };
-  publicSignal?: {
+  public_signals: Array<{
     label: string;
     source: string;
-    daysAgo: number;
-  };
-  scoreBreakdown: {
-    fit: number;
-    intent: number;
-    engagement: number;
-    publicSignal: number;
-  };
-  writeback: {
-    decision: "Eligible" | "Review" | "Skipped";
+    days_ago: number;
+    evidence: Evidence[];
+  }>;
+  missing_fields: string[];
+  stale_fields: string[];
+  source_conflicts: string[];
+  writeback_recommendation: {
+    decision: WritebackDecision;
     reason: string;
   };
+  allowed_claims: Claim[];
+  disallowed_claims: string[];
 };
 
-export const scoreLabel = (lead: LeadPacket) => lead.score === null ? "N/A" : `${lead.score}/100`;
+export const scoreLabel = (lead: LeadPacket) =>
+  lead.priority_score === null ? "N/A" : `${lead.priority_score}/100`;
 
 export const freshnessLabel = (daysAgo?: number) => {
   if (daysAgo === undefined) return "Data unavailable";
@@ -57,20 +99,22 @@ export const freshnessLabel = (daysAgo?: number) => {
 };
 
 export const groundedHook = (lead: LeadPacket) =>
-  lead.publicSignal || lead.intent.demoRequest || lead.intent.pricingPageVisit
+  lead.allowed_claims.length > 0
     ? lead.hook
     : "No grounded hook available - no recent verified signal found.";
 
 export const isWritebackEligible = (lead: LeadPacket) =>
-  lead.writeback.decision === "Eligible" && (lead.enrichment.lastUpdatedDaysAgo ?? Infinity) <= 90;
+  lead.writeback_recommendation.decision === "Eligible" &&
+  (lead.enrichment_fields.last_updated_days_ago ?? Infinity) <= 90 &&
+  lead.source_conflicts.length === 0;
 
 export const hasOnlyWeakOpenIntent = (lead: LeadPacket) =>
-  lead.intent.opens > 0 &&
-  lead.intent.clicks === 0 &&
-  lead.intent.replies === 0 &&
-  !lead.intent.demoRequest &&
-  !lead.intent.pricingPageVisit &&
-  !lead.intent.surge;
+  lead.intent_signals.opens > 0 &&
+  lead.intent_signals.clicks === 0 &&
+  lead.intent_signals.replies === 0 &&
+  !lead.intent_signals.demo_request &&
+  !lead.intent_signals.pricing_page_visit &&
+  !lead.intent_signals.surge;
 
 export const toolRun = [
   "get_crm_lead",

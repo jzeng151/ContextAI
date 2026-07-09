@@ -62,6 +62,8 @@ Poor-fit v0 segments:
 - [x] Integration smoke check script with per-service timeout and safe missing-secret behavior
 - [x] Native Node tests for current helper logic and integration config
 - [x] Live credentials confirmed for OpenRouter and HubSpot
+- [x] Formal v0 lead packet contract and evidence-backed fixtures
+- [x] Contributor setup and workflow guide
 
 ## 3. Core Agent Flow
 
@@ -137,40 +139,40 @@ The LLM receives a structured lead packet only after tool calls and deterministi
 
 Required fields:
 
-- [ ] `lead_id`
-- [ ] `account_id`
-- [ ] `evaluation_timestamp`
-- [ ] `score_version`
-- [x] `priority_score` equivalent in current fixture shape
-- [x] `priority_band` equivalent in current fixture shape
-- [x] `confidence` equivalent in current fixture shape
-- [x] `score_breakdown` equivalent in current fixture shape
-- [x] `lead_identity` equivalent in current fixture shape
-- [x] `crm_context` partial equivalent in current fixture shape
-- [x] `enrichment_fields` partial equivalent in current fixture shape
-- [x] `intent_signals` partial equivalent in current fixture shape
-- [x] `public_signals` partial equivalent in current fixture shape
-- [x] `missing_fields` / `stale_fields` partial equivalent via `missingOrStale`
-- [ ] `source_conflicts`
-- [x] `writeback_recommendation` partial equivalent in current fixture shape
-- [ ] `allowed_claims`
-- [ ] `disallowed_claims`
+- [x] `lead_id`
+- [x] `account_id`
+- [x] `evaluation_timestamp`
+- [x] `score_version`
+- [x] `priority_score`
+- [x] `priority_band`
+- [x] `confidence`
+- [x] `score_breakdown`
+- [x] `lead_identity`
+- [x] `crm_context`
+- [x] `enrichment_fields`
+- [x] `intent_signals`
+- [x] `public_signals`
+- [x] `missing_fields` / `stale_fields`
+- [x] `source_conflicts`
+- [x] `writeback_recommendation`
+- [x] `allowed_claims`
+- [x] `disallowed_claims`
 
 Evidence object requirements:
 
-- [ ] `source_name`
-- [ ] `source_type`
-- [ ] `source_url` when available
-- [ ] `retrieved_at`
-- [ ] `source_published_at` or `source_updated_at` when available
-- [ ] `confidence`
-- [ ] `field_value` or `event_value`
-- [ ] `eligible_for_crm_writeback`
+- [x] `source_name`
+- [x] `source_type`
+- [x] `source_url` when available
+- [x] `retrieved_at`
+- [x] `source_published_at` or `source_updated_at` when available
+- [x] `confidence`
+- [x] `field_value` or `event_value`
+- [x] `eligible_for_crm_writeback`
 
 Grounding rules:
 
-- [ ] LLM may only explain or reference facts in `allowed_claims`
-- [ ] LLM treats non-allowed claims as unavailable
+- [x] LLM may only explain or reference facts in `allowed_claims`
+- [x] LLM treats non-allowed claims as unavailable
 - [ ] Example allowed claim: "EnterpriseCorp announced a Series B funding round on June 12, 2026, according to Crunchbase."
 - [ ] Example disallowed claim: "EnterpriseCorp is likely investing in sales automation after its Series B."
 
@@ -507,7 +509,7 @@ The LLM eval suite should test explanation quality, hook grounding, missing-data
 | Weak email opens only | Opens alone are weak intent. Hook fallback. No buying-intent implication. | [x] Mock fixture/test exists |
 | Small company, high intent | Below-threshold fit plus strong recent intent. Hook fallback. | [x] Mock fixture exists |
 | Stale enrichment | No automated writeback. Flag for review. Mention stale company-size data if relevant. | [x] Mock fixture/test exists for stale writeback guard |
-| Source conflict | Needs Manual Review or flagged field. No automatic writeback. Mention conflict. | [ ] |
+| Source conflict | Needs Manual Review or flagged field. No automatic writeback. Mention conflict. | [x] Mock fixture/test exists |
 | Malformed/test lead | Needs Manual Review. Insufficient firmographic/behavioral data. Hook fallback. | [x] Mock fixture exists |
 | Duplicate risk | Suppress score or Needs Manual Review depending on policy. Mention account conflict. No routing action. | [ ] |
 | LLM hallucination guard | No invented news, funding, hiring, tech usage, pain points, or priorities. | [ ] |
