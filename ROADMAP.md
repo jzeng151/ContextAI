@@ -214,10 +214,10 @@ Blocked from automated writeback in v0:
 
 Writeback requirements:
 
-- [ ] Field is on customer-approved allowlist
+- [x] Field is on customer-approved allowlist
 - [ ] Value passes schema validation
-- [ ] Source confidence is High
-- [ ] Source is fresher than configured threshold
+- [x] Source confidence is High
+- [x] Source is fresher than configured threshold
 - [ ] Value does not conflict with higher-priority CRM field
 - [ ] Field does not control routing, ownership, lifecycle stage, or prospect-visible automation
 - [ ] Action logged with source, timestamp, old value, new value, score version, and actor type

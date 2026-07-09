@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { leads } from "../src/data/leads.ts";
 import { groundedHook, hasOnlyWeakOpenIntent, isWritebackEligible } from "../src/lib/contextai.ts";
-import { explainLeadWithOpenRouter, hubSpotConfigFromEnv, listHubSpotContacts, openRouterConfigFromEnv } from "../src/lib/integrations.ts";
+import { explainLeadWithOpenRouter, hubSpotConfigFromEnv, listHubSpotContacts, openRouterConfigFromEnv, writeHubSpotEnrichment } from "../src/lib/integrations.ts";
 
 test("stale enrichment is not eligible for CRM writeback", () => {
   const lead = leads.find((item) => item.lead_id === "stale-writeback");
@@ -107,6 +107,16 @@ test("writeback eligibility requires fresh enrichment evidence dates", () => {
     }),
     false
   );
+});
+
+test("HubSpot writeback requires an eligible lead and allowlisted properties", async () => {
+  const eligible = leads.find((item) => item.lead_id === "no-public-signal");
+  const stale = leads.find((item) => item.lead_id === "stale-writeback");
+  assert.ok(eligible && stale);
+  const config = { accessToken: "test" };
+
+  await assert.rejects(writeHubSpotEnrichment(stale, "1", { company: "SafeCo" }, ["company"], config), /not eligible/i);
+  await assert.rejects(writeHubSpotEnrichment(eligible, "1", { hubspot_owner_id: "2" }, ["company"], config), /not allowlisted/i);
 });
 
 test("fixtures include required lead packet contract fields", () => {
