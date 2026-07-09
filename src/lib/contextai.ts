@@ -120,8 +120,8 @@ const hasAllowedHookClaim = (lead: LeadPacket, signal: LeadPacket["public_signal
   const evidenceValue = String(item.field_value ?? item.event_value);
   return lead.allowed_claims.some((claim) => {
     const text = normalized(claim.text);
-    return normalized(claim.evidence_source).includes(source) &&
-      text.includes(company) &&
+    return normalized(claim.evidence_source) === source &&
+      hasPhrase(text, company) &&
       hasTerms(text, signal.label) &&
       hasTerms(text, evidenceValue);
   });
@@ -129,7 +129,7 @@ const hasAllowedHookClaim = (lead: LeadPacket, signal: LeadPacket["public_signal
 
 const hasHookEvidence = (lead: LeadPacket) => {
   const hook = normalized(lead.hook);
-  if (!hook.includes(normalized(lead.lead_identity.company))) return false;
+  if (!hasPhrase(hook, lead.lead_identity.company)) return false;
   return lead.public_signals.some((signal) => {
     if (signal.evidence.length === 0 || !hook.includes(normalized(signal.label))) return false;
     return signal.evidence.some((item) =>
