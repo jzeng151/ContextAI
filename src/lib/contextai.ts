@@ -178,17 +178,23 @@ const hasTerms = (text: string, value: string) => {
   const terms = keywords(value);
   return terms.length > 0 ? terms.every((word) => normalized(text).includes(word)) : hasPhrase(text, value);
 };
+const dates = (value: string) => [...value.matchAll(/\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}\b|\b\d{4}-\d{2}-\d{2}\b/gi)]
+  .map((match) => Date.parse(match[0].replace(/(\d)(?:st|nd|rd|th)/i, "$1")))
+  .filter(Number.isFinite)
+  .map((timestamp) => new Date(timestamp).toISOString().slice(0, 10));
 
 const hasAllowedHookClaim = (lead: LeadPacket, signal: LeadPacket["public_signals"][number], item: Evidence) => {
   const company = normalized(lead.lead_identity.company);
   const source = normalized(item.source_name);
   const evidenceValue = String(item.field_value ?? item.event_value);
+  const evidenceDates = dates(evidenceValue);
   return lead.allowed_claims.some((claim) => {
     const text = normalized(claim.text);
     return normalized(claim.evidence_source) === source &&
       hasPhrase(text, company) &&
       hasTerms(text, signal.label) &&
-      hasTerms(text, evidenceValue);
+      hasTerms(text, evidenceValue) &&
+      evidenceDates.every((date) => dates(text).includes(date));
   });
 };
 
