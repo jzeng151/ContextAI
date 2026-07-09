@@ -114,12 +114,18 @@ const isEvidenceValue = (value: unknown) =>
   (typeof value === "number" && Number.isFinite(value)) ||
   (typeof value === "string" && value.trim().length > 0) ||
   (Array.isArray(value) && value.length > 0 && value.every((item) => typeof item === "string" && item.trim().length > 0));
+const isFieldValue = (value: unknown) =>
+  isEvidenceValue(value) || (Array.isArray(value) && value.every((item) => typeof item === "string" && item.trim().length > 0));
+const equalFieldValue = (left: unknown, right: unknown) =>
+  Array.isArray(left) && Array.isArray(right)
+    ? JSON.stringify([...left].sort()) === JSON.stringify([...right].sort())
+    : left === right;
 const isEvidence = (value: unknown, sourceTypes: SourceType | SourceType[]) => {
   const allowedTypes = Array.isArray(sourceTypes) ? sourceTypes : [sourceTypes];
   if (!isRecord(value) || !allowedTypes.includes(value.source_type as SourceType) || !hasStrings(value, ["source_name"]) || !isDate(value.retrieved_at)) return false;
   if (!(["High", "Medium", "Low"] as unknown[]).includes(value.confidence) || typeof value.eligible_for_crm_writeback !== "boolean") return false;
   if (value.eligible_for_crm_writeback && !hasStrings(value, ["field_name"])) return false;
-  if (value.field_values !== undefined && (!isRecord(value.field_values) || Object.keys(value.field_values).length === 0 || !Object.values(value.field_values).every(isEvidenceValue))) return false;
+  if (value.field_values !== undefined && (!isRecord(value.field_values) || Object.keys(value.field_values).length === 0 || !Object.values(value.field_values).every(isFieldValue))) return false;
   const hasField = Object.hasOwn(value, "field_value");
   const hasEvent = Object.hasOwn(value, "event_value");
   if (hasField === hasEvent || !isEvidenceValue(value[hasField ? "field_value" : "event_value"])) return false;
@@ -149,6 +155,11 @@ const isPublicSignal = (value: unknown, evaluatedAt: string) => {
 const isEnrichmentFields = (value: unknown, evaluatedAt: string) => {
   if (!hasEvidence(value, ["enrichment", "crm"]) || !Array.isArray(value.tech_stack) || !value.tech_stack.every((item) => typeof item === "string" && item.trim().length > 0)) return false;
   if (value.employees !== undefined && !isNonNegativeInteger(value.employees)) return false;
+  const supportedFields = ["employees", "revenue_band", "tech_stack"];
+  const observed = value.evidence.flatMap((item) => Object.entries(item.field_values ?? {}));
+  if (observed.some(([field]) => !supportedFields.includes(field))) return false;
+  const populated = supportedFields.filter((field) => value[field] !== undefined && (field !== "tech_stack" || (value.tech_stack as string[]).length > 0));
+  if (!populated.every((field) => observed.some(([observedField, observedValue]) => observedField === field && equalFieldValue(observedValue, value[field])))) return false;
   const ages = value.evidence
     .filter((item) => item.source_type === "enrichment")
     .map((item) => Math.floor((Date.parse(evaluatedAt) - Date.parse(item.source_updated_at ?? "")) / dayMs));

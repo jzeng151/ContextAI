@@ -58,7 +58,7 @@ export const leads: LeadPacket[] = [
       revenue_band: "$50M-$100M",
       tech_stack: ["Salesforce"],
       last_updated_days_ago: 18,
-      evidence: [evidence("Clearbit", "enrichment", "High", 500, 18, true, undefined, "numberofemployees")]
+      evidence: [evidence("Clearbit", "enrichment", "High", 500, 18, true, undefined, "numberofemployees", { employees: 500, revenue_band: "$50M-$100M", tech_stack: ["Salesforce"] })]
     },
     intent_signals: {
       opens: 2,
@@ -119,10 +119,9 @@ export const leads: LeadPacket[] = [
     hook: "No grounded hook available - no recent verified signal found.",
     enrichment_fields: {
       employees: 12,
-      revenue_band: "Data unavailable",
       tech_stack: [],
       last_updated_days_ago: 22,
-      evidence: [evidence("Apollo", "enrichment", "Medium", "12 employees", 22)]
+      evidence: [evidence("Apollo", "enrichment", "Medium", 12, 22, false, undefined, undefined, { employees: 12 })]
     },
     intent_signals: {
       opens: 0,
@@ -229,7 +228,7 @@ export const leads: LeadPacket[] = [
       revenue_band: "$100M-$250M",
       tech_stack: ["HubSpot", "Salesforce"],
       last_updated_days_ago: 31,
-      evidence: [evidence("ZoomInfo", "enrichment", "High", 900, 31, true, undefined, "numberofemployees")]
+      evidence: [evidence("ZoomInfo", "enrichment", "High", 900, 31, true, undefined, "numberofemployees", { employees: 900, revenue_band: "$100M-$250M", tech_stack: ["HubSpot", "Salesforce"] })]
     },
     intent_signals: {
       opens: 1,
@@ -287,7 +286,7 @@ export const leads: LeadPacket[] = [
       revenue_band: "$25M-$50M",
       tech_stack: ["Salesforce"],
       last_updated_days_ago: 46,
-      evidence: [evidence("Clearbit", "enrichment", "High", 420, 46, true, undefined, "numberofemployees")]
+      evidence: [evidence("Clearbit", "enrichment", "High", 420, 46, true, undefined, "numberofemployees", { employees: 420, revenue_band: "$25M-$50M", tech_stack: ["Salesforce"] })]
     },
     intent_signals: {
       opens: 5,
@@ -346,8 +345,8 @@ export const leads: LeadPacket[] = [
       tech_stack: [],
       last_updated_days_ago: 420,
       evidence: [
-        evidence("Clearbit", "enrichment", "Low", "300 employees", 420, false),
-        evidence("HubSpot", "crm", "Medium", "75 employees", 10, false)
+        evidence("Clearbit", "enrichment", "Low", 300, 420, false, undefined, undefined, { employees: 300, revenue_band: "$10M-$25M" }),
+        evidence("HubSpot", "crm", "Medium", 75, 10, false, undefined, undefined, { employees: 75 })
       ]
     },
     intent_signals: {

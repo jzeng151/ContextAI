@@ -238,6 +238,9 @@ test("runtime contract validation ties derived fields to evidence", () => {
   const lead = leads[0];
   const invalidPackets = [
     { ...lead, enrichment_fields: { ...lead.enrichment_fields, employees: -1 } },
+    { ...lead, enrichment_fields: { ...lead.enrichment_fields, employees: 501 } },
+    { ...lead, enrichment_fields: { ...lead.enrichment_fields, revenue_band: "$1B+" } },
+    { ...lead, enrichment_fields: { ...lead.enrichment_fields, tech_stack: ["UnknownTech"] } },
     { ...lead, enrichment_fields: { ...lead.enrichment_fields, last_updated_days_ago: 1 } },
     { ...lead, intent_signals: { ...lead.intent_signals, opens: 3 } },
     { ...lead, intent_signals: { ...lead.intent_signals, surge: true } },
@@ -352,7 +355,7 @@ test("golden fixture grounds its score drivers", () => {
 test("fixtures mark unavailable data as missing", () => {
   const lead = leads.find((item) => item.lead_id === "small-high-intent");
   assert.ok(lead);
-  assert.equal(lead.enrichment_fields.revenue_band, "Data unavailable");
+  assert.equal(lead.enrichment_fields.revenue_band, undefined);
   assert.ok(lead.missing_fields.includes("revenue_band"));
   const allowedText = lead.allowed_claims.map((claim) => claim.text).join(" ");
   assert.match(allowedText, /12 employees/i);
