@@ -100,6 +100,7 @@ export const freshnessLabel = (daysAgo?: number) => {
 
 const fallbackHook = "No grounded hook available - no recent verified signal found.";
 const normalized = (value: EvidenceValue) => String(value).toLowerCase();
+const maxWritebackAgeMs = 90 * 24 * 60 * 60 * 1000;
 
 const hasHookEvidence = (lead: LeadPacket) => {
   const hook = normalized(lead.hook);
@@ -112,17 +113,25 @@ const hasHookEvidence = (lead: LeadPacket) => {
 export const groundedHook = (lead: LeadPacket) =>
   lead.hook !== fallbackHook && hasHookEvidence(lead) ? lead.hook : fallbackHook;
 
-const isFreshHighConfidenceWritebackEvidence = (item: Evidence) =>
-  item.source_type === "enrichment" && item.confidence === "High" && item.eligible_for_crm_writeback;
+const isFreshHighConfidenceWritebackEvidence = (item: Evidence, evaluatedAt: string) => {
+  const ageMs = Date.parse(evaluatedAt) - Date.parse(item.source_updated_at ?? "");
+  return (
+    item.source_type === "enrichment" &&
+    item.confidence === "High" &&
+    item.eligible_for_crm_writeback &&
+    ageMs >= 0 &&
+    ageMs <= maxWritebackAgeMs
+  );
+};
 
 export const isWritebackEligible = (lead: LeadPacket) =>
   lead.writeback_recommendation.decision === "Eligible" &&
   (lead.enrichment_fields.last_updated_days_ago ?? Infinity) <= 90 &&
   lead.source_conflicts.length === 0 &&
-  lead.enrichment_fields.evidence.some(isFreshHighConfidenceWritebackEvidence) &&
+  lead.enrichment_fields.evidence.some((item) => isFreshHighConfidenceWritebackEvidence(item, lead.evaluation_timestamp)) &&
   lead.enrichment_fields.evidence
     .filter((item) => item.source_type === "enrichment")
-    .every(isFreshHighConfidenceWritebackEvidence);
+    .every((item) => isFreshHighConfidenceWritebackEvidence(item, lead.evaluation_timestamp));
 
 export const hasOnlyWeakOpenIntent = (lead: LeadPacket) =>
   lead.intent_signals.opens > 0 &&

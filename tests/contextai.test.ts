@@ -64,6 +64,25 @@ test("writeback eligibility requires high-confidence eligible enrichment evidenc
   );
 });
 
+test("writeback eligibility requires fresh enrichment evidence dates", () => {
+  const lead = leads.find((item) => item.lead_id === "no-public-signal");
+  assert.ok(lead);
+  assert.equal(
+    isWritebackEligible({
+      ...lead,
+      enrichment_fields: {
+        ...lead.enrichment_fields,
+        last_updated_days_ago: 1,
+        evidence: lead.enrichment_fields.evidence.map((item) => ({
+          ...item,
+          source_updated_at: "2026-01-01T09:00:00.000Z"
+        }))
+      }
+    }),
+    false
+  );
+});
+
 test("fixtures include required lead packet contract fields", () => {
   for (const lead of leads) {
     assert.ok(lead.lead_id);
