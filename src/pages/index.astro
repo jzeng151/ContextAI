@@ -3,10 +3,10 @@ import { leads } from "../data/leads";
 import { freshnessLabel, groundedHook, hasOnlyWeakOpenIntent, isWritebackEligible, scoreLabel, toolRun } from "../lib/contextai";
 
 const selected = leads[0];
-const hot = leads.filter((lead) => lead.band === "Hot").length;
-const review = leads.filter((lead) => lead.band === "Needs Manual Review").length;
+const hot = leads.filter((lead) => lead.priority_band === "Hot").length;
+const review = leads.filter((lead) => lead.priority_band === "Needs Manual Review").length;
 const writebackSafe = leads.filter(isWritebackEligible).length;
-const totalScore = selected.scoreBreakdown.fit + selected.scoreBreakdown.intent + selected.scoreBreakdown.engagement + selected.scoreBreakdown.publicSignal;
+const totalScore = Object.values(selected.score_breakdown).reduce((sum, value) => sum + value, 0);
 ---
 
 <html lang="en">
@@ -49,22 +49,22 @@ const totalScore = selected.scoreBreakdown.fit + selected.scoreBreakdown.intent 
 
           <div class="lead-list">
             {leads.map((lead) => (
-              <article class:list={["lead", lead.id === selected.id && "active"]}>
+              <article class:list={["lead", lead.lead_id === selected.lead_id && "active"]}>
                 <div class="lead-top">
                   <div>
-                    <h3>{lead.name}</h3>
-                    <p>{lead.title} · {lead.company}</p>
+                    <h3>{lead.lead_identity.name}</h3>
+                    <p>{lead.lead_identity.title} · {lead.lead_identity.company}</p>
                   </div>
                   <div class="score">
                     <strong>{scoreLabel(lead)}</strong>
-                    <span>{lead.band}</span>
+                    <span>{lead.priority_band}</span>
                   </div>
                 </div>
                 <p class="reason">{lead.reason}</p>
                 <p class="hook">{groundedHook(lead)}</p>
                 <div class="tags">
                   <span>{lead.confidence}</span>
-                  <span>{lead.owner}</span>
+                  <span>{lead.crm_context.owner}</span>
                   {hasOnlyWeakOpenIntent(lead) && <span class="warn">Weak opens only</span>}
                 </div>
               </article>
@@ -74,19 +74,20 @@ const totalScore = selected.scoreBreakdown.fit + selected.scoreBreakdown.intent 
 
         <aside class="audit" aria-label="RevOps audit panel">
           <p class="eyebrow">RevOps audit</p>
-          <h2>{selected.company}</h2>
+          <h2>{selected.lead_identity.company}</h2>
           <dl>
-            <div><dt>Score</dt><dd>{scoreLabel(selected)} · {selected.band}</dd></div>
+            <div><dt>Score</dt><dd>{scoreLabel(selected)} · {selected.priority_band}</dd></div>
+            <div><dt>Version</dt><dd>{selected.score_version}</dd></div>
             <div><dt>Confidence</dt><dd>{selected.confidence}</dd></div>
-            <div><dt>CRM owner</dt><dd>{selected.owner}</dd></div>
-            <div><dt>Source</dt><dd>{selected.source}</dd></div>
+            <div><dt>CRM owner</dt><dd>{selected.crm_context.owner}</dd></div>
+            <div><dt>Source</dt><dd>{selected.crm_context.source}</dd></div>
           </dl>
 
           <h3>Score breakdown</h3>
           <div class="bars">
-            {Object.entries(selected.scoreBreakdown).map(([label, value]) => (
+            {Object.entries(selected.score_breakdown).map(([label, value]) => (
               <div>
-                <span>{label}</span>
+                <span>{label.replaceAll("_", " ")}</span>
                 <progress value={value} max={Math.max(totalScore, 1)}></progress>
                 <strong>{value}</strong>
               </div>
@@ -95,16 +96,18 @@ const totalScore = selected.scoreBreakdown.fit + selected.scoreBreakdown.intent 
 
           <h3>Sources</h3>
           <ul class="sources">
-            <li>CRM: {selected.stage}</li>
-            <li>Enrichment: {freshnessLabel(selected.enrichment.lastUpdatedDaysAgo)}</li>
-            <li>Intent: {selected.intent.demoRequest ? "Demo request" : selected.intent.pricingPageVisit ? "Pricing page visit" : selected.intent.surge ? "Category surge" : selected.intent.opens ? `${selected.intent.opens} opens` : "No verified intent"}</li>
-            <li>Public signal: {selected.publicSignal ? `${selected.publicSignal.label} (${selected.publicSignal.source})` : "Public signal not found"}</li>
+            <li>CRM: {selected.crm_context.stage}</li>
+            <li>Enrichment: {freshnessLabel(selected.enrichment_fields.last_updated_days_ago)}</li>
+            <li>Intent: {selected.intent_signals.demo_request ? "Demo request" : selected.intent_signals.pricing_page_visit ? "Pricing page visit" : selected.intent_signals.surge ? "Category surge" : selected.intent_signals.opens ? `${selected.intent_signals.opens} opens` : "No verified intent"}</li>
+            <li>Public signal: {selected.public_signals[0] ? `${selected.public_signals[0].label} (${selected.public_signals[0].source})` : "Public signal not found"}</li>
+            <li>Allowed claims: {selected.allowed_claims.length}</li>
+            <li>Source conflicts: {selected.source_conflicts.length ? selected.source_conflicts.join("; ") : "None"}</li>
           </ul>
 
           <div class:list={["writeback", isWritebackEligible(selected) ? "ok" : "hold"]}>
             <span>CRM writeback</span>
-            <strong>{selected.writeback.decision}</strong>
-            <p>{selected.writeback.reason}</p>
+            <strong>{selected.writeback_recommendation.decision}</strong>
+            <p>{selected.writeback_recommendation.reason}</p>
           </div>
         </aside>
       </section>
