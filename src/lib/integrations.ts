@@ -18,6 +18,11 @@ export type HubSpotContact = {
   archived?: boolean;
 };
 
+export type HubSpotContactList = {
+  results: HubSpotContact[];
+  paging?: { next?: { after: string; link: string } };
+};
+
 const requireEnv = (env: Env, name: string) => {
   const value = env[name];
   if (!value) throw new Error(`Missing ${name}`);
@@ -88,22 +93,38 @@ export const explainLeadWithOpenRouter = async (
   return content;
 };
 
+const contactProperties = [
+  "email",
+  "firstname",
+  "lastname",
+  "company",
+  "jobtitle",
+  "hubspot_owner_id",
+  "lifecyclestage",
+  "hs_analytics_source"
+].join(",");
+
+export const listHubSpotContacts = async (
+  limit = 10,
+  config = hubSpotConfigFromEnv()
+) => {
+  const url = new URL("https://api.hubapi.com/crm/v3/objects/contacts");
+  url.searchParams.set("limit", String(limit));
+  url.searchParams.set("properties", contactProperties);
+  url.searchParams.set("archived", "false");
+
+  const response = await fetch(url, {
+    headers: { "Authorization": `Bearer ${config.accessToken}` }
+  });
+  return readJson<HubSpotContactList>(response);
+};
+
 export const getHubSpotContact = async (
   contactId: string,
   config = hubSpotConfigFromEnv()
 ) => {
-  const properties = [
-    "email",
-    "firstname",
-    "lastname",
-    "company",
-    "jobtitle",
-    "hubspot_owner_id",
-    "lifecyclestage",
-    "hs_analytics_source"
-  ].join(",");
   const url = new URL(`https://api.hubapi.com/crm/v3/objects/contacts/${contactId}`);
-  url.searchParams.set("properties", properties);
+  url.searchParams.set("properties", contactProperties);
   url.searchParams.set("archived", "false");
 
   const response = await fetch(url, {
