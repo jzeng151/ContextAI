@@ -162,6 +162,20 @@ test("runtime contract validation enforces score caps, totals, and bands", () =>
     score_breakdown: { ...lead.score_breakdown, data_confidence: 6 }
   }), /invalid lead packet contract/i);
   assert.throws(() => assertLeadPacket({ ...lead, priority_score: 94, priority_band: "Needs Manual Review" }), /invalid lead packet contract/i);
+  assert.throws(() => assertLeadPacket({
+    ...lead,
+    score_breakdown: { ...lead.score_breakdown, sensitive_affinity: 0 }
+  }), /invalid lead packet contract/i);
+});
+
+test("runtime contract validation rejects invalid intent counters", () => {
+  const lead = leads[0];
+  for (const opens of [-1, 0.5, Infinity]) {
+    assert.throws(() => assertLeadPacket({
+      ...lead,
+      intent_signals: { ...lead.intent_signals, opens }
+    }), /invalid lead packet contract/i);
+  }
 });
 
 test("scored fixtures match score breakdown totals", () => {

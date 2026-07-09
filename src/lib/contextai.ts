@@ -126,6 +126,8 @@ const scoreCaps: ScoreBreakdown = {
 const hasValidScore = (value: Record<string, unknown>) => {
   if (!isRecord(value.score_breakdown)) return false;
   const scoreEntries = Object.entries(scoreCaps);
+  const scoreKeys = Object.keys(value.score_breakdown);
+  if (scoreKeys.length !== scoreEntries.length || scoreKeys.some((key) => !Object.hasOwn(scoreCaps, key))) return false;
   const points = scoreEntries.map(([key]) => value.score_breakdown[key] as number);
   if (points.some((point, index) => !Number.isFinite(point) || point < 0 || point > scoreEntries[index][1])) return false;
   if (value.priority_band === "Needs Manual Review") return value.priority_score === null;
@@ -144,7 +146,7 @@ export const assertLeadPacket = (value: unknown): asserts value is LeadPacket =>
     !isRecord(value.lead_identity) || !hasStrings(value.lead_identity, ["name", "title", "company", "email", "domain"]) ||
     !hasEvidence(value.crm_context, "crm") || !hasStrings(value.crm_context, ["owner", "source", "stage"]) ||
     !hasEvidence(value.enrichment_fields, ["enrichment", "crm"]) || !Array.isArray(value.enrichment_fields.tech_stack) || !value.enrichment_fields.tech_stack.every((item) => typeof item === "string" && item.trim().length > 0) ||
-    !hasEvidence(value.intent_signals, "intent") || !["opens", "clicks", "replies"].every((key) => typeof value.intent_signals[key] === "number") || !["demo_request", "pricing_page_visit", "surge"].every((key) => typeof value.intent_signals[key] === "boolean") ||
+    !hasEvidence(value.intent_signals, "intent") || !["opens", "clicks", "replies"].every((key) => Number.isSafeInteger(value.intent_signals[key]) && (value.intent_signals[key] as number) >= 0) || !["demo_request", "pricing_page_visit", "surge"].every((key) => typeof value.intent_signals[key] === "boolean") ||
     !Array.isArray(value.public_signals) || !value.public_signals.every((signal) => isRecord(signal) && hasStrings(signal, ["label", "source"]) && typeof signal.days_ago === "number" && hasEvidence(signal, "public_signal")) ||
     ![value.missing_fields, value.stale_fields, value.source_conflicts, value.disallowed_claims].every((items) => Array.isArray(items) && items.every((item) => typeof item === "string" && item.trim().length > 0)) ||
     !isRecord(value.writeback_recommendation) || !hasStrings(value.writeback_recommendation, ["reason"]) || !(["Eligible", "Review", "Skipped", "Blocked"] as unknown[]).includes(value.writeback_recommendation.decision) ||
