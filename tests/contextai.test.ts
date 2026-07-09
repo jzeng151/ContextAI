@@ -159,6 +159,7 @@ test("HubSpot writeback requires an eligible lead and allowlisted properties", a
 
 test("fixtures include required lead packet contract fields", () => {
   for (const lead of leads) {
+    assert.doesNotThrow(() => assertLeadPacket(lead), lead.lead_id);
     assert.ok(lead.lead_id);
     assert.ok(lead.account_id);
     assert.ok(lead.evaluation_timestamp);
