@@ -23,6 +23,16 @@ export type HubSpotContactList = {
   paging?: { next?: { after: string; link: string } };
 };
 
+export type OpenRouterKeyStatus = {
+  data: {
+    label: string;
+    is_free_tier?: boolean;
+    limit_remaining?: number | null;
+  };
+};
+
+const timeoutMs = 15000;
+
 const requireEnv = (env: Env, name: string) => {
   const value = env[name];
   if (!value) throw new Error(`Missing ${name}`);
@@ -61,6 +71,7 @@ export const explainLeadWithOpenRouter = async (
       "HTTP-Referer": config.appUrl || "http://127.0.0.1:4321",
       "X-Title": "ContextAI"
     },
+    signal: AbortSignal.timeout(timeoutMs),
     body: JSON.stringify({
       model: config.model,
       messages: [
@@ -93,6 +104,16 @@ export const explainLeadWithOpenRouter = async (
   return content;
 };
 
+export const checkOpenRouterKey = async (
+  config = openRouterConfigFromEnv()
+) => {
+  const response = await fetch("https://openrouter.ai/api/v1/auth/key", {
+    headers: { "Authorization": `Bearer ${config.apiKey}` },
+    signal: AbortSignal.timeout(timeoutMs)
+  });
+  return readJson<OpenRouterKeyStatus>(response);
+};
+
 const contactProperties = [
   "email",
   "firstname",
@@ -114,7 +135,8 @@ export const listHubSpotContacts = async (
   url.searchParams.set("archived", "false");
 
   const response = await fetch(url, {
-    headers: { "Authorization": `Bearer ${config.accessToken}` }
+    headers: { "Authorization": `Bearer ${config.accessToken}` },
+    signal: AbortSignal.timeout(timeoutMs)
   });
   return readJson<HubSpotContactList>(response);
 };
@@ -128,7 +150,8 @@ export const getHubSpotContact = async (
   url.searchParams.set("archived", "false");
 
   const response = await fetch(url, {
-    headers: { "Authorization": `Bearer ${config.accessToken}` }
+    headers: { "Authorization": `Bearer ${config.accessToken}` },
+    signal: AbortSignal.timeout(timeoutMs)
   });
   return readJson<HubSpotContact>(response);
 };
@@ -145,6 +168,7 @@ export const writeHubSpotEnrichment = async (
       "Authorization": `Bearer ${config.accessToken}`,
       "Content-Type": "application/json"
     },
+    signal: AbortSignal.timeout(timeoutMs),
     body: JSON.stringify({ properties })
   });
   return readJson<HubSpotContact>(response);
