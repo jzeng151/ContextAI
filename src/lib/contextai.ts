@@ -109,17 +109,21 @@ const hasPhrase = (text: string, value: string) => {
   const phrase = normalized(value).replace(/[^a-z0-9]+/g, " ").trim();
   return phrase.length > 0 && ` ${normalized(text).replace(/[^a-z0-9]+/g, " ")} `.includes(` ${phrase} `);
 };
+const hasTerms = (text: string, value: string) => {
+  const terms = keywords(value);
+  return terms.length > 0 ? terms.every((word) => normalized(text).includes(word)) : hasPhrase(text, value);
+};
 
 const hasAllowedHookClaim = (lead: LeadPacket, signal: LeadPacket["public_signals"][number], item: Evidence) => {
   const company = normalized(lead.lead_identity.company);
   const source = normalized(item.source_name);
-  const signalWords = keywords(signal.label);
+  const evidenceValue = String(item.field_value ?? item.event_value);
   return lead.allowed_claims.some((claim) => {
     const text = normalized(claim.text);
-    const hasSignal = signalWords.length > 0
-      ? signalWords.some((word) => text.includes(word))
-      : hasPhrase(text, signal.label);
-    return normalized(claim.evidence_source).includes(source) && text.includes(company) && hasSignal;
+    return normalized(claim.evidence_source).includes(source) &&
+      text.includes(company) &&
+      hasTerms(text, signal.label) &&
+      hasTerms(text, evidenceValue);
   });
 };
 

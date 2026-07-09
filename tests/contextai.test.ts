@@ -44,6 +44,7 @@ test("public evidence must match the hook text", () => {
   assert.equal(groundedHook({ ...lead, hook: "Reference recent public expansion news." }), "No grounded hook available - no recent verified signal found.");
   assert.equal(groundedHook({ ...lead, hook: "Reference OtherCorp's Series B funding announced on July 1, 2026." }), "No grounded hook available - no recent verified signal found.");
   assert.equal(groundedHook({ ...lead, allowed_claims: [] }), "No grounded hook available - no recent verified signal found.");
+  assert.equal(groundedHook({ ...lead, allowed_claims: [{ text: "EnterpriseCorp announced layoffs.", evidence_source: "Crunchbase" }] }), "No grounded hook available - no recent verified signal found.");
 });
 
 test("short public signal labels can ground hooks", () => {
