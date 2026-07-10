@@ -21,6 +21,7 @@ The current implementation includes:
 
 - An Astro and TypeScript dashboard with rep and RevOps views.
 - Evidence-backed lead-packet fixtures and runtime contract validation.
+- Locked v0 packet semantics for CRM associations, separate intent/engagement, terminal tool status, manual review, and writeback plan versus outcome.
 - Helper logic for freshness, weak email-open signals, grounded hooks, and writeback eligibility.
 - OpenRouter configuration, key validation, and grounded explanation client foundations.
 - HubSpot contact list/read and guarded PATCH client foundations.
@@ -108,13 +109,14 @@ scripts/
   check-integrations.ts   Optional live integration smoke checks
 tests/
   contextai.test.ts       Contract, fixture, grounding, and helper tests
+PRD.md                     Product and safety requirements
 CONTRIBUTING.md            Local setup and collaboration workflow
 ROADMAP.md                 Product delivery plan and implementation status
 ```
 
 ## Contributing
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) before starting work. Use one focused issue and branch per pull request, coordinate shared contract changes through issue #11, and keep roadmap status changes aligned with merged implementation.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before starting work. Use one focused issue and branch per pull request, treat the issue #11 contract as the v0 baseline, give any later shared-contract change one explicit owner, and keep roadmap status changes aligned with merged implementation.
 
 ## Scope
 

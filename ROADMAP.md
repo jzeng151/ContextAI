@@ -67,7 +67,7 @@ Poor-fit v0 segments:
 - [x] Native Node tests for current helper logic and integration config
 - [x] Live credentials confirmed for OpenRouter and HubSpot
 - [x] Lead packet contract foundation and evidence-backed fixtures merged in PR #10
-- [ ] Close remaining PRD contract gaps for tool status, engagement semantics, CRM associations, and writeback outcome in #11
+- [x] Locked v0 packet semantics for tool status, engagement, CRM associations, manual review, and writeback plan/outcome in #11
 - [x] Contributor setup and workflow guide
 
 ## 3. Core Agent Flow
@@ -93,7 +93,8 @@ The LLM must never calculate scores, change bands, decide writeback, draft full 
 - [ ] Establish the server runtime, durable schemas, migrations, and append-only audit/event storage in #13
 - [ ] Run a configured morning evaluation for each rep's assigned open records in #15
 - [ ] Handle new-owner and reassignment events through an authenticated, deduplicated HubSpot trigger in #15
-- [ ] Define contact/company eligibility, CRM-authoritative fields, association failure, duplicate risk, and manual-review behavior in #11/#15
+- [x] Define contact/company eligibility, CRM-authoritative fields, association failure, duplicate risk, and manual-review behavior in #11
+- [ ] Implement the locked HubSpot mapping and failure behavior in #15
 - [ ] Add evaluation/request IDs, idempotency, concurrency limits, timeouts, retry/backoff, rate-limit handling, and recovery in #13/#15
 - [ ] Persist every required step's terminal status and allow partial source failure without invented data
 - [ ] Exercise one successful and one graceful-failure path from trigger through validated output and audit record
@@ -119,21 +120,21 @@ Default weights:
 
 Default bands:
 
-These are proposed defaults. #11 must reconcile the PRD's 54/100 Warm example with these thresholds before #8/#3 implement them.
+These defaults are locked for v0. The PRD's earlier `54/100 Warm` label was an example error; `54/100` is Cold under the default thresholds. #8 owns versioned configuration and #3 owns scoring implementation. Generic packet-shape validation deliberately does not enforce configurable thresholds or category caps without that active configuration.
 
 | Band | Score Range | Status |
 | --- | ---: | --- |
 | Hot | 80-100 | [ ] |
 | Warm | 60-79 | [ ] |
 | Cold | 0-59 | [ ] |
-| Needs Manual Review | N/A | [x] Mocked in fixtures only |
+| Needs Manual Review | N/A | [x] Contract and fixtures validated; scoring implementation remains in #3 |
 
 Confidence rules:
 
 - [ ] High: required fields present, key sources fresh, no major conflicts
 - [ ] Medium: optional fields missing, one source stale, or limited signal set
 - [ ] Low: required fields missing, stale enrichment, source conflict, or uncertain identity
-- [ ] Needs Manual Review is a band, not a confidence level; define its score nullability and normal Low-confidence pairing in #11
+- [x] Needs Manual Review is a nonnumeric override with `priority_score: null`, Low confidence, explicit reasons, and precedence over numeric bands
 
 Freshness rules:
 
@@ -146,45 +147,67 @@ Freshness rules:
 
 Source conflict rules:
 
-- [ ] CRM owner and lifecycle stage override external workflow-state sources
+- [x] Contract declares CRM owner, lifecycle stage, routing, open-opportunity, association, and duplicate state authoritative; production mapping remains in #15
 - [ ] Verified customer CRM data overrides enrichment unless blank, stale, or flagged low quality
 - [ ] Newer enrichment can replace stale CRM firmographics only after confidence/source-quality checks
-- [ ] Public company signals require source name, publication date, and a URL or stable provider record ID when available
-- [ ] Conflicting high-impact fields trigger review instead of automatic writeback
+- [x] Contract requires public-signal source name, publication date, and either a URL or stable provider record ID
+- [x] Contract requires ambiguous associations, duplicate risk, unresolved/conflicting corporate domains, and material high-impact conflicts to use Needs Manual Review and block eligible writeback
 
 ## 4. Lead Packet Data Contract
 
-The LLM receives a structured lead packet only after required source calls, deterministic scoring, and CRM writeback evaluation have completed or failed gracefully. PR #10 established the foundation; #11 owns the remaining PRD alignment before downstream contracts are treated as locked.
+The LLM receives a validated structured lead packet only after required source calls, deterministic scoring, and CRM writeback evaluation have reached terminal states. PR #10 established the evidence-backed foundation; #11 locked the remaining v0 semantics. Structurally incomplete packets are rejected before model invocation, while normalized graceful-failure packets retain only available evidence and claims.
 
 Required fields:
 
-- [x] `lead_id`
-- [x] `account_id` in fixtures; define contact/company association and nullability in #11
+- [x] `request_id` and `evaluation_id`
+- [x] `lead_id`, the canonical HubSpot contact object ID
+- [x] Required nullable `account_id`, with primary/sole/none/ambiguous company-association state
 - [x] `evaluation_timestamp`
 - [x] `score_version`
 - [x] `priority_score`
 - [x] `priority_band`
 - [x] `confidence`
+- [x] `manual_review_reasons`
 - [x] `score_breakdown`
 - [x] `lead_identity`
 - [x] `crm_context`
 - [x] `enrichment_fields`
-- [x] `intent_signals`; define whether engagement remains canonical here or becomes a separate field in #11
+- [x] `intent_signals` for provider/category intent
+- [x] Separate `engagement_signals` for opens, clicks, replies, demo requests, and pricing-page visits
 - [x] `public_signals`
 - [x] `missing_fields` / `stale_fields`
 - [x] `source_conflicts`
-- [x] `writeback_recommendation` foundation
-- [ ] Per-step `tool_status`, including success, unavailable, timeout, rate-limited, and invalid results
-- [ ] Deterministic `writeback_plan` and authoritative `writeback_outcome`
-- [ ] Request/evaluation identifiers and incomplete-packet behavior
+- [x] Exact-key per-step `tool_status`, including success, no result, unavailable, timeout, rate-limited, invalid result, and skipped
+- [x] Nullable deterministic `writeback_plan` separated from authoritative `writeback_outcome`
+- [x] Incomplete-packet rejection and complete graceful-failure behavior
 - [x] `allowed_claims`
 - [x] `disallowed_claims`
+
+Locked HubSpot mapping:
+
+- `lead_id` is the contact ID. `account_id` never comes from an email domain.
+- Prefer an explicitly primary non-archived company association, then a sole unambiguous association. No association is represented by `account_id: null` and may still score from a verified non-consumer contact domain; ambiguity is also `null` but requires manual review.
+- Suspected/confirmed duplicates, ambiguous associations, and unresolved/conflicting domains suppress the numeric score and eligible writeback. ContextAI does not merge or choose records automatically.
+- HubSpot contact fields are authoritative for owner, lifecycle stage, and routing status; HubSpot associations/deals are authoritative for company, open-opportunity, and duplicate state.
+
+Terminal step semantics:
+
+- The exact required keys are `get_crm_lead`, `enrich_profile`, `fetch_intent_triggers`, `fetch_public_signals`, `deterministic_score`, and `evaluate_crm_writeback`.
+- `success` may carry normalized data. `no_result` is a successful empty lookup. `unavailable`, `timeout`, `rate_limited`, `invalid_result`, and `skipped` carry a sanitized detail and no source evidence or allowed claims.
+- Pending/running state belongs to orchestration persistence, not a final `LeadPacket`.
+- A noncritical source failure may still produce a numeric score when the deterministic scorer succeeds; blocking identity/scoring failures use Needs Manual Review, a null score, Low confidence, and explicit reasons.
+
+Provider boundary:
+
+- v0 selects normalized, provider-neutral contract-test boundaries rather than a named enrichment, intent/engagement, or public-signal vendor.
+- #5 adapters must prove success, empty success, timeout, rate limit, unavailable/malformed response, provenance, and freshness against that contract. Raw provider payloads remain adapter-local.
 
 Evidence object requirements:
 
 - [x] `source_name`
 - [x] `source_type`
 - [x] `source_url` when available
+- [x] `source_record_id` as the stable public/provider fallback when a URL is unavailable
 - [x] `retrieved_at`
 - [x] `source_published_at` or `source_updated_at` when available
 - [x] `confidence`
@@ -204,6 +227,8 @@ Grounding rules:
 ContextAI may write verified enrichment back to CRM only through audited `write_crm_enrichment`. The LLM never decides whether a field should be written.
 
 Live writeback remains dry-run/feature-flagged until #4 proves schema, allowlist, source confidence/freshness, conflict precedence, blocked downstream side effects, idempotency, immutable audit, and rollback. Scoring freshness and writeback eligibility are separate policies; evidence usable for scoring is not automatically writable.
+
+The packet's `writeback_plan` is only the deterministic policy result and may be `null` when evaluation fails. `writeback_outcome` is the authoritative observed execution status. An Eligible plan in dry-run remains Skipped; it is never presented as Written without CRM confirmation.
 
 Eligible automated writeback fields for v0:
 
@@ -255,6 +280,7 @@ Writeback outcomes:
 - [x] Skipped, mocked in fixtures
 - [x] Flagged for Review, mocked in fixtures
 - [ ] Blocked
+- [x] Data unavailable, represented when writeback evaluation has no authoritative result
 
 Audit log requirements:
 
@@ -548,11 +574,11 @@ The LLM eval suite should test explanation quality, hook grounding, missing-data
 | Stale enrichment | No automated writeback. Flag for review. Mention stale company-size data if relevant. | [x] Mock fixture/test exists for stale writeback guard |
 | Source conflict | Needs Manual Review or flagged field. No automatic writeback. Mention conflict. | [x] Mock fixture/test exists |
 | Malformed/test lead | Needs Manual Review. Insufficient firmographic/behavioral data. Hook fallback. | [x] Mock fixture exists |
-| Duplicate risk | Suppress score or Needs Manual Review depending on policy. Mention account conflict. No routing action. | [ ] |
+| Duplicate risk | Needs Manual Review suppresses the score. Mention account conflict. No routing action or writeback. | [x] Contract invariant/test; dedicated fixture and orchestration path not built |
 | LLM hallucination guard | No invented news, funding, hiring, tech usage, pain points, or priorities. | [ ] |
 | Disallowed sensitive data | Sensitive data ignored and not referenced. | [ ] |
 | Unsupported hook inference | Funding can be mentioned; GTM scaling cannot be inferred without evidence. | [ ] |
-| Tool failure | Use available evidence, lower confidence if needed, mention missing intent when material. | [ ] |
+| Tool failure | Use available evidence, provided confidence, terminal status, and missing-source detail; never invent failed-source facts. | [x] Graceful-failure fixture/test; orchestration path not built |
 | CRM writeback blocked field | Owner/lifecycle changes blocked. No LLM suggestion to change owner/stage. | [ ] |
 | Prompt injection in public source | Ignore source instructions; use only factual extracted claims. | [ ] |
 
@@ -574,7 +600,7 @@ PR #10 completed the initial lead-packet/fixture foundation. Work now proceeds t
 
 ### Phase 0: Contract and Collaboration Foundation
 
-1. [ ] #11 locks remaining product decisions and contract semantics.
+1. [x] #11 locks remaining product decisions and contract semantics.
 2. [ ] #12 adds secret-free pull-request test/build checks and the review handoff template; it can run immediately in parallel.
 3. [ ] #13 establishes the minimum server runtime, durable schemas, migrations, and append-only records after #11.
 
@@ -590,7 +616,7 @@ Only one developer owns shared contract files at a time. Merge #11 contract chan
 
 Recommended sequencing:
 
-- Kickoff: one developer owns #11 while the other owns #12.
+- Foundation: #11 is the locked contract baseline; #12 remains parallel-safe PR CI work.
 - After #11: decision developer runs #8 → #3 → #6; platform/workflow developer runs #13 → #5 → #4, then #7.
 - Merge #9's narrow event contract before #3-#7 add emitters; whichever developer finishes a current item first can own that prerequisite PR.
 - Start #19 aggregation only after the producing workstreams, #13, and #18's metric dictionary exist.

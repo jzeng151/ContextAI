@@ -14,40 +14,43 @@ test("email opens alone stay weak", () => {
   const lead = leads.find((item) => item.lead_id === "weak-opens");
   assert.ok(lead);
   assert.equal(hasOnlyWeakOpenIntent(lead), true);
-  assert.notEqual(lead.priority_band, "Hot");
+  assert.equal(lead.priority_band, "Cold");
+  assert.equal(lead.priority_score, 54);
+  assert.equal(lead.engagement_signals.evidence[0].source_type, "engagement");
+  assert.equal(lead.intent_signals.evidence.length, 0);
   assert.match(lead.reason, /opens alone are not reliable buying intent/i);
 });
 
 test("missing public signal uses grounded hook fallback", () => {
   const lead = leads.find((item) => item.lead_id === "no-public-signal");
   assert.ok(lead);
-  assert.equal(groundedHook(lead), "No grounded hook available - no recent verified signal found.");
+  assert.equal(groundedHook(lead), "No grounded hook available — no recent verified signal found.");
 });
 
 test("non-hook allowed claims do not ground hooks", () => {
   const lead = leads.find((item) => item.lead_id === "weak-opens");
   assert.ok(lead);
-  assert.equal(groundedHook({ ...lead, hook: "Reference the observed email opens." }), "No grounded hook available - no recent verified signal found.");
+  assert.equal(groundedHook({ ...lead, hook: "Reference the observed email opens." }), "No grounded hook available — no recent verified signal found.");
 });
 
 test("intent evidence does not ground arbitrary hooks", () => {
   const lead = leads.find((item) => item.lead_id === "no-public-signal");
   assert.ok(lead);
-  assert.equal(lead.intent_signals.demo_request, true);
-  assert.equal(lead.intent_signals.pricing_page_visit, true);
-  assert.equal(groundedHook({ ...lead, hook: "Reference recent public expansion news." }), "No grounded hook available - no recent verified signal found.");
+  assert.equal(lead.engagement_signals.demo_request, true);
+  assert.equal(lead.engagement_signals.pricing_page_visit, true);
+  assert.equal(groundedHook({ ...lead, hook: "Reference recent public expansion news." }), "No grounded hook available — no recent verified signal found.");
 });
 
 test("public evidence must match the hook text", () => {
   const lead = leads.find((item) => item.lead_id === "golden-normal");
   assert.ok(lead);
-  assert.equal(groundedHook({ ...lead, hook: "Reference recent public expansion news." }), "No grounded hook available - no recent verified signal found.");
-  assert.equal(groundedHook({ ...lead, hook: "Reference OtherCorp's Series B funding announced on July 1, 2026." }), "No grounded hook available - no recent verified signal found.");
-  assert.equal(groundedHook({ ...lead, allowed_claims: [] }), "No grounded hook available - no recent verified signal found.");
-  assert.equal(groundedHook({ ...lead, allowed_claims: [{ text: "EnterpriseCorp announced layoffs.", evidence_ids: [lead.public_signals[0].evidence[0].evidence_id] }] }), "No grounded hook available - no recent verified signal found.");
-  assert.equal(groundedHook({ ...lead, lead_identity: { ...lead.lead_identity, company: "Corp" } }), "No grounded hook available - no recent verified signal found.");
-  assert.equal(groundedHook({ ...lead, allowed_claims: [{ ...lead.allowed_claims[2], evidence_ids: ["missing-evidence"] }] }), "No grounded hook available - no recent verified signal found.");
-  assert.equal(groundedHook({ ...lead, allowed_claims: [{ ...lead.allowed_claims[2], text: lead.allowed_claims[2].text.replace("July 1", "July 8") }] }), "No grounded hook available - no recent verified signal found.");
+  assert.equal(groundedHook({ ...lead, hook: "Reference recent public expansion news." }), "No grounded hook available — no recent verified signal found.");
+  assert.equal(groundedHook({ ...lead, hook: "Reference OtherCorp's Series B funding announced on July 1, 2026." }), "No grounded hook available — no recent verified signal found.");
+  assert.equal(groundedHook({ ...lead, allowed_claims: [] }), "No grounded hook available — no recent verified signal found.");
+  assert.equal(groundedHook({ ...lead, allowed_claims: [{ text: "EnterpriseCorp announced layoffs.", evidence_ids: [lead.public_signals[0].evidence[0].evidence_id] }] }), "No grounded hook available — no recent verified signal found.");
+  assert.equal(groundedHook({ ...lead, lead_identity: { ...lead.lead_identity, company: "Corp" } }), "No grounded hook available — no recent verified signal found.");
+  assert.equal(groundedHook({ ...lead, allowed_claims: [{ ...lead.allowed_claims[2], evidence_ids: ["missing-evidence"] }] }), "No grounded hook available — no recent verified signal found.");
+  assert.equal(groundedHook({ ...lead, allowed_claims: [{ ...lead.allowed_claims[2], text: lead.allowed_claims[2].text.replace("July 1", "July 8") }] }), "No grounded hook available — no recent verified signal found.");
 });
 
 test("short public signal labels can ground hooks", () => {
@@ -68,7 +71,7 @@ test("short public signal labels can ground hooks", () => {
     hook,
     public_signals: [publicSignal],
     allowed_claims: [{ text: "EnterpriseCorp said results improved.", evidence_ids: [evidence.evidence_id] }]
-  }), "No grounded hook available - no recent verified signal found.");
+  }), "No grounded hook available — no recent verified signal found.");
 });
 
 test("writeback eligibility requires high-confidence eligible enrichment evidence", () => {
@@ -160,16 +163,107 @@ test("HubSpot writeback requires an eligible lead and allowlisted properties", a
 test("fixtures include required lead packet contract fields", () => {
   for (const lead of leads) {
     assert.doesNotThrow(() => assertLeadPacket(lead), lead.lead_id);
+    assert.ok(lead.request_id);
+    assert.ok(lead.evaluation_id);
     assert.ok(lead.lead_id);
-    assert.ok(lead.account_id);
+    assert.ok(lead.account_id || lead.crm_context.company_association.status === "none");
     assert.ok(lead.evaluation_timestamp);
     assert.ok(lead.score_version);
     assert.ok(lead.lead_identity.email);
     assert.ok(lead.crm_context.owner);
+    assert.deepEqual(Object.keys(lead.tool_status).sort(), [
+      "deterministic_score",
+      "enrich_profile",
+      "evaluate_crm_writeback",
+      "fetch_intent_triggers",
+      "fetch_public_signals",
+      "get_crm_lead"
+    ]);
+    assert.ok(lead.writeback_plan);
+    assert.ok(lead.writeback_outcome.status);
     assert.ok(Array.isArray(lead.allowed_claims));
     assert.ok(Array.isArray(lead.disallowed_claims));
     assert.ok(Array.isArray(lead.source_conflicts));
   }
+});
+
+test("complete and graceful-failure packets both validate", () => {
+  const complete = leads.find((lead) => lead.lead_id === "golden-normal");
+  const gracefulFailure = leads.find((lead) => lead.lead_id === "no-usable-data");
+  assert.ok(complete && gracefulFailure);
+
+  assert.doesNotThrow(() => assertLeadPacket(complete));
+  assert.doesNotThrow(() => assertLeadPacket(gracefulFailure));
+  assert.equal(gracefulFailure.account_id, null);
+  assert.equal(gracefulFailure.priority_score, null);
+  assert.equal(gracefulFailure.priority_band, "Needs Manual Review");
+  assert.equal(gracefulFailure.confidence, "Low");
+  assert.equal(gracefulFailure.tool_status.enrich_profile.status, "unavailable");
+  assert.equal(gracefulFailure.tool_status.fetch_intent_triggers.status, "timeout");
+});
+
+test("runtime contract requires every tool step to be terminal", () => {
+  const lead = leads[0];
+  const noPublicSignal = leads.find((item) => item.lead_id === "no-public-signal");
+  assert.ok(noPublicSignal);
+  const { fetch_public_signals: _missing, ...incompleteStatus } = lead.tool_status;
+  assert.throws(() => assertLeadPacket({ ...lead, tool_status: incompleteStatus }), /invalid lead packet contract/i);
+  assert.throws(() => assertLeadPacket({
+    ...lead,
+    tool_status: {
+      ...lead.tool_status,
+      fetch_public_signals: { status: "pending", completed_at: lead.evaluation_timestamp }
+    }
+  }), /invalid lead packet contract/i);
+  assert.throws(() => assertLeadPacket({
+    ...lead,
+    tool_status: {
+      ...lead.tool_status,
+      fetch_public_signals: { status: "rate_limited", completed_at: lead.evaluation_timestamp, detail: "Retry later." }
+    }
+  }), /invalid lead packet contract/i);
+  assert.doesNotThrow(() => assertLeadPacket({
+    ...noPublicSignal,
+    tool_status: {
+      ...noPublicSignal.tool_status,
+      fetch_public_signals: { status: "no_result", completed_at: noPublicSignal.evaluation_timestamp }
+    }
+  }));
+});
+
+test("CRM association ambiguity and duplicate risk require manual review", () => {
+  const lead = leads[0];
+  assert.throws(() => assertLeadPacket({
+    ...lead,
+    account_id: null,
+    crm_context: {
+      ...lead.crm_context,
+      company_association: { status: "ambiguous", basis: null, candidate_account_ids: ["acct-one", "acct-two"] }
+    }
+  }), /invalid lead packet contract/i);
+  assert.throws(() => assertLeadPacket({
+    ...lead,
+    crm_context: { ...lead.crm_context, duplicate_status: "suspected" }
+  }), /invalid lead packet contract/i);
+});
+
+test("writeback plans are not execution outcomes", () => {
+  const lead = leads[0];
+  assert.equal(lead.writeback_plan?.decision, "Eligible");
+  assert.equal(lead.writeback_outcome.status, "Skipped");
+  assert.throws(() => assertLeadPacket({
+    ...lead,
+    writeback_outcome: { ...lead.writeback_outcome, status: "Flagged for Review" }
+  }), /invalid lead packet contract/i);
+  assert.doesNotThrow(() => assertLeadPacket({
+    ...lead,
+    tool_status: {
+      ...lead.tool_status,
+      evaluate_crm_writeback: { status: "timeout", completed_at: lead.evaluation_timestamp, detail: "Writeback evaluation timed out." }
+    },
+    writeback_plan: null,
+    writeback_outcome: { status: "Data unavailable", reason: "Writeback evaluation timed out.", recorded_at: lead.evaluation_timestamp }
+  }));
 });
 
 test("runtime contract validation rejects malformed evidence", () => {
@@ -193,8 +287,11 @@ test("runtime contract validation rejects malformed evidence", () => {
   assert.throws(() => assertLeadPacket({
     ...lead,
     intent_signals: {
-      ...lead.intent_signals,
-      evidence: [{ ...lead.intent_signals.evidence[0], evidence_id: lead.enrichment_fields.evidence[0].evidence_id }]
+      ...lead.intent_signals
+    },
+    engagement_signals: {
+      ...lead.engagement_signals,
+      evidence: [{ ...lead.engagement_signals.evidence[0], evidence_id: lead.enrichment_fields.evidence[0].evidence_id }]
     }
   }), /invalid lead packet contract/i);
   assert.throws(() => assertLeadPacket({
@@ -206,28 +303,35 @@ test("runtime contract validation rejects malformed evidence", () => {
   }), /invalid lead packet contract/i);
 });
 
-test("runtime contract validation enforces score caps, totals, and bands", () => {
+test("runtime contract validation enforces score structure without hard-coding configurable policy", () => {
   const lead = leads[0];
   assert.throws(() => assertLeadPacket({ ...lead, priority_score: 95 }), /invalid lead packet contract/i);
-  assert.throws(() => assertLeadPacket({ ...lead, priority_band: "Cold" }), /invalid lead packet contract/i);
-  assert.throws(() => assertLeadPacket({
+  assert.doesNotThrow(() => assertLeadPacket({ ...lead, priority_band: "Cold" }));
+  assert.doesNotThrow(() => assertLeadPacket({
     ...lead,
     priority_score: 95,
     score_breakdown: { ...lead.score_breakdown, data_confidence: 6 }
-  }), /invalid lead packet contract/i);
+  }));
   assert.throws(() => assertLeadPacket({ ...lead, priority_score: 94, priority_band: "Needs Manual Review" }), /invalid lead packet contract/i);
+  assert.throws(() => assertLeadPacket({
+    ...lead,
+    priority_score: null,
+    priority_band: "Needs Manual Review",
+    confidence: "High",
+    manual_review_reasons: ["source_conflict"]
+  }), /invalid lead packet contract/i);
   assert.throws(() => assertLeadPacket({
     ...lead,
     score_breakdown: { ...lead.score_breakdown, sensitive_affinity: 0 }
   }), /invalid lead packet contract/i);
 });
 
-test("runtime contract validation rejects invalid intent counters", () => {
+test("runtime contract validation rejects invalid engagement counters", () => {
   const lead = leads[0];
   for (const opens of [-1, 0.5, Infinity]) {
     assert.throws(() => assertLeadPacket({
       ...lead,
-      intent_signals: { ...lead.intent_signals, opens }
+      engagement_signals: { ...lead.engagement_signals, opens }
     }), /invalid lead packet contract/i);
   }
 });
@@ -258,7 +362,7 @@ test("runtime contract validation ties derived fields to evidence", () => {
     { ...lead, enrichment_fields: { ...lead.enrichment_fields, revenue_band: "$1B+" } },
     { ...lead, enrichment_fields: { ...lead.enrichment_fields, tech_stack: ["UnknownTech"] } },
     { ...lead, enrichment_fields: { ...lead.enrichment_fields, last_updated_days_ago: 1 } },
-    { ...lead, intent_signals: { ...lead.intent_signals, opens: 3 } },
+    { ...lead, engagement_signals: { ...lead.engagement_signals, opens: 3 } },
     { ...lead, intent_signals: { ...lead.intent_signals, surge: true } },
     { ...lead, public_signals: [{ ...lead.public_signals[0], label: "Acquisition announced" }] },
     { ...lead, public_signals: [{ ...lead.public_signals[0], source: "OtherSource" }] },
@@ -283,6 +387,7 @@ test("evidence objects carry source and freshness metadata", () => {
     ...lead.crm_context.evidence,
     ...lead.enrichment_fields.evidence,
     ...lead.intent_signals.evidence,
+    ...lead.engagement_signals.evidence,
     ...lead.public_signals.flatMap((signal) => signal.evidence),
     ...lead.validation_evidence
   ]);
@@ -309,10 +414,38 @@ test("public signals use publication metadata", () => {
   }
 });
 
+test("public evidence accepts a stable provider record id when no URL is available", () => {
+  const lead = leads[0];
+  const item = lead.public_signals[0].evidence[0];
+  assert.doesNotThrow(() => assertLeadPacket({
+    ...lead,
+    public_signals: [{
+      ...lead.public_signals[0],
+      evidence: [{ ...item, source_url: undefined, source_record_id: "crunchbase-event-123" }]
+    }]
+  }));
+});
+
 test("allowed claims exclude unsupported inference text", () => {
   for (const lead of leads) {
     const allowedText = lead.allowed_claims.map((claim) => claim.text).join(" ");
     assert.doesNotMatch(allowedText, /likely|ready to buy|investing in sales automation/i);
+  }
+});
+
+test("OpenRouter is not called for a structurally incomplete packet", async () => {
+  const originalFetch = globalThis.fetch;
+  let called = false;
+  globalThis.fetch = async () => {
+    called = true;
+    return new Response();
+  };
+  try {
+    const { tool_status: _missing, ...incomplete } = leads[0];
+    await assert.rejects(explainLeadWithOpenRouter(incomplete as never, { apiKey: "test", model: "test" }), /invalid lead packet contract/i);
+    assert.equal(called, false);
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });
 
@@ -334,11 +467,20 @@ test("OpenRouter prompt only includes allowed claims", async () => {
       "allowed_claims",
       "band",
       "confidence",
+      "manual_review_reasons",
+      "missing_fields",
       "score",
       "score_breakdown",
-      "score_version"
+      "score_version",
+      "source_conflicts",
+      "stale_fields",
+      "tool_status",
+      "writeback_outcome",
+      "writeback_plan"
     ]);
     assert.deepEqual(payload.allowed_claims, leads[0].allowed_claims);
+    assert.deepEqual(payload.writeback_plan, leads[0].writeback_plan);
+    assert.deepEqual(payload.writeback_outcome, leads[0].writeback_outcome);
     assert.equal("disallowed_claims" in payload, false);
     assert.match(systemPrompt, /untrusted data/i);
   } finally {
@@ -397,13 +539,13 @@ test("source conflict fixture requires manual review", () => {
 test("no-public-signal fixture matches demo-request eval case", () => {
   const lead = leads.find((item) => item.lead_id === "no-public-signal");
   assert.ok(lead);
-  assert.equal(lead.intent_signals.demo_request, true);
+  assert.equal(lead.engagement_signals.demo_request, true);
   assert.equal(lead.intent_signals.surge, false);
-  assert.match(String(lead.intent_signals.evidence[0].field_value), /Demo request/i);
+  assert.match(String(lead.engagement_signals.evidence[0].field_value), /Demo request/i);
   const allowedText = lead.allowed_claims.map((claim) => claim.text).join(" ");
   assert.match(allowedText, /900 employees/i);
   assert.match(allowedText, /demo request/i);
-  assert.equal(groundedHook(lead), "No grounded hook available - no recent verified signal found.");
+  assert.equal(groundedHook(lead), "No grounded hook available — no recent verified signal found.");
 });
 
 test("fixtures expose allowed claims for missing data and weak opens", () => {

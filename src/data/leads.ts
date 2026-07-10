@@ -1,7 +1,18 @@
-import type { Confidence, Evidence, LeadPacket, SourceType } from "../lib/contextai";
+import type { Confidence, Evidence, LeadPacket, SourceType, ToolStatus } from "../lib/contextai";
 
 const evaluatedAt = "2026-07-09T09:00:00.000Z";
 const scoreVersion = "score-v0.1";
+const requestId = "request-morning-2026-07-09";
+
+const toolStatus = (overrides: Partial<ToolStatus> = {}): ToolStatus => ({
+  get_crm_lead: { status: "success", completed_at: evaluatedAt },
+  enrich_profile: { status: "success", completed_at: evaluatedAt },
+  fetch_intent_triggers: { status: "success", completed_at: evaluatedAt },
+  fetch_public_signals: { status: "success", completed_at: evaluatedAt },
+  deterministic_score: { status: "success", completed_at: evaluatedAt },
+  evaluate_crm_writeback: { status: "success", completed_at: evaluatedAt },
+  ...overrides
+});
 
 const evidence = (
   evidence_id: string,
@@ -33,6 +44,8 @@ const evidence = (
 
 export const leads: LeadPacket[] = [
   {
+    request_id: requestId,
+    evaluation_id: "eval-golden-normal",
     lead_id: "golden-normal",
     account_id: "acct-enterprisecorp",
     evaluation_timestamp: evaluatedAt,
@@ -47,12 +60,18 @@ export const leads: LeadPacket[] = [
     crm_context: {
       owner: "Maya Chen",
       source: "Inbound demo",
-      stage: "Open",
+      lifecycle_stage: "lead",
+      routing_status: "open",
+      open_opportunity_status: "none",
+      company_association: { status: "resolved", basis: "primary", candidate_account_ids: ["acct-enterprisecorp"] },
+      duplicate_status: "clear",
+      domain_status: "verified",
       evidence: [evidence("gn-crm-stage", "HubSpot", "crm", "High", "Open", 0)]
     },
     priority_score: 94,
     priority_band: "Hot",
     confidence: "High",
+    manual_review_reasons: [],
     reason: "Strong ICP fit plus demo-request and pricing-page intent.",
     hook: "Reference EnterpriseCorp's Series B funding announced on July 1, 2026.",
     enrichment_fields: {
@@ -63,13 +82,16 @@ export const leads: LeadPacket[] = [
       evidence: [evidence("gn-enrichment", "Clearbit", "enrichment", "High", 500, 18, true, undefined, "numberofemployees", { employees: 500, revenue_band: "$50M-$100M", tech_stack: ["Salesforce"] })]
     },
     intent_signals: {
+      surge: false,
+      evidence: []
+    },
+    engagement_signals: {
       opens: 2,
       clicks: 1,
       replies: 0,
       demo_request: true,
       pricing_page_visit: true,
-      surge: false,
-      evidence: [evidence("gn-intent", "HubSpot", "intent", "High", "Demo request and pricing page visit", 1, false, undefined, undefined, { opens: 2, clicks: 1, demo_request: true, pricing_page_visit: true })]
+      evidence: [evidence("gn-intent", "HubSpot", "engagement", "High", "Demo request and pricing page visit", 1, false, undefined, undefined, { opens: 2, clicks: 1, demo_request: true, pricing_page_visit: true })]
     },
     public_signals: [{
       label: "Series B funding announced",
@@ -89,7 +111,9 @@ export const leads: LeadPacket[] = [
     missing_fields: [],
     stale_fields: [],
     source_conflicts: [],
-    writeback_recommendation: { decision: "Eligible", reason: "Verified enrichment is fresh and source-backed." },
+    tool_status: toolStatus(),
+    writeback_plan: { decision: "Eligible", reason: "Verified enrichment is fresh and source-backed." },
+    writeback_outcome: { status: "Skipped", reason: "Live CRM writeback is disabled for fixture evaluations.", recorded_at: evaluatedAt },
     allowed_claims: [
       { text: "Clearbit reports EnterpriseCorp has 500 employees.", evidence_ids: ["gn-enrichment"] },
       { text: "HubSpot recorded a demo request and pricing-page visit for EnterpriseCorp.", evidence_ids: ["gn-intent"] },
@@ -98,6 +122,8 @@ export const leads: LeadPacket[] = [
     disallowed_claims: ["EnterpriseCorp is likely investing in sales automation after its Series B."]
   },
   {
+    request_id: requestId,
+    evaluation_id: "eval-small-high-intent",
     lead_id: "small-high-intent",
     account_id: "acct-leantech",
     evaluation_timestamp: evaluatedAt,
@@ -112,14 +138,20 @@ export const leads: LeadPacket[] = [
     crm_context: {
       owner: "Sam Rivera",
       source: "Intent surge",
-      stage: "Open",
+      lifecycle_stage: "lead",
+      routing_status: "open",
+      open_opportunity_status: "none",
+      company_association: { status: "resolved", basis: "sole", candidate_account_ids: ["acct-leantech"] },
+      duplicate_status: "clear",
+      domain_status: "verified",
       evidence: [evidence("shi-crm-stage", "HubSpot", "crm", "High", "Open", 0)]
     },
     priority_score: 50,
     priority_band: "Cold",
     confidence: "Medium",
+    manual_review_reasons: [],
     reason: "Below headcount fit threshold, but strong recent category intent.",
-    hook: "No grounded hook available - no recent verified signal found.",
+    hook: "No grounded hook available — no recent verified signal found.",
     enrichment_fields: {
       employees: 12,
       tech_stack: [],
@@ -127,13 +159,16 @@ export const leads: LeadPacket[] = [
       evidence: [evidence("shi-enrichment", "Apollo", "enrichment", "Medium", 12, 22, false, undefined, undefined, { employees: 12 })]
     },
     intent_signals: {
+      surge: true,
+      evidence: [evidence("shi-intent", "Bombora", "intent", "Medium", "Category surge", 2, false, undefined, undefined, { surge: true })]
+    },
+    engagement_signals: {
       opens: 0,
       clicks: 0,
       replies: 0,
       demo_request: false,
       pricing_page_visit: false,
-      surge: true,
-      evidence: [evidence("shi-intent", "Bombora", "intent", "Medium", "Category surge", 2, false, undefined, undefined, { surge: true })]
+      evidence: []
     },
     public_signals: [],
     score_breakdown: {
@@ -148,7 +183,9 @@ export const leads: LeadPacket[] = [
     missing_fields: ["revenue_band", "public_signals"],
     stale_fields: [],
     source_conflicts: [],
-    writeback_recommendation: { decision: "Review", reason: "Company size is verified, but account is below fit threshold." },
+    tool_status: toolStatus({ fetch_public_signals: { status: "no_result", completed_at: evaluatedAt, detail: "No verified public signals found." } }),
+    writeback_plan: { decision: "Review", reason: "Company size is verified, but account is below fit threshold." },
+    writeback_outcome: { status: "Flagged for Review", reason: "The deterministic plan requires review.", recorded_at: evaluatedAt },
     allowed_claims: [
       { text: "Apollo reports LeanTech has 12 employees.", evidence_ids: ["shi-enrichment"] },
       { text: "Bombora reported a category surge for LeanTech 2 days before evaluation.", evidence_ids: ["shi-intent"] }
@@ -156,8 +193,10 @@ export const leads: LeadPacket[] = [
     disallowed_claims: ["LeanTech is ready to buy because category intent increased."]
   },
   {
+    request_id: requestId,
+    evaluation_id: "eval-no-usable-data",
     lead_id: "no-usable-data",
-    account_id: "acct-test-error",
+    account_id: null,
     evaluation_timestamp: evaluatedAt,
     score_version: scoreVersion,
     lead_identity: {
@@ -165,27 +204,36 @@ export const leads: LeadPacket[] = [
       title: "Data unavailable",
       company: "test-error.com",
       email: "unknown@test-error.com",
-      domain: "test-error.com"
+      domain: null
     },
     crm_context: {
       owner: "Maya Chen",
       source: "Reassigned lead",
-      stage: "Needs research",
+      lifecycle_stage: "lead",
+      routing_status: "needs_research",
+      open_opportunity_status: "unknown",
+      company_association: { status: "none", basis: null, candidate_account_ids: [] },
+      duplicate_status: "clear",
+      domain_status: "unresolved",
       evidence: [evidence("nud-crm-stage", "HubSpot", "crm", "Medium", "Needs research", 0)]
     },
     priority_score: null,
     priority_band: "Needs Manual Review",
     confidence: "Low",
+    manual_review_reasons: ["missing_required_data", "uncertain_identity", "invalid_source_result"],
     reason: "Insufficient firmographic and behavioral data to score.",
-    hook: "No grounded hook available - no recent verified signal found.",
+    hook: "No grounded hook available — no recent verified signal found.",
     enrichment_fields: { tech_stack: [], evidence: [] },
     intent_signals: {
+      surge: false,
+      evidence: []
+    },
+    engagement_signals: {
       opens: 0,
       clicks: 0,
       replies: 0,
       demo_request: false,
       pricing_page_visit: false,
-      surge: false,
       evidence: []
     },
     public_signals: [],
@@ -198,14 +246,22 @@ export const leads: LeadPacket[] = [
       data_confidence: 0
     },
     validation_evidence: [evidence("nud-validation-missing", "ContextAI validation", "validation", "High", ["employees", "revenue_band", "intent_signals"], 0)],
-    missing_fields: ["employees", "revenue_band", "intent_signals", "public_signals"],
+    missing_fields: ["account_id", "corporate_domain", "employees", "revenue_band", "intent_signals"],
     stale_fields: [],
     source_conflicts: [],
-    writeback_recommendation: { decision: "Skipped", reason: "No schema-valid enrichment available." },
+    tool_status: toolStatus({
+      enrich_profile: { status: "unavailable", completed_at: evaluatedAt, detail: "Profile enrichment returned no usable provider result." },
+      fetch_intent_triggers: { status: "timeout", completed_at: evaluatedAt, detail: "Intent and engagement retrieval timed out." },
+      fetch_public_signals: { status: "no_result", completed_at: evaluatedAt, detail: "No verified public signals found." }
+    }),
+    writeback_plan: { decision: "Skipped", reason: "No schema-valid enrichment available." },
+    writeback_outcome: { status: "Skipped", reason: "The deterministic plan contains no write.", recorded_at: evaluatedAt },
     allowed_claims: [{ text: "Required scoring fields are missing for test-error.com: employees, revenue band, and intent signals.", evidence_ids: ["nud-validation-missing"] }],
     disallowed_claims: ["The lead has enough verified context for outreach."]
   },
   {
+    request_id: requestId,
+    evaluation_id: "eval-no-public-signal",
     lead_id: "no-public-signal",
     account_id: "acct-scalegrid",
     evaluation_timestamp: evaluatedAt,
@@ -220,14 +276,20 @@ export const leads: LeadPacket[] = [
     crm_context: {
       owner: "Jordan Lee",
       source: "Outbound assist",
-      stage: "Open",
+      lifecycle_stage: "lead",
+      routing_status: "open",
+      open_opportunity_status: "none",
+      company_association: { status: "resolved", basis: "primary", candidate_account_ids: ["acct-scalegrid"] },
+      duplicate_status: "clear",
+      domain_status: "verified",
       evidence: [evidence("nps-crm-stage", "HubSpot", "crm", "High", "Open", 0)]
     },
     priority_score: 83,
     priority_band: "Hot",
     confidence: "High",
+    manual_review_reasons: [],
     reason: "Strong fit and high engagement from verified intent signals.",
-    hook: "No grounded hook available - no recent verified signal found.",
+    hook: "No grounded hook available — no recent verified signal found.",
     enrichment_fields: {
       employees: 900,
       revenue_band: "$100M-$250M",
@@ -236,13 +298,16 @@ export const leads: LeadPacket[] = [
       evidence: [evidence("nps-enrichment", "ZoomInfo", "enrichment", "High", 900, 31, true, undefined, "numberofemployees", { employees: 900, revenue_band: "$100M-$250M", tech_stack: ["HubSpot", "Salesforce"] })]
     },
     intent_signals: {
+      surge: false,
+      evidence: []
+    },
+    engagement_signals: {
       opens: 1,
       clicks: 2,
       replies: 1,
       demo_request: true,
       pricing_page_visit: true,
-      surge: false,
-      evidence: [evidence("nps-intent", "HubSpot", "intent", "High", "Demo request, pricing page visit, and reply", 3, false, undefined, undefined, { opens: 1, clicks: 2, replies: 1, demo_request: true, pricing_page_visit: true })]
+      evidence: [evidence("nps-intent", "HubSpot", "engagement", "High", "Demo request, pricing page visit, and reply", 3, false, undefined, undefined, { opens: 1, clicks: 2, replies: 1, demo_request: true, pricing_page_visit: true })]
     },
     public_signals: [],
     score_breakdown: {
@@ -257,7 +322,9 @@ export const leads: LeadPacket[] = [
     missing_fields: ["public_signals"],
     stale_fields: [],
     source_conflicts: [],
-    writeback_recommendation: { decision: "Eligible", reason: "Firmographic fields are fresh and verified." },
+    tool_status: toolStatus({ fetch_public_signals: { status: "no_result", completed_at: evaluatedAt, detail: "No verified public signals found." } }),
+    writeback_plan: { decision: "Eligible", reason: "Firmographic fields are fresh and verified." },
+    writeback_outcome: { status: "Skipped", reason: "Live CRM writeback is disabled for fixture evaluations.", recorded_at: evaluatedAt },
     allowed_claims: [
       { text: "ZoomInfo reports ScaleGrid has 900 employees.", evidence_ids: ["nps-enrichment"] },
       { text: "HubSpot recorded a demo request, pricing-page visit, and reply for ScaleGrid.", evidence_ids: ["nps-intent"] }
@@ -265,6 +332,8 @@ export const leads: LeadPacket[] = [
     disallowed_claims: ["ScaleGrid has recent public news."]
   },
   {
+    request_id: requestId,
+    evaluation_id: "eval-weak-opens",
     lead_id: "weak-opens",
     account_id: "acct-northstar",
     evaluation_timestamp: evaluatedAt,
@@ -279,14 +348,20 @@ export const leads: LeadPacket[] = [
     crm_context: {
       owner: "Sam Rivera",
       source: "Sequence",
-      stage: "Open",
+      lifecycle_stage: "lead",
+      routing_status: "open",
+      open_opportunity_status: "none",
+      company_association: { status: "resolved", basis: "sole", candidate_account_ids: ["acct-northstar"] },
+      duplicate_status: "clear",
+      domain_status: "verified",
       evidence: [evidence("wo-crm-stage", "HubSpot", "crm", "High", "Open", 0)]
     },
     priority_score: 54,
     priority_band: "Cold",
     confidence: "Medium",
+    manual_review_reasons: [],
     reason: "ICP fit is positive, but opens alone are not reliable buying intent.",
-    hook: "No grounded hook available - no recent verified signal found.",
+    hook: "No grounded hook available — no recent verified signal found.",
     enrichment_fields: {
       employees: 420,
       revenue_band: "$25M-$50M",
@@ -295,13 +370,16 @@ export const leads: LeadPacket[] = [
       evidence: [evidence("wo-enrichment", "Clearbit", "enrichment", "High", 420, 46, true, undefined, "numberofemployees", { employees: 420, revenue_band: "$25M-$50M", tech_stack: ["Salesforce"] })]
     },
     intent_signals: {
+      surge: false,
+      evidence: []
+    },
+    engagement_signals: {
       opens: 5,
       clicks: 0,
       replies: 0,
       demo_request: false,
       pricing_page_visit: false,
-      surge: false,
-      evidence: [evidence("wo-intent", "Outreach", "intent", "Medium", "5 email opens", 4, false, undefined, undefined, { opens: 5 })]
+      evidence: [evidence("wo-intent", "Outreach", "engagement", "Medium", "5 email opens", 4, false, undefined, undefined, { opens: 5 })]
     },
     public_signals: [],
     score_breakdown: {
@@ -316,7 +394,9 @@ export const leads: LeadPacket[] = [
     missing_fields: ["public_signals"],
     stale_fields: [],
     source_conflicts: [],
-    writeback_recommendation: { decision: "Eligible", reason: "Firmographic enrichment is fresh; intent is not written back." },
+    tool_status: toolStatus({ fetch_public_signals: { status: "no_result", completed_at: evaluatedAt, detail: "No verified public signals found." } }),
+    writeback_plan: { decision: "Eligible", reason: "Firmographic enrichment is fresh; engagement is not written back." },
+    writeback_outcome: { status: "Skipped", reason: "Live CRM writeback is disabled for fixture evaluations.", recorded_at: evaluatedAt },
     allowed_claims: [
       { text: "Clearbit reports Northstar Apps has 420 employees.", evidence_ids: ["wo-enrichment"] },
       { text: "Outreach recorded 5 email opens for Northstar Apps.", evidence_ids: ["wo-intent"] }
@@ -324,6 +404,8 @@ export const leads: LeadPacket[] = [
     disallowed_claims: ["Northstar Apps is showing buying intent from email opens alone."]
   },
   {
+    request_id: requestId,
+    evaluation_id: "eval-stale-writeback",
     lead_id: "stale-writeback",
     account_id: "acct-harborworks",
     evaluation_timestamp: evaluatedAt,
@@ -338,14 +420,20 @@ export const leads: LeadPacket[] = [
     crm_context: {
       owner: "Jordan Lee",
       source: "List import",
-      stage: "Open",
+      lifecycle_stage: "lead",
+      routing_status: "open",
+      open_opportunity_status: "none",
+      company_association: { status: "resolved", basis: "primary", candidate_account_ids: ["acct-harborworks"] },
+      duplicate_status: "clear",
+      domain_status: "verified",
       evidence: [evidence("sw-crm-stage", "HubSpot", "crm", "High", "Open", 0)]
     },
     priority_score: null,
     priority_band: "Needs Manual Review",
     confidence: "Low",
+    manual_review_reasons: ["source_conflict"],
     reason: "Fit data is stale and company size conflicts across sources.",
-    hook: "No grounded hook available - no recent verified signal found.",
+    hook: "No grounded hook available — no recent verified signal found.",
     enrichment_fields: {
       employees: 300,
       revenue_band: "$10M-$25M",
@@ -357,12 +445,15 @@ export const leads: LeadPacket[] = [
       ]
     },
     intent_signals: {
+      surge: false,
+      evidence: []
+    },
+    engagement_signals: {
       opens: 0,
       clicks: 0,
       replies: 0,
       demo_request: false,
       pricing_page_visit: false,
-      surge: false,
       evidence: []
     },
     public_signals: [],
@@ -378,7 +469,12 @@ export const leads: LeadPacket[] = [
     missing_fields: ["public_signals"],
     stale_fields: ["employees"],
     source_conflicts: ["Company size differs between Clearbit and HubSpot."],
-    writeback_recommendation: { decision: "Review", reason: "Company-size data is stale and conflicts with CRM." },
+    tool_status: toolStatus({
+      fetch_intent_triggers: { status: "no_result", completed_at: evaluatedAt, detail: "No verified intent or engagement signals found." },
+      fetch_public_signals: { status: "no_result", completed_at: evaluatedAt, detail: "No verified public signals found." }
+    }),
+    writeback_plan: { decision: "Review", reason: "Company-size data is stale and conflicts with CRM." },
+    writeback_outcome: { status: "Flagged for Review", reason: "The deterministic plan requires review.", recorded_at: evaluatedAt },
     allowed_claims: [
       { text: "Clearbit reports HarborWorks has 300 employees, but HubSpot reports 75 employees.", evidence_ids: ["sw-clearbit-enrichment", "sw-hubspot-employees"] },
       { text: "Clearbit company-size data for HarborWorks is 420 days old.", evidence_ids: ["sw-clearbit-enrichment"] }
