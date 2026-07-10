@@ -2,6 +2,10 @@
 
 ContextAI is a RevOps-owned lead prioritization and data-quality layer for B2B GTM teams. It unifies CRM, enrichment, intent, engagement, and public-signal data into an auditable deterministic score, a plain-English reason, and one grounded outreach hook.
 
+This document is the delivery and status view of the PRD. The source-of-truth order is: `PRD.md` for product and safety requirements; shared schemas and active configuration for runtime contracts; this roadmap for phase and status; and GitHub issues for executable scope, dependencies, and acceptance criteria.
+
+Implementation status below was reconciled against merged PR #10 and the local test/build on July 9, 2026. A checked foundation item does not mean the corresponding production path is pilot-ready.
+
 ## 1. Product Focus
 
 ### Problem
@@ -16,7 +20,7 @@ Ideal v0 customers have:
 
 - [ ] 20-200 SDRs/AEs working inbound, outbound-assisted, or hybrid pipeline
 - [x] HubSpot as an initial CRM system of record
-- [ ] Salesforce as a supported CRM system of record
+- [ ] Salesforce support after v0; it is not a pilot requirement
 - [ ] At least one enrichment provider, such as Clearbit, ZoomInfo, Apollo, Clay, or similar
 - [ ] At least one sequencing or engagement platform
 - [ ] Meaningful open lead/contact volume requiring triage before outreach
@@ -62,7 +66,8 @@ Poor-fit v0 segments:
 - [x] Integration smoke check script with per-service timeout and safe missing-secret behavior
 - [x] Native Node tests for current helper logic and integration config
 - [x] Live credentials confirmed for OpenRouter and HubSpot
-- [x] Formal v0 lead packet contract and evidence-backed fixtures
+- [x] Lead packet contract foundation and evidence-backed fixtures merged in PR #10
+- [ ] Close remaining PRD contract gaps for tool status, engagement semantics, CRM associations, and writeback outcome in #11
 - [x] Contributor setup and workflow guide
 
 ## 3. Core Agent Flow
@@ -75,11 +80,23 @@ Poor-fit v0 segments:
 - [ ] Implement real `fetch_intent_triggers`
 - [ ] Implement real `fetch_public_signals`
 - [ ] Implement deterministic scoring service
+- [ ] Implement deterministic CRM writeback evaluation before LLM invocation
 - [x] Implement OpenRouter-backed LLM explanation client foundation
 - [x] Implement HubSpot writeback client foundation
+- [ ] Validate grounded LLM output against the required schema and evidence IDs
 - [ ] Wire the full agent flow end-to-end
 
 The LLM must never calculate scores, change bands, decide writeback, draft full emails, route leads, disqualify leads, or enroll prospects in sequences.
+
+### Runtime, Persistence, and Evaluation Lifecycle
+
+- [ ] Establish the server runtime, durable schemas, migrations, and append-only audit/event storage in #13
+- [ ] Run a configured morning evaluation for each rep's assigned open records in #15
+- [ ] Handle new-owner and reassignment events through an authenticated, deduplicated HubSpot trigger in #15
+- [ ] Define contact/company eligibility, CRM-authoritative fields, association failure, duplicate risk, and manual-review behavior in #11/#15
+- [ ] Add evaluation/request IDs, idempotency, concurrency limits, timeouts, retry/backoff, rate-limit handling, and recovery in #13/#15
+- [ ] Persist every required step's terminal status and allow partial source failure without invented data
+- [ ] Exercise one successful and one graceful-failure path from trigger through validated output and audit record
 
 ### Deterministic Scoring Model v0
 
@@ -102,6 +119,8 @@ Default weights:
 
 Default bands:
 
+These are proposed defaults. #11 must reconcile the PRD's 54/100 Warm example with these thresholds before #8/#3 implement them.
+
 | Band | Score Range | Status |
 | --- | ---: | --- |
 | Hot | 80-100 | [ ] |
@@ -114,7 +133,7 @@ Confidence rules:
 - [ ] High: required fields present, key sources fresh, no major conflicts
 - [ ] Medium: optional fields missing, one source stale, or limited signal set
 - [ ] Low: required fields missing, stale enrichment, source conflict, or uncertain identity
-- [ ] Needs Manual Review: too low to score safely or critical workflow risk present
+- [ ] Needs Manual Review is a band, not a confidence level; define its score nullability and normal Low-confidence pairing in #11
 
 Freshness rules:
 
@@ -130,17 +149,17 @@ Source conflict rules:
 - [ ] CRM owner and lifecycle stage override external workflow-state sources
 - [ ] Verified customer CRM data overrides enrichment unless blank, stale, or flagged low quality
 - [ ] Newer enrichment can replace stale CRM firmographics only after confidence/source-quality checks
-- [ ] Public company signals require source URL, source name, and publication date
+- [ ] Public company signals require source name, publication date, and a URL or stable provider record ID when available
 - [ ] Conflicting high-impact fields trigger review instead of automatic writeback
 
 ## 4. Lead Packet Data Contract
 
-The LLM receives a structured lead packet only after tool calls and deterministic scoring are complete.
+The LLM receives a structured lead packet only after required source calls, deterministic scoring, and CRM writeback evaluation have completed or failed gracefully. PR #10 established the foundation; #11 owns the remaining PRD alignment before downstream contracts are treated as locked.
 
 Required fields:
 
 - [x] `lead_id`
-- [x] `account_id`
+- [x] `account_id` in fixtures; define contact/company association and nullability in #11
 - [x] `evaluation_timestamp`
 - [x] `score_version`
 - [x] `priority_score`
@@ -150,11 +169,14 @@ Required fields:
 - [x] `lead_identity`
 - [x] `crm_context`
 - [x] `enrichment_fields`
-- [x] `intent_signals`
+- [x] `intent_signals`; define whether engagement remains canonical here or becomes a separate field in #11
 - [x] `public_signals`
 - [x] `missing_fields` / `stale_fields`
 - [x] `source_conflicts`
-- [x] `writeback_recommendation`
+- [x] `writeback_recommendation` foundation
+- [ ] Per-step `tool_status`, including success, unavailable, timeout, rate-limited, and invalid results
+- [ ] Deterministic `writeback_plan` and authoritative `writeback_outcome`
+- [ ] Request/evaluation identifiers and incomplete-packet behavior
 - [x] `allowed_claims`
 - [x] `disallowed_claims`
 
@@ -171,14 +193,17 @@ Evidence object requirements:
 
 Grounding rules:
 
-- [x] LLM may only explain or reference facts in `allowed_claims`
-- [x] LLM treats non-allowed claims as unavailable
+- [x] OpenRouter request includes `allowed_claims` and omits `disallowed_claims`
+- [ ] Validate every factual output reference against an allowed claim and its evidence IDs in #6
+- [ ] Reject or fall back on unsupported, stale, failed, sensitive, or disallowed output in #6
 - [ ] Example allowed claim: "EnterpriseCorp announced a Series B funding round on June 12, 2026, according to Crunchbase."
 - [ ] Example disallowed claim: "EnterpriseCorp is likely investing in sales automation after its Series B."
 
 ## 5. CRM Writeback Policy
 
 ContextAI may write verified enrichment back to CRM only through audited `write_crm_enrichment`. The LLM never decides whether a field should be written.
+
+Live writeback remains dry-run/feature-flagged until #4 proves schema, allowlist, source confidence/freshness, conflict precedence, blocked downstream side effects, idempotency, immutable audit, and rollback. Scoring freshness and writeback eligibility are separate policies; evidence usable for scoring is not automatically writable.
 
 Eligible automated writeback fields for v0:
 
@@ -251,10 +276,10 @@ Audit log requirements:
 
 Rollback:
 
-- [ ] Reverse writebacks by field
-- [ ] Reverse writebacks by lead
-- [ ] Reverse writebacks by batch
-- [ ] Reverse writebacks by time window
+- [ ] Reverse writebacks by field for v0
+- [ ] Reverse writebacks by lead for v0
+- [ ] Reverse writebacks by batch after v0 unless pilot evidence requires it
+- [ ] Reverse writebacks by time window after v0 unless pilot evidence requires it
 - [ ] Create audit-log entry for rollback
 
 ## 6. Dashboard and Admin Experience
@@ -265,10 +290,10 @@ Rollback:
 - [x] Score, band, confidence, reason, hook, and owner visible
 - [x] Weak-open warning shown for mocked weak-signal case
 - [x] Fallback hook shown for no-signal cases
-- [ ] Real selected-lead interaction
-- [ ] CRM widget embed
-- [ ] Rep action capture: call, email, sequence, manual enrichment, disqualify, ignore, route to nurture
-- [ ] Recommendation accept/ignore/override capture
+- [ ] Real selected-lead interaction in #7
+- [ ] HubSpot CRM widget/embed in #17
+- [ ] Capture call, email, sequence, manual enrichment, disqualify, ignore, and nurture as observed/linked rep actions in #7/#17; never execute them
+- [ ] Recommendation accept/ignore/override capture through #9 events
 
 ### RevOps Audit Dashboard
 
@@ -283,6 +308,8 @@ Rollback:
 - [ ] Manual review queue
 
 ### Admin Capabilities
+
+Configuration primitives belong to #8; pilot-ready RevOps screens, review, audit, and rollback controls belong to #16; pilot metric reports and exports belong to #19.
 
 - [ ] Configure scoring weights within safe ranges
 - [ ] View score version history
@@ -341,16 +368,20 @@ Admin reporting:
 
 v0 success must be measured against each pilot customer's baseline.
 
+#9 owns the append-only event contract and recording boundary. #19 owns read-only aggregation, reporting, and export after the producing workstreams exist.
+
+The PRD explicitly sets the 40-60% research-time hypothesis and 60% acceptance target. Other numeric values below are provisional pilot operating targets introduced by this roadmap; #18 must approve their definitions, denominators, windows, and thresholds before the pilot.
+
 | Goal | Metric | v0 Target | Status |
 | --- | --- | --- | --- |
 | Save rep research time | Median minutes from opening a lead to first meaningful action | 40-60% reduction vs. pilot baseline | [ ] |
-| Improve prioritization quality | Meeting-booking rate from Hot/Warm leads | 10%+ directional lift vs. control over 60 days | [ ] |
+| Improve prioritization quality | Meetings per rep and meeting-booking rate from Hot/Warm leads | 10%+ directional lift vs. control over 60 days (provisional) | [ ] |
 | Earn rep trust | Recommendation acceptance rate | 60%+ during pilot | [ ] |
-| Reduce false positives | Hot-lead false-positive rate | 25% relative reduction vs. baseline | [ ] |
-| Improve CRM completeness | Complete, source-backed, under-90-day core fields | 20%+ lift vs. baseline | [ ] |
-| Protect CRM integrity | Bad writeback rate | Under 1% require rollback | [ ] |
-| Avoid weak-signal overfit | Hot leads where opens are primary driver | Default under 10% | [ ] |
-| Preserve workflow speed | CRM widget load time | Under 2.5s cached, under 10s fresh | [ ] |
+| Reduce false positives | Hot-lead false-positive rate | 25% relative reduction vs. baseline (provisional) | [ ] |
+| Improve CRM completeness | Complete, source-backed, under-90-day core fields | 20%+ lift vs. baseline (provisional) | [ ] |
+| Protect CRM integrity | Bad writeback rate | Under 1% require rollback (provisional) | [ ] |
+| Avoid weak-signal overfit | Hot leads where opens are primary driver | Admin-defined; initial default under 10% (provisional) | [ ] |
+| Preserve workflow speed | CRM widget load time | Under 2.5s cached, under 10s fresh (provisional) | [ ] |
 
 Instrumentation requirements:
 
@@ -380,6 +411,8 @@ Pilot no-go criteria:
 - [ ] Source-neutral orchestration is not meaningfully differentiated
 
 ## 8. Pilot Validation Plan
+
+#18 owns the metric dictionary, baseline instruments, cohort design, and decision rubric before exposure. #20 owns running the approved pilot and making the evidence-backed proceed/pivot/narrow/stop decision after #19 reporting is ready.
 
 Pilot setup:
 
@@ -425,6 +458,8 @@ Pilot deliverables:
 
 ## 9. Security, Privacy, and Governance
 
+#14 owns the production integration-security, tenant, role, retention, health, and revoke controls required before a real pilot.
+
 Data access principles:
 
 - [ ] Access only fields required for scoring and explanation
@@ -436,10 +471,10 @@ Data access principles:
 
 Permissions:
 
-- [ ] RevOps Admin: configure scoring, writeback, sources, freshness, audit logs, rollback
-- [ ] Sales Manager: view team scores, adoption, outcomes, flagged leads
-- [ ] Rep: view assigned lead scores, reasons, hooks, missing/stale data
-- [ ] Viewer: read-only dashboard and audit access
+- [ ] RevOps Admin for v0: configure scoring, writeback, sources, freshness, audit logs, and rollback
+- [ ] Rep for v0: view assigned lead scores, reasons, hooks, and missing/stale data
+- [ ] Sales Manager after v0: view team scores, adoption, outcomes, and flagged leads
+- [ ] Viewer after v0: read-only dashboard and audit access
 
 Field-level controls:
 
@@ -502,6 +537,8 @@ If ContextAI cannot provide an audit trail for a score, hook, or writeback, that
 
 The LLM eval suite should test explanation quality, hook grounding, missing-data behavior, stale-data handling, source conflicts, writeback safety, weak-signal overfitting, prompt injection, and sensitive-data exclusion. The score itself is not an LLM output and should not be evaluated as one.
 
+#6 owns deterministic claim compilation, runtime output validation, and the automated LLM eval gate. Relevant scoring and writeback invariants remain acceptance criteria in #3 and #4 rather than waiting for a final eval phase.
+
 | Case | Expected Output | Status |
 | --- | --- | --- |
 | Golden normal | Reason references ICP fit plus high-intent engagement. Hook references Series B only if source is present. No invented business priority. | [x] Mock fixture exists; automated LLM eval not built |
@@ -531,13 +568,73 @@ Eval pass criteria:
 - [ ] No CRM writeback decision is attributed to the LLM
 - [ ] Output matches required format
 
-## 11. Near-Term Build Order
+## 11. Delivery Plan and Issue Map
 
-1. [ ] Replace the current fixture shape with the full lead packet contract.
-2. [ ] Add `allowed_claims` and `disallowed_claims`; update OpenRouter prompt to use only allowed claims.
-3. [ ] Implement deterministic scoring with default weights, bands, confidence, weak-open guard, and score version.
-4. [ ] Add HubSpot-to-lead-packet mapping for real CRM contacts.
-5. [ ] Add audited writeback policy checks before any HubSpot PATCH call.
-6. [ ] Add admin configuration primitives for score weights, thresholds, freshness, and writeback allowlist.
-7. [ ] Add instrumentation events for pilot metrics.
-8. [ ] Expand eval tests for source conflict, duplicate risk, sensitive data, prompt injection, and unsupported hook inference.
+PR #10 completed the initial lead-packet/fixture foundation. Work now proceeds through explicit gates; an issue may use fixtures in parallel, but it is not complete until its production-facing acceptance criteria pass.
+
+### Phase 0: Contract and Collaboration Foundation
+
+1. [ ] #11 locks remaining product decisions and contract semantics.
+2. [ ] #12 adds secret-free pull-request test/build checks and the review handoff template; it can run immediately in parallel.
+3. [ ] #13 establishes the minimum server runtime, durable schemas, migrations, and append-only records after #11.
+
+Only one developer owns shared contract files at a time. Merge #11 contract changes before both lanes build against different semantics.
+
+### Phase 1: Two Parallel Build Lanes
+
+| Decision layer | Workflow layer | Cross-cutting |
+| --- | --- | --- |
+| #8 versioned configuration primitives | #5 source/evidence adapters | #9 event contract first |
+| #3 deterministic scoring | #4 writeback policy/audit/rollback against fixtures, then live sources | #13 persistence foundation |
+| #6 claim compiler, grounded LLM validation, and evals | #7 fixture-backed standalone rep/audit UX | #19 metrics reporting after producers exist |
+
+Recommended sequencing:
+
+- Kickoff: one developer owns #11 while the other owns #12.
+- After #11: decision developer runs #8 → #3 → #6; platform/workflow developer runs #13 → #5 → #4, then #7.
+- Merge #9's narrow event contract before #3-#7 add emitters; whichever developer finishes a current item first can own that prerequisite PR.
+- Start #19 aggregation only after the producing workstreams, #13, and #18's metric dictionary exist.
+- #18 can define the pilot and metric dictionary after #11 while implementation continues; it must finish before #19.
+- Keep `src/pages/index.astro` single-owner during #7 and keep shared packet/config/event changes in small prerequisite PRs.
+
+### Phase 2: End-to-End Alpha and Production Boundary
+
+1. [ ] #14 establishes the production authentication, tenant, role, retention, health, and revoke boundary after #13.
+2. [ ] #15 maps HubSpot records, implements morning and assignment/reassignment triggers, and orchestrates the complete ordered flow in parallel with #14 where contracts permit.
+3. [ ] #17 embeds the rep experience in HubSpot after #7, #14, and #15 expose stable authorized APIs.
+4. [ ] Keep live CRM writes disabled until #4's full audit and rollback gate passes.
+
+### Phase 3: Pilot Hardening and Validation
+
+1. [ ] #16 builds minimum RevOps configuration, version publishing, audit, manual-review, and rollback controls.
+2. [ ] #18 approves the metric dictionary, baselines, cohorts, surveys, safety stops, and decision rubric before exposure.
+3. [ ] #19 implements read-only pilot metric aggregation, reports, and exports against that approved definition.
+4. [ ] #20 runs the pilot and makes the proceed/pivot/narrow/stop decision.
+
+### Issue Ownership Boundaries
+
+| Issue | Owns | Primary dependencies |
+| --- | --- | --- |
+| #11 | Shared product/runtime contract decisions | Merged PR #10 |
+| #12 | PR CI and contribution gates | None |
+| #13 | Server runtime and persistence | #11 |
+| #8 | Pure versioned config model | #11 |
+| #3 | Deterministic score result | #8, #11 |
+| #5 | Provider adapters and normalized evidence | #11 |
+| #4 | Writeback plan, execution, audit, rollback | #8, #11, #13; #5 for live data |
+| #6 | Allowed-claim compiler, LLM validator, evals | #3, #11; #5 for real-source completion |
+| #9 | Event contract and append-only recording | #11; #13 for persistence |
+| #7 | Standalone rep/audit UX | #11 and #9 event contract |
+| #15 | HubSpot mapping, triggers, orchestration | #3, #4, #5, #6, #11, #13 |
+| #14 | Production security and tenancy | #11, #13 |
+| #16 | RevOps admin/review controls | #4, #7, #8, #9, #13 |
+| #17 | HubSpot CRM embed | #7, #13, #14, #15 |
+| #18 | Pilot design and metric dictionary | #11; coordinates with #9 |
+| #19 | Read-only pilot metrics and exports | #9, #13, #18, and event producers |
+| #20 | Pilot execution and final decision | #14, #15, #16, #17, #18, #19 |
+
+### Ready and Done Gates
+
+An issue is Ready when it has one primary owner and reviewer, explicit dependencies, stable shared contracts or fixtures, in/out-of-scope boundaries, and verifiable acceptance criteria. Keep at most one implementation issue in progress per developer.
+
+An issue is Done when its acceptance criteria pass, relevant failure/safety cases are tested, `npm test` and `npm run build` pass, shared schemas/migrations and user-facing behavior are documented, ROADMAP status is updated after integration, and the other developer has reviewed the PR. A mocked or client-foundation path does not complete a production checklist item.
