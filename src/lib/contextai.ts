@@ -178,7 +178,7 @@ const isIntentSignals = (value: unknown) => {
   return fields.filter((field) => value[field] !== 0 && value[field] !== false)
     .every((field) => observed.some(([observedField]) => observedField === field));
 };
-const scoreCaps: ScoreBreakdown = {
+export const scoreCaps: ScoreBreakdown = {
   icp_fit: 30,
   high_intent_actions: 25,
   engagement_quality: 15,

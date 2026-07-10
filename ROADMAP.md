@@ -69,6 +69,7 @@ Poor-fit v0 segments:
 - [x] Lead packet contract foundation and evidence-backed fixtures merged in PR #10
 - [ ] Close remaining PRD contract gaps for tool status, engagement semantics, CRM associations, and writeback outcome in #11
 - [x] Contributor setup and workflow guide
+- [x] Deterministic scoring service (`src/lib/scoring.ts`) with PRD weights, bands, confidence, and weak-open Hot guard
 
 ## 3. Core Agent Flow
 
@@ -76,11 +77,12 @@ Poor-fit v0 segments:
 
 - [x] Display required tool order in the dashboard
 - [x] Implement HubSpot-backed `get_crm_lead` foundation via contact listing/read clients
-- [ ] Implement real `enrich_profile`
-- [ ] Implement real `fetch_intent_triggers`
-- [ ] Implement real `fetch_public_signals`
-- [ ] Implement deterministic scoring service
+- [x] Implement `enrich_profile` ingestion wrapper (catalog + optional ENRICHMENT_API_URL)
+- [x] Implement `fetch_intent_triggers` ingestion wrapper (catalog + optional INTENT_API_URL)
+- [x] Implement `fetch_public_signals` ingestion wrapper (catalog + optional PUBLIC_SIGNALS_API_URL)
+- [x] Implement deterministic scoring service
 - [ ] Implement deterministic CRM writeback evaluation before LLM invocation
+- [x] `write_crm_enrichment` read-only placeholder (no HubSpot PATCH)
 - [x] Implement OpenRouter-backed LLM explanation client foundation
 - [x] Implement HubSpot writeback client foundation
 - [ ] Validate grounded LLM output against the required schema and evidence IDs
@@ -100,40 +102,40 @@ The LLM must never calculate scores, change bands, decide writeback, draft full 
 
 ### Deterministic Scoring Model v0
 
-- [ ] Implement configurable deterministic 0-100 score
-- [ ] Store `score_version` on every evaluation
-- [ ] Keep confidence separate from score
-- [ ] Enforce that email opens alone cannot produce Hot
-- [ ] Support Needs Manual Review when required data is missing, conflicting, malformed, duplicated, or too low confidence
+- [x] Implement configurable deterministic 0-100 score
+- [x] Store `score_version` on every evaluation
+- [x] Keep confidence separate from score
+- [x] Enforce that email opens alone cannot produce Hot
+- [x] Support Needs Manual Review when required data is missing, conflicting, malformed, duplicated, or too low confidence
 
 Default weights:
 
 | Category | Weight | Status |
 | --- | ---: | --- |
-| ICP fit | 30 | [ ] |
-| High-intent actions | 25 | [ ] |
-| Engagement quality | 15 | [ ] |
-| Public or licensed timing signals | 15 | [ ] |
-| CRM/process context | 10 | [ ] |
-| Data confidence | 5 | [ ] |
+| ICP fit | 30 | [x] |
+| High-intent actions | 25 | [x] |
+| Engagement quality | 15 | [x] |
+| Public or licensed timing signals | 15 | [x] |
+| CRM/process context | 10 | [x] |
+| Data confidence | 5 | [x] |
 
 Default bands:
 
-These are proposed defaults. #11 must reconcile the PRD's 54/100 Warm example with these thresholds before #8/#3 implement them.
+Implemented as Hot 80–100 / Warm 60–79 / Cold 0–59. The PRD's "54/100 Low Warm" weak-opens example maps to Cold under these thresholds (score 54, band Cold, confidence Medium).
 
 | Band | Score Range | Status |
 | --- | ---: | --- |
-| Hot | 80-100 | [ ] |
-| Warm | 60-79 | [ ] |
-| Cold | 0-59 | [ ] |
-| Needs Manual Review | N/A | [x] Mocked in fixtures only |
+| Hot | 80-100 | [x] |
+| Warm | 60-79 | [x] |
+| Cold | 0-59 | [x] |
+| Needs Manual Review | N/A | [x] |
 
 Confidence rules:
 
-- [ ] High: required fields present, key sources fresh, no major conflicts
-- [ ] Medium: optional fields missing, one source stale, or limited signal set
-- [ ] Low: required fields missing, stale enrichment, source conflict, or uncertain identity
-- [ ] Needs Manual Review is a band, not a confidence level; define its score nullability and normal Low-confidence pairing in #11
+- [x] High: required fields present, key sources fresh, no major conflicts
+- [x] Medium: optional fields missing, one source stale, or limited signal set
+- [x] Low: required fields missing, stale enrichment, source conflict, or uncertain identity
+- [x] Needs Manual Review is a band with `priority_score: null` and Low confidence
 
 Freshness rules:
 

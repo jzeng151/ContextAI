@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "ASTRO_TELEMETRY_DISABLED=1 astro dev",
     "build": "ASTRO_TELEMETRY_DISABLED=1 astro build",
-    "test": "node --test --experimental-strip-types tests/contextai.test.ts",
+    "test": "node --test --experimental-strip-types tests/*.test.ts",
     "check:integrations": "node --experimental-strip-types scripts/check-integrations.ts"
   },
   "dependencies": {
