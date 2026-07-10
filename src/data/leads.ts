@@ -1,7 +1,8 @@
-import type { Confidence, Evidence, LeadPacket, SourceType } from "../lib/contextai";
+import type { Confidence, Evidence, LeadPacket, SourceType } from "../lib/contextai.ts";
+import { applyDeterministicScore, SCORE_VERSION } from "../lib/scoring.ts";
 
 const evaluatedAt = "2026-07-09T09:00:00.000Z";
-const scoreVersion = "score-v0.1";
+const scoreVersion = SCORE_VERSION;
 
 const evidence = (
   evidence_id: string,
@@ -31,7 +32,7 @@ const evidence = (
   };
 };
 
-export const leads: LeadPacket[] = [
+const fixtureLeads: LeadPacket[] = [
   {
     lead_id: "golden-normal",
     account_id: "acct-enterprisecorp",
@@ -386,3 +387,6 @@ export const leads: LeadPacket[] = [
     disallowed_claims: ["HarborWorks has 300 employees without qualification."]
   }
 ];
+
+/** Fixtures keep hand-authored reasons/hooks; score fields come from the deterministic scorer. */
+export const leads: LeadPacket[] = fixtureLeads.map(applyDeterministicScore);
