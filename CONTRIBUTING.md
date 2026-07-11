@@ -22,6 +22,12 @@
    HUBSPOT_ACCESS_TOKEN=
    ```
 
+5. Create and seed the local SQLite store without live credentials:
+
+   ```sh
+   npm run db:seed
+   ```
+
 ## Development Workflow
 
 1. Create a branch from the current `main` branch:
@@ -35,6 +41,8 @@
    ```sh
    npm run dev
    ```
+
+   Run `npm start` separately only when working on the server runtime. It uses `DATABASE_PATH` and exposes `GET /health` on `HOST:PORT`.
 
 3. Before committing, run:
 

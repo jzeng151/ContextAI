@@ -5,8 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "ASTRO_TELEMETRY_DISABLED=1 astro dev",
+    "start": "node --env-file-if-exists=.env --experimental-sqlite --experimental-strip-types src/server.ts",
     "build": "ASTRO_TELEMETRY_DISABLED=1 astro build",
-    "test": "node --test --experimental-strip-types tests/*.test.ts",
+    "test": "node --experimental-sqlite --test --experimental-strip-types tests/*.test.ts",
+    "db:migrate": "node --env-file-if-exists=.env --experimental-sqlite --experimental-strip-types scripts/database.ts",
+    "db:seed": "node --env-file-if-exists=.env --experimental-sqlite --experimental-strip-types scripts/database.ts seed",
     "check:integrations": "node --experimental-strip-types scripts/check-integrations.ts"
   },
   "dependencies": {

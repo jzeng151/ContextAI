@@ -71,6 +71,7 @@ Poor-fit v0 segments:
 - [x] Versioned scoring configuration defaults, safety validation, immutable publish/compare/active-selection primitives, and reusable boundary fixtures in #8
 - [x] Configurable deterministic scoring, active score-version linkage, evidence-backed drivers, freshness-aware confidence, and fixture rescoring merged in PR #25
 - [x] Provider-neutral enrichment, intent/engagement, and public-signal adapter foundation with bounded retries, terminal failure mapping, and reviewed contract fixes in PR #26; full #5 completion still requires validation and review
+- [x] Native Node/SQLite runtime foundation with transactional migrations, durable evaluation/config/evidence/writeback/review records, idempotency, fixture seeding, retention hooks, and append-only audit/events in #13
 - [x] Contributor setup and workflow guide
 
 ## 3. Core Agent Flow
@@ -93,13 +94,14 @@ The LLM must never calculate scores, change bands, decide writeback, draft full 
 
 ### Runtime, Persistence, and Evaluation Lifecycle
 
-- [ ] Establish the server runtime, durable schemas, migrations, and append-only audit/event storage in #13
+- [x] Establish the server runtime, durable schemas, migrations, and append-only audit/event storage in #13
 - [ ] Run a configured morning evaluation for each rep's assigned open records in #15
 - [ ] Handle new-owner and reassignment events through an authenticated, deduplicated HubSpot trigger in #15
 - [x] Define contact/company eligibility, CRM-authoritative fields, association failure, duplicate risk, and manual-review behavior in #11
 - [ ] Implement the locked HubSpot mapping and failure behavior in #15
-- [ ] Add evaluation/request IDs, idempotency, concurrency limits, timeouts, retry/backoff, rate-limit handling, and recovery in #13/#15
-- [ ] Persist every required step's terminal status and allow partial source failure without invented data
+- [x] Add evaluation/request IDs and persistence idempotency in #13
+- [ ] Add orchestration concurrency limits, timeouts, retry/backoff, rate-limit handling, and recovery in #15
+- [x] Persist every required step's terminal status and allow partial source failure without invented data
 - [ ] Exercise one successful and one graceful-failure path from trigger through validated output and audit record
 
 ### Deterministic Scoring Model v0

@@ -2,7 +2,7 @@
 
 ContextAI is a CRM-native lead prioritization and data-quality layer for B2B go-to-market teams. It combines CRM, enrichment, intent, engagement, and public-signal data into an auditable deterministic score, a concise reason, and one evidence-grounded outreach hook.
 
-> **Status:** Early v0 development. This repository currently contains a fixture-backed Astro dashboard and integration client foundations. Production scoring, source adapters, orchestration, persistence, writeback governance, CRM embedding, and pilot hardening are tracked in the [roadmap](ROADMAP.md).
+> **Status:** Early v0 development. This repository currently contains a fixture-backed Astro dashboard, integration client foundations, deterministic scoring, and a local durable runtime store. Orchestration, writeback governance, CRM embedding, and pilot hardening are tracked in the [roadmap](ROADMAP.md).
 
 ## Product Direction
 
@@ -25,6 +25,7 @@ The current implementation includes:
 - Helper logic for freshness, weak email-open signals, grounded hooks, and writeback eligibility.
 - OpenRouter configuration, key validation, and grounded explanation client foundations.
 - HubSpot contact list/read and guarded PATCH client foundations.
+- A native Node server boundary with SQLite migrations, fixture seeding, and durable evaluation/audit/event records.
 - Secret-optional integration smoke checks and native Node tests.
 
 See [ROADMAP.md](ROADMAP.md) for implementation status, dependencies, and the two-developer delivery sequence.
@@ -45,6 +46,7 @@ See [ROADMAP.md](ROADMAP.md) for implementation status, dependencies, and the tw
 - [Astro](https://astro.build/) 7
 - TypeScript
 - Node.js native test runner
+- Node.js built-in SQLite persistence
 - HubSpot CRM API foundations
 - OpenRouter chat-completion foundations
 
@@ -63,6 +65,7 @@ git clone https://github.com/jzeng151/ContextAI.git
 cd ContextAI
 npm install
 cp .env.example .env
+npm run db:seed
 npm run dev
 ```
 
@@ -78,6 +81,8 @@ Live integration credentials are optional for local UI development and automated
 | `OPENROUTER_MODEL` | No | Overrides the default model, `openai/gpt-4.1-mini`. |
 | `CONTEXTAI_APP_URL` | No | Sets the application URL sent with OpenRouter requests. |
 | `HUBSPOT_ACCESS_TOKEN` | No | Enables live HubSpot contact checks. |
+| `DATABASE_PATH` | No | SQLite file used by the server; defaults to `.contextai/contextai.sqlite`. |
+| `HOST` / `PORT` | No | Server bind address and port; defaults to `127.0.0.1:4000`. |
 
 Never commit `.env` or credentials.
 
@@ -86,8 +91,11 @@ Never commit `.env` or credentials.
 | Command | Description |
 | --- | --- |
 | `npm run dev` | Start the local Astro development server. |
+| `npm start` | Start the minimal Node server; `GET /health` reports runtime readiness. |
 | `npm test` | Run the native Node test suite. |
 | `npm run build` | Create a production Astro build. |
+| `npm run db:migrate` | Create or upgrade the SQLite store. |
+| `npm run db:seed` | Migrate and idempotently seed local fixture evaluations. |
 | `npm run check:integrations` | Check configured HubSpot and OpenRouter connections; missing secrets are reported as skipped. |
 
 Before opening a pull request, run:
@@ -103,9 +111,13 @@ npm run build
 src/
   data/leads.ts           Evidence-backed development fixtures
   lib/contextai.ts        Shared contracts and deterministic safety helpers
+  lib/migrations.ts       Ordered transactional SQLite migrations
+  lib/persistence.ts      Durable runtime storage boundary
   lib/integrations.ts     HubSpot and OpenRouter client foundations
   pages/index.astro       Current rep and RevOps dashboard
+  server.ts               Minimal Node runtime and health endpoint
 scripts/
+  database.ts             Local migration and fixture-seed command
   check-integrations.ts   Optional live integration smoke checks
 tests/
   contextai.test.ts       Contract, fixture, grounding, and helper tests
@@ -113,6 +125,12 @@ PRD.md                     Product and safety requirements
 CONTRIBUTING.md            Local setup and collaboration workflow
 ROADMAP.md                 Product delivery plan and implementation status
 ```
+
+## Runtime and Persistence
+
+v0 uses the existing Node 22 runtime and Node's built-in SQLite module, so persistence adds no ORM or database package. `RuntimeStore` is the only storage side-effect boundary; deterministic contracts, configuration, scoring, and policy remain plain TypeScript. Two transactional migrations create tenant/integration, versioned configuration, evaluation/step, normalized evidence/claim, writeback/audit/rollback, review, and append-only event records.
+
+SQLite is the smallest deployable single-process store for the pilot. `DATABASE_PATH` is the deployment-owned durable volume. Audit and event tables reject updates and deletes. Evaluation rows expose a retention date and query hook, while production retention policy and deletion enforcement remain owned by the security workstream (#14).
 
 ## Contributing
 
