@@ -96,9 +96,10 @@ const totalScore = Object.values(selected.score_breakdown).reduce((sum, value) =
 
           <h3>Sources</h3>
           <ul class="sources">
-            <li>CRM: {selected.crm_context.stage}</li>
+            <li>CRM lifecycle: {selected.crm_context.lifecycle_stage ?? "Data unavailable"}</li>
             <li>Enrichment: {freshnessLabel(selected.enrichment_fields.last_updated_days_ago)}</li>
-            <li>Intent: {selected.intent_signals.demo_request ? "Demo request" : selected.intent_signals.pricing_page_visit ? "Pricing page visit" : selected.intent_signals.surge ? "Category surge" : selected.intent_signals.opens ? `${selected.intent_signals.opens} opens` : "No verified intent"}</li>
+            <li>Intent: {selected.intent_signals.surge ? "Category surge" : "No verified intent"}</li>
+            <li>Engagement: {selected.engagement_signals.demo_request ? "Demo request" : selected.engagement_signals.pricing_page_visit ? "Pricing page visit" : selected.engagement_signals.opens ? `${selected.engagement_signals.opens} opens` : "No verified engagement"}</li>
             <li>Public signal: {selected.public_signals[0] ? `${selected.public_signals[0].label} (${selected.public_signals[0].source})` : "Public signal not found"}</li>
             <li>Allowed claims: {selected.allowed_claims.length}</li>
             <li>Source conflicts: {selected.source_conflicts.length ? selected.source_conflicts.join("; ") : "None"}</li>
@@ -106,8 +107,8 @@ const totalScore = Object.values(selected.score_breakdown).reduce((sum, value) =
 
           <div class:list={["writeback", isWritebackEligible(selected) ? "ok" : "hold"]}>
             <span>CRM writeback</span>
-            <strong>{selected.writeback_recommendation.decision}</strong>
-            <p>{selected.writeback_recommendation.reason}</p>
+            <strong>{selected.writeback_outcome.status}</strong>
+            <p>{selected.writeback_outcome.reason}</p>
           </div>
         </aside>
       </section>

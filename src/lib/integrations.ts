@@ -86,8 +86,14 @@ export const explainLeadWithOpenRouter = async (
             score: lead.priority_score,
             band: lead.priority_band,
             confidence: lead.confidence,
+            manual_review_reasons: lead.manual_review_reasons,
             score_version: lead.score_version,
             score_breakdown: lead.score_breakdown,
+            tool_status: lead.tool_status,
+            missing_fields: lead.missing_fields,
+            stale_fields: lead.stale_fields,
+            writeback_plan: lead.writeback_plan,
+            writeback_outcome: lead.writeback_outcome,
             allowed_claims: lead.allowed_claims
           })
         }

@@ -62,18 +62,23 @@ Split work by subsystem so each person can own files and behavior end to end:
 | #6 LLM grounding and evals | #7 dashboard and interaction UX |
 | Support #9 event definitions | Own #9 instrumentation; #19 reporting |
 
-Recommended order:
+Recommended implementation waves (with two developers, take at most one issue per developer from the current wave):
 
-- Kickoff: one developer owns #11 while the other owns #12.
-- Decision layer: #8, then #3, then #6.
-- Platform/workflow layer: #13, then #5, then #4; take #7 after its shared contracts/events are stable.
-- Define #9 events before either layer ships, add events within each owning PR, and complete #19 reporting after #3-#7 emit them.
+1. **Contract and CI:** merge #11 as the shared v0 contract baseline. Land #12 as early as possible; it has no product dependency and is safe in parallel with every wave. Closed issue #2 is superseded and requires no work.
+2. **Parallel foundations after #11:** build #8 versioned configuration, #13 runtime/persistence, and #5 source adapters in parallel. Start #18 pilot definitions at the same time. Land the contract/schema portion of #9 early and reconcile its metric terms with #18 before either contract is treated as final.
+3. **Core implementation:** after #8 and the #9 event contract, build #3 deterministic scoring. After #9's contract, #7 may build fixture-first interaction UX, but its score-driven integration waits for #3. After #8 and #13, build #4's dry-run writeback policy/audit/rollback path; live adapter completion also waits for #5. After #13, finish #9's append-only recorder. Start #14 security and tenant controls after #13.
+4. **Grounding and integration completion:** build #6 after #3, finish it against real normalized evidence after #5, and persist its audits through #13. Finish #4 after #5, finish #7 after #3, and add #9-compatible producers as #3-#7 land.
+5. **End-to-end alpha and governance:** build #15 only after #3, #4, #5, #6, and #13; keep production activation gated by #14. In parallel, build #16 after #8, #4, #7, #9, and #13, consuming #14's integration-security controls when stable.
+6. **CRM-native pilot surface and reporting:** build #17 after #7, #13, #14, and #15. #19 report scaffolding may start once #9, #13, and #18 are stable, but it completes only after the relevant producers in #3-#7, #15, and #17 emit reconciled events.
+7. **Pilot:** run #20 last, after #14, #15, #16, #17, #18, and #19 pass their launch gates.
+
+Treat #9 as contract-first and persistence/integration-later rather than waiting to design telemetry after features ship. Treat #4 similarly: fixture-backed planning can proceed before live adapters, but execution remains dry-run until persistence, provider, audit, idempotency, and rollback gates pass.
 
 Use one issue and branch per PR, created from current `main`. Do not keep long-lived aggregate branches. Put new behavior in focused modules such as `config.ts`, `scoring.ts`, `adapters/`, `writeback-policy.ts`, `grounding.ts`, and `instrumentation.ts`. Treat `LeadPacket`, `Evidence`, and `Claim` as shared contract types: one person owns a contract change at a time, and dependent work updates only after that contract PR merges.
 
 ## Shared Contract Changes
 
-Resolve shared contract decisions through issue #11 before parallel implementation.
+Issue #11 is the locked v0 contract baseline. For any later shared-contract change:
 
 - Give each shared contract one owner.
 - Merge contract/schema changes in a focused PR before dependent work.
