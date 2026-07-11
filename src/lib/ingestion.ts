@@ -528,11 +528,16 @@ const parseIntentPayload = (payload: unknown, evaluatedAt: string): IntentTrigge
 
   const allEmpty = opens === 0 && clicks === 0 && replies === 0 && !demo_request && !pricing_page_visit && !surge;
   const evidence: Evidence[] = [];
+  const summaryUpdatedAt = asIsoDate(payload.last_updated);
+  if (
+    payload.last_updated !== undefined &&
+    (summaryUpdatedAt === undefined || Date.parse(summaryUpdatedAt) > Date.parse(evaluatedAt))
+  ) return null;
 
   const candidateUpdated = [
     asIsoDate(intentParsed.sourceUpdatedAt),
     asIsoDate(engagementParsed.sourceUpdatedAt),
-    asIsoDate(payload.last_updated)
+    summaryUpdatedAt
   ]
     .map((value) => (value ? Date.parse(value) : Number.NaN))
     .filter(Number.isFinite);

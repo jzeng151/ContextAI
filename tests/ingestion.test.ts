@@ -365,6 +365,16 @@ test("intent adapters reject unsafe counts, missing provenance/dates, and malfor
       source_name: "Provider",
       intent: { source_name: "Provider", surge: true, last_updated: new Date(Date.parse(evaluatedAt) + 1_000).toISOString() },
     },
+    {
+      source_name: "Provider",
+      last_updated: "not-a-date",
+      intent: { source_name: "Provider", surge: true, last_updated: evaluatedAt },
+    },
+    {
+      source_name: "Provider",
+      last_updated: new Date(Date.parse(evaluatedAt) + 1_000).toISOString(),
+      intent: { source_name: "Provider", surge: true, last_updated: evaluatedAt },
+    },
     { source_name: "Provider", engagement: { source_name: "Provider", opens: 1 } },
     { intent: { surge: true, last_updated: evaluatedAt } },
     {
