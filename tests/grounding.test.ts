@@ -62,13 +62,25 @@ test("claim compiler uses only fresh structured score-driver evidence", () => {
 
 test("manual-review claims retain grounded missing-data and conflict context", () => {
   const missing = compileAllowedClaims(byId("no-usable-data"));
-  assert.match(missing.map((claim) => claim.text).join(" "), /manual review.*required scoring data is missing/i);
+  const missingReason = missing.find((claim) => /manual review.*required scoring data is missing/i.test(claim.text));
+  assert.deepEqual(missingReason?.evidence_ids, ["nud-validation-missing"]);
   assert.ok(missing.every((claim) => claim.evidence_ids.length > 0));
 
-  const conflict = compileAllowedClaims(byId("stale-writeback"));
-  assert.match(conflict.map((claim) => claim.text).join(" "), /manual review.*source values conflict/i);
+  const stale = byId("stale-writeback");
+  const conflict = compileAllowedClaims(stale);
+  assert.doesNotMatch(conflict.map((claim) => claim.text).join(" "), /manual review.*source values conflict/i);
   assert.ok(conflict.some((claim) => claim.evidence_ids.includes("sw-hubspot-employees")));
   assert.ok(conflict.every((claim) => !claim.evidence_ids.includes("sw-clearbit-enrichment")));
+
+  const validationEvidence = {
+    ...byId("no-usable-data").validation_evidence[0],
+    evidence_id: "sw-validation-conflict",
+    field_value: "source_conflict",
+    field_values: { manual_review_reason: "source_conflict" },
+  };
+  const validatedConflict = compileAllowedClaims({ ...stale, validation_evidence: [validationEvidence] });
+  const conflictReason = validatedConflict.find((claim) => /manual review.*source values conflict/i.test(claim.text));
+  assert.deepEqual(conflictReason?.evidence_ids, ["sw-validation-conflict"]);
 });
 
 test("weak opens compile as weak engagement and never as a hook", () => {

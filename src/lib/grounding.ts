@@ -97,6 +97,23 @@ const claimFor = (lead: LeadPacket, item: Evidence, driver: ClaimDriver): Omit<G
   return text ? { text, evidence_ids: [item.evidence_id], driver, hook: null } : null;
 };
 
+const manualReasonLabels = {
+  missing_required_data: "required scoring data is missing",
+  uncertain_identity: "identity or corporate domain is uncertain",
+  duplicate_risk: "duplicate CRM records may exist",
+  ambiguous_account: "the account association is ambiguous",
+  invalid_source_result: "a required source result is invalid or unavailable",
+  source_conflict: "source values conflict",
+  unsafe_workflow_state: "the CRM workflow state is unsafe",
+  scoring_unavailable: "deterministic scoring is unavailable",
+} as const;
+
+const provesManualReason = (lead: LeadPacket, item: Evidence, reason: LeadPacket["manual_review_reasons"][number]) =>
+  item.source_type === "validation" && (
+    item.field_values?.manual_review_reason === reason ||
+    (reason === "missing_required_data" && Array.isArray(item.field_value) && item.field_value.some((field) => lead.missing_fields.includes(field)))
+  );
+
 export const compileAllowedClaims = (
   lead: ScoredLeadPacket,
   config: ScoringConfig = defaultScoringConfig,
@@ -116,28 +133,19 @@ export const compileAllowedClaims = (
     }
   }
   if (lead.priority_band === "Needs Manual Review") {
-    const supportingEvidence = allEvidence(lead).filter((item) =>
-      eligible(lead, item, config) && claimFor(lead, item, "manual_review") !== null
-    );
-    if (supportingEvidence.length > 0) {
-      const reasons = lead.manual_review_reasons.map((reason) => ({
-        missing_required_data: "required scoring data is missing",
-        uncertain_identity: "identity or corporate domain is uncertain",
-        duplicate_risk: "duplicate CRM records may exist",
-        ambiguous_account: "the account association is ambiguous",
-        invalid_source_result: "a required source result is invalid or unavailable",
-        source_conflict: "source values conflict",
-        unsafe_workflow_state: "the CRM workflow state is unsafe",
-        scoring_unavailable: "deterministic scoring is unavailable",
-      })[reason]);
+    const eligibleEvidence = allEvidence(lead).filter((item) => eligible(lead, item, config));
+    for (const reason of lead.manual_review_reasons) {
+      const reasonEvidence = eligibleEvidence.filter((item) => provesManualReason(lead, item, reason));
+      if (reasonEvidence.length === 0) continue;
       claims.push({
-        claim_id: `manual_review:${lead.evaluation_id}:1`,
-        text: `${lead.lead_identity.company} requires manual review because ${reasons.join(" and ")}.`,
-        evidence_ids: supportingEvidence.map((item) => item.evidence_id),
+        claim_id: `manual_review:${reason}:${lead.evaluation_id}`,
+        text: `${lead.lead_identity.company} requires manual review because ${manualReasonLabels[reason]}.`,
+        evidence_ids: reasonEvidence.map((item) => item.evidence_id),
         driver: "manual_review",
         hook: null,
       });
     }
+    const supportingEvidence = eligibleEvidence.filter((item) => claimFor(lead, item, "manual_review") !== null);
     for (const item of supportingEvidence) add(item, "manual_review");
   }
   return claims;
