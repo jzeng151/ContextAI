@@ -1,8 +1,10 @@
 import type { Confidence, Evidence, LeadPacket, SourceType, ToolStatus } from "../lib/contextai";
 import { createScoringRunContext, defaultConfigVersion } from "../lib/config.ts";
+import { applyDeterministicScore } from "../lib/scoring.ts";
 
 const evaluatedAt = "2026-07-09T09:00:00.000Z";
-const scoreVersion = createScoringRunContext(defaultConfigVersion).score_version;
+const scoringContext = createScoringRunContext(defaultConfigVersion);
+const scoreVersion = scoringContext.score_version;
 const requestId = "request-morning-2026-07-09";
 
 const toolStatus = (overrides: Partial<ToolStatus> = {}): ToolStatus => ({
@@ -43,7 +45,7 @@ const evidence = (
   };
 };
 
-export const leads: LeadPacket[] = [
+const fixtureLeads: LeadPacket[] = [
   {
     request_id: requestId,
     evaluation_id: "eval-golden-normal",
@@ -67,7 +69,7 @@ export const leads: LeadPacket[] = [
       company_association: { status: "resolved", basis: "primary", candidate_account_ids: ["acct-enterprisecorp"] },
       duplicate_status: "clear",
       domain_status: "verified",
-      evidence: [evidence("gn-crm-stage", "HubSpot", "crm", "High", "Open", 0)]
+      evidence: [evidence("gn-crm-stage", "HubSpot", "crm", "High", "Open", 0, false, undefined, undefined, { routing_status: "open", source: "Inbound demo" })]
     },
     priority_score: 94,
     priority_band: "Hot",
@@ -145,7 +147,7 @@ export const leads: LeadPacket[] = [
       company_association: { status: "resolved", basis: "sole", candidate_account_ids: ["acct-leantech"] },
       duplicate_status: "clear",
       domain_status: "verified",
-      evidence: [evidence("shi-crm-stage", "HubSpot", "crm", "High", "Open", 0)]
+      evidence: [evidence("shi-crm-stage", "HubSpot", "crm", "High", "Open", 0, false, undefined, undefined, { routing_status: "open", source: "Intent surge" })]
     },
     priority_score: 50,
     priority_band: "Cold",
@@ -216,7 +218,7 @@ export const leads: LeadPacket[] = [
       company_association: { status: "none", basis: null, candidate_account_ids: [] },
       duplicate_status: "clear",
       domain_status: "unresolved",
-      evidence: [evidence("nud-crm-stage", "HubSpot", "crm", "Medium", "Needs research", 0)]
+      evidence: [evidence("nud-crm-stage", "HubSpot", "crm", "Medium", "Needs research", 0, false, undefined, undefined, { routing_status: "needs_research", source: "Reassigned lead" })]
     },
     priority_score: null,
     priority_band: "Needs Manual Review",
@@ -283,7 +285,7 @@ export const leads: LeadPacket[] = [
       company_association: { status: "resolved", basis: "primary", candidate_account_ids: ["acct-scalegrid"] },
       duplicate_status: "clear",
       domain_status: "verified",
-      evidence: [evidence("nps-crm-stage", "HubSpot", "crm", "High", "Open", 0)]
+      evidence: [evidence("nps-crm-stage", "HubSpot", "crm", "High", "Open", 0, false, undefined, undefined, { routing_status: "open", source: "Outbound assist" })]
     },
     priority_score: 83,
     priority_band: "Hot",
@@ -355,7 +357,7 @@ export const leads: LeadPacket[] = [
       company_association: { status: "resolved", basis: "sole", candidate_account_ids: ["acct-northstar"] },
       duplicate_status: "clear",
       domain_status: "verified",
-      evidence: [evidence("wo-crm-stage", "HubSpot", "crm", "High", "Open", 0)]
+      evidence: [evidence("wo-crm-stage", "HubSpot", "crm", "High", "Open", 0, false, undefined, undefined, { routing_status: "open", source: "Sequence" })]
     },
     priority_score: 54,
     priority_band: "Cold",
@@ -427,7 +429,7 @@ export const leads: LeadPacket[] = [
       company_association: { status: "resolved", basis: "primary", candidate_account_ids: ["acct-harborworks"] },
       duplicate_status: "clear",
       domain_status: "verified",
-      evidence: [evidence("sw-crm-stage", "HubSpot", "crm", "High", "Open", 0)]
+      evidence: [evidence("sw-crm-stage", "HubSpot", "crm", "High", "Open", 0, false, undefined, undefined, { routing_status: "open", source: "List import" })]
     },
     priority_score: null,
     priority_band: "Needs Manual Review",
@@ -483,3 +485,5 @@ export const leads: LeadPacket[] = [
     disallowed_claims: ["HarborWorks has 300 employees without qualification."]
   }
 ];
+
+export const leads = fixtureLeads.map((lead) => applyDeterministicScore(lead, scoringContext));
