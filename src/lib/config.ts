@@ -3,6 +3,7 @@ import type { Band, ManualReviewReason, ScoreBreakdown, SourceType } from "./con
 const scoreCategories = ["icp_fit", "high_intent_actions", "engagement_quality", "public_timing_signals", "crm_process_context", "data_confidence"] as const;
 const numericBands = ["Cold", "Warm", "Hot"] as const;
 const sourceTypes: SourceType[] = ["crm", "enrichment", "intent", "engagement", "public_signal", "validation"];
+const writebackSourceTypes = ["enrichment", "public_signal"] as const satisfies readonly SourceType[];
 const sourceFamilies = ["workflow", "association", "duplicate", "firmographic", "contact", "intent", "engagement", "publicSignal"] as const;
 const configSections = ["categoryWeights", "bandThresholds", "confidenceRules", "manualReview", "freshness", "sourcePolicy", "weakSignals", "writeback"] as const;
 const manualReviewTriggers: ManualReviewReason[] = [
@@ -41,6 +42,7 @@ export type SourceFamily = typeof sourceFamilies[number];
 export type ConfigSection = typeof configSections[number];
 export type WritebackObject = keyof typeof canonicalWritebackFields;
 export type CanonicalWritebackField = typeof canonicalWritebackFields[WritebackObject][number];
+export type WritebackSourceType = typeof writebackSourceTypes[number];
 // A category's weight is also its maximum point contribution (cap).
 export type ScoreCategoryWeightsAndCaps = Readonly<ScoreBreakdown>;
 
@@ -76,7 +78,7 @@ export type ScoringConfig = Readonly<{
   }>;
   writeback: Readonly<{
     minimumConfidence: "High";
-    approvedSourceTypes: readonly SourceType[];
+    approvedSourceTypes: readonly WritebackSourceType[];
     allowlist: Readonly<Record<WritebackObject, readonly CanonicalWritebackField[]>>;
     blockedFields: readonly string[];
   }>;
@@ -180,7 +182,7 @@ export function assertScoringConfig(value: unknown): asserts value is ScoringCon
 
   if (!isRecord(value.writeback) || !sameKeys(value.writeback, ["minimumConfidence", "approvedSourceTypes", "allowlist", "blockedFields"]) || value.writeback.minimumConfidence !== "High") fail("writeback safety rules are incomplete");
   const writeback = value.writeback;
-  if (!uniqueStrings(writeback.approvedSourceTypes) || writeback.approvedSourceTypes.length === 0 || writeback.approvedSourceTypes.some((source) => !approvedSourceTypes.includes(source))) fail("writeback safety rules are incomplete");
+  if (!uniqueStrings(writeback.approvedSourceTypes) || writeback.approvedSourceTypes.length === 0 || writeback.approvedSourceTypes.some((source) => !approvedSourceTypes.includes(source) || !writebackSourceTypes.includes(source as WritebackSourceType))) fail("writeback safety rules are incomplete");
   const blockedFields = writeback.blockedFields;
   if (!uniqueStrings(blockedFields) || permanentlyBlockedWritebackFields.some((field) => !blockedFields.includes(field))) fail("writeback safety rules are incomplete");
   if (!isRecord(writeback.allowlist) || !sameKeys(writeback.allowlist, ["contact", "company"])) fail("writeback allowlist must be grouped by contact and company");
@@ -213,11 +215,11 @@ export const compareConfigs = (before: ScoringConfig, after: ScoringConfig): rea
   return immutable(configSections.filter((section) => JSON.stringify(before[section]) !== JSON.stringify(after[section])));
 };
 
-const assertPublishedCatalog = (versions: readonly ScoringConfigVersion[], allowEmpty: boolean) => {
+const assertVersionCatalog = (versions: readonly ScoringConfigVersion[], allowEmpty: boolean, allowDrafts = false) => {
   const ids = new Set<string>();
   for (const version of versions) {
     assertConfigVersion(version);
-    if (version.status === "draft") fail("published catalogs cannot contain drafts");
+    if (!allowDrafts && version.status === "draft") fail("published catalogs cannot contain drafts");
     if (ids.has(version.id)) fail("version IDs must be unique");
     ids.add(version.id);
   }
@@ -226,7 +228,7 @@ const assertPublishedCatalog = (versions: readonly ScoringConfigVersion[], allow
 };
 
 export const publishConfigDraft = (versions: readonly ScoringConfigVersion[], draft: ScoringConfigVersion): readonly ScoringConfigVersion[] => {
-  assertPublishedCatalog(versions, true);
+  assertVersionCatalog(versions, true);
   assertConfigVersion(draft);
   if (draft.status !== "draft") fail("only a draft can be published");
   if (versions.some((version) => version.id === draft.id)) fail("version IDs must be unique");
@@ -237,7 +239,7 @@ export const publishConfigDraft = (versions: readonly ScoringConfigVersion[], dr
 };
 
 export const selectActiveConfig = (versions: readonly ScoringConfigVersion[]): ScoringConfigVersion => {
-  assertPublishedCatalog(versions, false);
+  assertVersionCatalog(versions, false, true);
   return immutable(versions.find((version) => version.status === "active") as ScoringConfigVersion);
 };
 

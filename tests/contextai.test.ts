@@ -394,6 +394,12 @@ test("configuration validation rejects unsafe ranges and relationships", () => {
   for (const [name, config] of [...Object.entries(invalidConfigFixtures), ...Object.entries(additionalInvalid)]) {
     assert.throws(() => assertScoringConfig(config), /invalid scoring configuration/i, name);
   }
+  for (const source of ["crm", "intent", "engagement", "validation"]) {
+    assert.throws(() => assertScoringConfig({
+      ...defaultScoringConfig,
+      writeback: { ...defaultScoringConfig.writeback, approvedSourceTypes: [source] }
+    }), /invalid scoring configuration/i, source);
+  }
 });
 
 test("configuration defaults and versions are deeply immutable defensive copies", () => {
@@ -469,9 +475,12 @@ test("publishing a draft returns a new catalog with one active immutable version
 test("active configuration selection rejects ambiguous catalogs and scoring requires the selected version", () => {
   const secondActive = { ...defaultConfigVersion, id: "score-v0.2" };
   const duplicateInactive = { ...defaultConfigVersion, status: "inactive" as const };
+  const draft = { ...defaultConfigVersion, id: "score-draft", status: "draft" as const };
   assert.throws(() => selectActiveConfig([]), /exactly one active/i);
   assert.throws(() => selectActiveConfig([defaultConfigVersion, secondActive]), /exactly one active/i);
   assert.throws(() => selectActiveConfig([defaultConfigVersion, duplicateInactive]), /unique/i);
+  assert.throws(() => selectActiveConfig([defaultConfigVersion, { ...draft, id: defaultConfigVersion.id }]), /unique/i);
+  assert.equal(selectActiveConfig([defaultConfigVersion, draft]).id, defaultConfigVersion.id);
 
   const selected = selectActiveConfig([defaultConfigVersion]);
   const context = createScoringRunContext(selected);
