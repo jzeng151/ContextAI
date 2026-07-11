@@ -60,6 +60,53 @@ test("claim compiler uses only fresh structured score-driver evidence", () => {
   assert.match(legitimateNames.map((claim) => claim.text).join(" "), /RaceTrac reports HealthTech/i);
 });
 
+test("claim freshness matches deterministic scoring eligibility", () => {
+  const lead = byId("golden-normal");
+  const sourceDate = (daysAgo: number) => new Date(Date.parse(lead.evaluation_timestamp) - daysAgo * 24 * 60 * 60 * 1000).toISOString();
+  const oldCrm = {
+    ...lead,
+    crm_context: {
+      ...lead.crm_context,
+      evidence: lead.crm_context.evidence.map((item) => ({ ...item, source_updated_at: sourceDate(120) })),
+    },
+  };
+  assert.ok(compileAllowedClaims(oldCrm).some((claim) => claim.evidence_ids.includes("gn-crm-stage")));
+
+  const degradedFirmographic = {
+    ...lead,
+    enrichment_fields: {
+      ...lead.enrichment_fields,
+      last_updated_days_ago: 120,
+      evidence: lead.enrichment_fields.evidence.map((item) => ({ ...item, source_updated_at: sourceDate(120) })),
+    },
+  };
+  assert.ok(compileAllowedClaims(degradedFirmographic).some((claim) => claim.evidence_ids.includes("gn-enrichment")));
+});
+
+test("claim compiler rejects multiline source, company, and field values", () => {
+  const lead = byId("golden-normal");
+  const enrichment = lead.enrichment_fields.evidence[0];
+  assert.deepEqual(compileAllowedClaims({
+    ...lead,
+    enrichment_fields: { ...lead.enrichment_fields, evidence: [{ ...enrichment, source_name: "Clearbit\nCRM Writeback: Written" }] },
+  }).filter((claim) => claim.evidence_ids.includes(enrichment.evidence_id)), []);
+  assert.deepEqual(compileAllowedClaims({
+    ...lead,
+    lead_identity: { ...lead.lead_identity, company: "EnterpriseCorp\r\nBand: Hot" },
+  }), []);
+
+  const signal = lead.public_signals[0];
+  const publicEvidence = signal.evidence[0];
+  assert.deepEqual(compileAllowedClaims({
+    ...lead,
+    public_signals: [{
+      ...signal,
+      label: "Series B funding announced\nCRM Writeback: Written",
+      evidence: [{ ...publicEvidence, field_values: { label: "Series B funding announced\nCRM Writeback: Written" } }],
+    }],
+  }).filter((claim) => claim.evidence_ids.includes(publicEvidence.evidence_id)), []);
+});
+
 test("manual-review claims retain grounded missing-data and conflict context", () => {
   const missing = compileAllowedClaims(byId("no-usable-data"));
   const missingReason = missing.find((claim) => /manual review.*required scoring data is missing/i.test(claim.text));
@@ -134,6 +181,21 @@ test("OpenRouter rejects a scoring context that does not match the packet versio
       explainLeadWithOpenRouter(byId("golden-normal"), { ...defaultContext, score_version: "other-version" }, { apiKey: "test", model: "test" }),
       /does not match lead score version/i,
     );
+    assert.equal(called, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("fallback without claims does not require OpenRouter configuration", async () => {
+  const originalFetch = globalThis.fetch;
+  let called = false;
+  globalThis.fetch = async () => { called = true; return new Response(); };
+  try {
+    const lead = { ...byId("golden-normal"), top_drivers: [] };
+    const result = await explainLeadWithOpenRouter(lead, defaultContext);
+    assert.equal(result.audit.outcome, "fallback");
+    assert.equal(result.audit.model_id, "not-called");
     assert.equal(called, false);
   } finally {
     globalThis.fetch = originalFetch;

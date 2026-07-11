@@ -71,36 +71,37 @@ const readJson = async <T>(response: Response): Promise<T> => {
 export const explainLeadWithOpenRouter = async (
   lead: ScoredLeadPacket,
   scoringContext: ScoringRunContext,
-  config = openRouterConfigFromEnv(),
+  config?: OpenRouterConfig,
 ) => {
   assertLeadPacket(lead);
   if (scoringContext.score_version !== lead.score_version) throw new Error("Scoring context does not match lead score version");
   const claims = compileAllowedClaims(lead, scoringContext.config);
   const fallback = fallbackGroundedExplanation(lead);
-  const audit = (outcome: GroundingAudit["outcome"], failure?: GroundingAudit["failure"]): GroundingAudit => ({
+  const audit = (modelId: string, outcome: GroundingAudit["outcome"], failure?: GroundingAudit["failure"]): GroundingAudit => ({
     prompt_version: groundingPromptVersion,
-    model_id: config.model,
+    model_id: modelId,
     evaluation_id: lead.evaluation_id,
     allowed_claim_ids: claims.map((claim) => claim.claim_id),
     evidence_ids: [...new Set(claims.flatMap((claim) => claim.evidence_ids))],
     outcome,
     ...(failure ? { failure } : {}),
   });
-  if (claims.length === 0) return { explanation: fallback, audit: audit("fallback") };
+  if (claims.length === 0) return { explanation: fallback, audit: audit("not-called", "fallback") };
+  const providerConfig = config ?? openRouterConfigFromEnv();
 
   let content: string;
   try {
     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${config.apiKey}`,
+        "Authorization": `Bearer ${providerConfig.apiKey}`,
         "Content-Type": "application/json",
-        "HTTP-Referer": config.appUrl || "http://127.0.0.1:4321",
+        "HTTP-Referer": providerConfig.appUrl || "http://127.0.0.1:4321",
         "X-Title": "ContextAI"
       },
       signal: AbortSignal.timeout(timeoutMs),
       body: JSON.stringify({
-        model: config.model,
+        model: providerConfig.model,
         messages: [
           {
             role: "system",
@@ -124,14 +125,14 @@ export const explainLeadWithOpenRouter = async (
     content = json.choices?.[0]?.message?.content?.trim() ?? "";
     if (!content) throw new Error("OpenRouter returned no message content");
   } catch {
-    return { explanation: fallback, audit: audit("fallback", "provider_failure") };
+    return { explanation: fallback, audit: audit(providerConfig.model, "fallback", "provider_failure") };
   }
 
   try {
     const explanation = validateGroundedExplanation(lead, claims, JSON.parse(content));
-    return { explanation, audit: audit("validated") };
+    return { explanation, audit: audit(providerConfig.model, "validated") };
   } catch {
-    return { explanation: fallback, audit: audit("fallback", "invalid_output") };
+    return { explanation: fallback, audit: audit(providerConfig.model, "fallback", "invalid_output") };
   }
 };
 

@@ -41,8 +41,9 @@ export type GroundingAudit = {
 const dayMs = 24 * 60 * 60 * 1000;
 const instructionText = /ignore\s+(?:all\s+)?(?:previous\s+)?instructions?|system\s+prompt|developer\s+message|password|api[_ -]?key/i;
 const sensitiveText = /\b(?:race|ethnicity|religion|political affiliation|health status|sexual orientation|trade union|financial distress|precise location)\b/i;
+const controlText = /[\u0000-\u001f\u007f]/;
 const safeText = (value: string, checkSensitive = true) => value.trim().length > 0 && value.length <= 160 &&
-  !instructionText.test(value) && (!checkSensitive || !sensitiveText.test(value));
+  !controlText.test(value) && !instructionText.test(value) && (!checkSensitive || !sensitiveText.test(value));
 const allEvidence = (lead: LeadPacket) => [
   ...lead.crm_context.evidence,
   ...lead.enrichment_fields.evidence,
@@ -59,8 +60,9 @@ const statusFor = (source: Evidence["source_type"]) => source === "crm" ? "get_c
 const maxAge = (source: Evidence["source_type"], config: ScoringConfig) => source === "intent" ? config.freshness.intent.freshThroughDays
   : source === "engagement" ? config.freshness.engagement.freshThroughDays
   : source === "public_signal" ? config.freshness.publicSignal.freshThroughDays
-  : source === "crm" ? config.freshness.contact.freshThroughDays
-  : config.freshness.firmographic.freshThroughDays;
+  : source === "crm" ? Number.POSITIVE_INFINITY
+  : source === "enrichment" ? config.freshness.firmographic.staleAfterDays
+  : 0;
 const eligible = (lead: LeadPacket, item: Evidence, config: ScoringConfig) => {
   const observedAt = item.source_published_at ?? item.source_updated_at ?? item.retrieved_at;
   const age = Math.floor((Date.parse(lead.evaluation_timestamp) - Date.parse(observedAt)) / dayMs);
