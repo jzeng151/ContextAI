@@ -77,9 +77,9 @@ Poor-fit v0 segments:
 
 - [x] Display required tool order in the dashboard
 - [x] Implement HubSpot-backed `get_crm_lead` foundation via contact listing/read clients
-- [ ] Implement real `enrich_profile`
-- [ ] Implement real `fetch_intent_triggers`
-- [ ] Implement real `fetch_public_signals`
+- [x] Implement real `enrich_profile`
+- [x] Implement real `fetch_intent_triggers`
+- [x] Implement real `fetch_public_signals`
 - [ ] Implement deterministic scoring service
 - [ ] Implement deterministic CRM writeback evaluation before LLM invocation
 - [x] Implement OpenRouter-backed LLM explanation client foundation
@@ -201,7 +201,7 @@ Terminal step semantics:
 Provider boundary:
 
 - v0 selects normalized, provider-neutral contract-test boundaries rather than a named enrichment, intent/engagement, or public-signal vendor.
-- #5 adapters must prove success, empty success, timeout, rate limit, unavailable/malformed response, provenance, and freshness against that contract. Raw provider payloads remain adapter-local.
+- [x] #5 adapters now validate provider outputs for success, no-result, timeout, rate-limited, unavailable, and malformed responses before mapping terminal states; raw provider payloads remain adapter-local.
 
 Evidence object requirements:
 
