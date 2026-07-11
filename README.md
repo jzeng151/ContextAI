@@ -103,12 +103,14 @@ npm run build
 src/
   data/leads.ts           Evidence-backed development fixtures
   lib/contextai.ts        Shared contracts and deterministic safety helpers
+  lib/grounding.ts        Allowed-claim compiler and grounded-output validator
   lib/integrations.ts     HubSpot and OpenRouter client foundations
   pages/index.astro       Current rep and RevOps dashboard
 scripts/
   check-integrations.ts   Optional live integration smoke checks
 tests/
   contextai.test.ts       Contract, fixture, grounding, and helper tests
+  grounding.test.ts       Grounded-output validation and safety evals
 PRD.md                     Product and safety requirements
 CONTRIBUTING.md            Local setup and collaboration workflow
 ROADMAP.md                 Product delivery plan and implementation status
