@@ -68,6 +68,7 @@ Poor-fit v0 segments:
 - [x] Live credentials confirmed for OpenRouter and HubSpot
 - [x] Lead packet contract foundation and evidence-backed fixtures merged in PR #10
 - [x] Locked v0 packet semantics for tool status, engagement, CRM associations, manual review, and writeback plan/outcome in #11
+- [x] Versioned scoring configuration defaults, safety validation, immutable publish/compare/active-selection primitives, and reusable boundary fixtures in #8
 - [x] Contributor setup and workflow guide
 
 ## 3. Core Agent Flow
@@ -352,16 +353,18 @@ Configuration primitives belong to #8; pilot-ready RevOps screens, review, audit
 
 Scoring version control:
 
-- [ ] Version ID
-- [ ] Created by
-- [ ] Created at
-- [ ] Active/inactive status
-- [ ] Weight changes
-- [ ] Threshold changes
-- [ ] Source rule changes
-- [ ] Writeback policy changes
-- [ ] Admin notes
-- [ ] Store score version on every lead evaluation
+#8 defines these pure runtime primitives; #13 and #16 still own persistence, history, and admin presentation.
+
+- [x] Version ID
+- [x] Created by
+- [x] Created at
+- [x] Draft/active/inactive status
+- [x] Weight changes
+- [x] Threshold changes
+- [x] Source rule changes
+- [x] Writeback policy changes
+- [x] Admin notes
+- [x] Scoring-run context carries the explicit active version ID; #3/#15 still own production evaluation execution
 
 Admin review queue reasons:
 
