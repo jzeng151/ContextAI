@@ -92,7 +92,6 @@ export const explainLeadWithOpenRouter = async (
             tool_status: lead.tool_status,
             missing_fields: lead.missing_fields,
             stale_fields: lead.stale_fields,
-            source_conflicts: lead.source_conflicts,
             writeback_plan: lead.writeback_plan,
             writeback_outcome: lead.writeback_outcome,
             allowed_claims: lead.allowed_claims
