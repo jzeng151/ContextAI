@@ -17,6 +17,8 @@ import {
 import { assertLeadPacket, groundedHook, hasOnlyWeakOpenIntent, isWritebackEligible } from "../src/lib/contextai.ts";
 import { explainLeadWithOpenRouter, hubSpotConfigFromEnv, listHubSpotContacts, openRouterConfigFromEnv, writeHubSpotEnrichment } from "../src/lib/integrations.ts";
 
+const defaultContext = createScoringRunContext(defaultConfigVersion);
+
 test("stale enrichment is not eligible for CRM writeback", () => {
   const lead = leads.find((item) => item.lead_id === "stale-writeback");
   assert.ok(lead);
@@ -628,7 +630,7 @@ test("OpenRouter is not called for a structurally incomplete packet", async () =
   };
   try {
     const { tool_status: _missing, ...incomplete } = leads[0];
-    await assert.rejects(explainLeadWithOpenRouter(incomplete as never, { apiKey: "test", model: "test" }), /invalid lead packet contract/i);
+    await assert.rejects(explainLeadWithOpenRouter(incomplete as never, defaultContext, { apiKey: "test", model: "test" }), /invalid lead packet contract/i);
     assert.equal(called, false);
   } finally {
     globalThis.fetch = originalFetch;
@@ -650,7 +652,7 @@ test("OpenRouter prompt excludes disallowed provider text", async () => {
   };
 
   try {
-    await explainLeadWithOpenRouter({ ...lead, disallowed_claims: [conflictText] }, { apiKey: "test", model: "test" });
+    await explainLeadWithOpenRouter({ ...lead, disallowed_claims: [conflictText] }, defaultContext, { apiKey: "test", model: "test" });
     const payload = JSON.parse(prompt);
     assert.deepEqual(Object.keys(payload).sort(), [
       "allowed_claims",
@@ -675,7 +677,7 @@ test("OpenRouter output requires valid allowed-claim citations", async () => {
   }), { status: 200 });
 
   try {
-    const result = await explainLeadWithOpenRouter(leads[0], { apiKey: "test", model: "test" });
+    const result = await explainLeadWithOpenRouter(leads[0], defaultContext, { apiKey: "test", model: "test" });
     assert.equal(result.audit.outcome, "fallback");
     assert.equal(result.audit.failure, "invalid_output");
     assert.equal(result.explanation.hook_recommendation, "No grounded hook available — no recent verified signal found.");

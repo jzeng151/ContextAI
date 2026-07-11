@@ -7,7 +7,7 @@ import {
   type GroundingAudit,
 } from "./grounding.ts";
 import type { ScoredLeadPacket } from "./scoring.ts";
-import { defaultScoringConfig, type ScoringConfig } from "./config.ts";
+import type { ScoringRunContext } from "./config.ts";
 
 type Env = Record<string, string | undefined>;
 
@@ -70,11 +70,12 @@ const readJson = async <T>(response: Response): Promise<T> => {
 
 export const explainLeadWithOpenRouter = async (
   lead: ScoredLeadPacket,
+  scoringContext: ScoringRunContext,
   config = openRouterConfigFromEnv(),
-  scoringConfig: ScoringConfig = defaultScoringConfig,
 ) => {
   assertLeadPacket(lead);
-  const claims = compileAllowedClaims(lead, scoringConfig);
+  if (scoringContext.score_version !== lead.score_version) throw new Error("Scoring context does not match lead score version");
+  const claims = compileAllowedClaims(lead, scoringContext.config);
   const fallback = fallbackGroundedExplanation(lead);
   const audit = (outcome: GroundingAudit["outcome"], failure?: GroundingAudit["failure"]): GroundingAudit => ({
     prompt_version: groundingPromptVersion,

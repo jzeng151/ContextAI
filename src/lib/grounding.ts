@@ -6,11 +6,13 @@ import type { ScoreDriver, ScoredLeadPacket } from "./scoring.ts";
 export const groundingPromptVersion = "grounding-v1";
 export const fallbackHook = "No grounded hook available — no recent verified signal found.";
 
+type ClaimDriver = keyof ScoreBreakdown | "manual_review";
+
 export type GroundedClaim = {
   claim_id: string;
   text: string;
   evidence_ids: string[];
-  driver: keyof ScoreBreakdown;
+  driver: ClaimDriver;
   hook: string | null;
 };
 
@@ -37,8 +39,10 @@ export type GroundingAudit = {
 };
 
 const dayMs = 24 * 60 * 60 * 1000;
-const blockedText = /ignore\s+(?:all\s+)?(?:previous\s+)?instructions?|system\s+prompt|developer\s+message|password|api[_ -]?key|race|ethnicity|religion|political|health|sexual orientation|trade union|financial distress|precise location/i;
-const safeText = (value: string) => value.trim().length > 0 && value.length <= 160 && !blockedText.test(value);
+const instructionText = /ignore\s+(?:all\s+)?(?:previous\s+)?instructions?|system\s+prompt|developer\s+message|password|api[_ -]?key/i;
+const sensitiveText = /\b(?:race|ethnicity|religion|political affiliation|health status|sexual orientation|trade union|financial distress|precise location)\b/i;
+const safeText = (value: string, checkSensitive = true) => value.trim().length > 0 && value.length <= 160 &&
+  !instructionText.test(value) && (!checkSensitive || !sensitiveText.test(value));
 const allEvidence = (lead: LeadPacket) => [
   ...lead.crm_context.evidence,
   ...lead.enrichment_fields.evidence,
@@ -64,17 +68,17 @@ const eligible = (lead: LeadPacket, item: Evidence, config: ScoringConfig) => {
   return config.sourcePolicy.approvedSourceTypes.includes(item.source_type) &&
     item.confidence !== "Low" && age >= 0 && age <= maxAge(item.source_type, config) &&
     (step === null || lead.tool_status[step].status === "success") &&
-    safeText(item.source_name) && safeText(lead.lead_identity.company);
+    safeText(item.source_name, false) && safeText(lead.lead_identity.company, false);
 };
 
-const claimFor = (lead: LeadPacket, item: Evidence, driver: ScoreDriver["category"]): Omit<GroundedClaim, "claim_id"> | null => {
+const claimFor = (lead: LeadPacket, item: Evidence, driver: ClaimDriver): Omit<GroundedClaim, "claim_id"> | null => {
   const company = lead.lead_identity.company;
   const source = item.source_name;
   const fields = item.field_values ?? {};
   let text: string | null = null;
   if (typeof fields.employees === "number") text = `${source} reports ${company} has ${fields.employees} employees.`;
   else if (typeof fields.revenue_band === "string" && safeText(fields.revenue_band)) text = `${source} reports ${company}'s revenue band is ${fields.revenue_band}.`;
-  else if (Array.isArray(fields.tech_stack) && fields.tech_stack.every(safeText)) text = `${source} reports ${company} uses ${fields.tech_stack.join(", ")}.`;
+  else if (Array.isArray(fields.tech_stack) && fields.tech_stack.every((value) => safeText(value))) text = `${source} reports ${company} uses ${fields.tech_stack.join(", ")}.`;
   else if (fields.demo_request === true) text = `${source} recorded a demo request for ${company}.`;
   else if (fields.pricing_page_visit === true) text = `${source} recorded a pricing-page visit for ${company}.`;
   else if (typeof fields.replies === "number" && fields.replies > 0) text = `${source} recorded ${fields.replies} sales ${fields.replies === 1 ? "reply" : "replies"} for ${company}.`;
@@ -87,6 +91,9 @@ const claimFor = (lead: LeadPacket, item: Evidence, driver: ScoreDriver["categor
     text = `${source} reported ${company}'s ${fields.label} on ${date}.`;
     return { text, evidence_ids: [item.evidence_id], driver, hook: `Reference ${company}'s ${fields.label}, reported by ${source} on ${date}.` };
   }
+  else if (item.source_type === "validation" && Array.isArray(item.field_value) && item.field_value.every((value) => safeText(value))) {
+    text = `${source} found missing required fields for ${company}: ${item.field_value.join(", ")}.`;
+  }
   return text ? { text, evidence_ids: [item.evidence_id], driver, hook: null } : null;
 };
 
@@ -96,14 +103,42 @@ export const compileAllowedClaims = (
 ): GroundedClaim[] => {
   const evidence = new Map(allEvidence(lead).map((item) => [item.evidence_id, item]));
   const claims: GroundedClaim[] = [];
+  const add = (item: Evidence, driver: ClaimDriver) => {
+    if (!eligible(lead, item, config)) return;
+    const claim = claimFor(lead, item, driver);
+    if (!claim || claims.some((candidate) => candidate.text === claim.text)) return;
+    claims.push({ ...claim, claim_id: `${driver}:${item.evidence_id}:${claims.length + 1}` });
+  };
   for (const driver of lead.top_drivers) {
     for (const evidenceId of driver.evidence_ids) {
       const item = evidence.get(evidenceId);
-      if (!item || !eligible(lead, item, config)) continue;
-      const claim = claimFor(lead, item, driver.category);
-      if (!claim || claims.some((candidate) => candidate.text === claim.text)) continue;
-      claims.push({ ...claim, claim_id: `${driver.category}:${evidenceId}:${claims.length + 1}` });
+      if (item) add(item, driver.category);
     }
+  }
+  if (lead.priority_band === "Needs Manual Review") {
+    const supportingEvidence = allEvidence(lead).filter((item) =>
+      eligible(lead, item, config) && claimFor(lead, item, "manual_review") !== null
+    );
+    if (supportingEvidence.length > 0) {
+      const reasons = lead.manual_review_reasons.map((reason) => ({
+        missing_required_data: "required scoring data is missing",
+        uncertain_identity: "identity or corporate domain is uncertain",
+        duplicate_risk: "duplicate CRM records may exist",
+        ambiguous_account: "the account association is ambiguous",
+        invalid_source_result: "a required source result is invalid or unavailable",
+        source_conflict: "source values conflict",
+        unsafe_workflow_state: "the CRM workflow state is unsafe",
+        scoring_unavailable: "deterministic scoring is unavailable",
+      })[reason]);
+      claims.push({
+        claim_id: `manual_review:${lead.evaluation_id}:1`,
+        text: `${lead.lead_identity.company} requires manual review because ${reasons.join(" and ")}.`,
+        evidence_ids: supportingEvidence.map((item) => item.evidence_id),
+        driver: "manual_review",
+        hook: null,
+      });
+    }
+    for (const item of supportingEvidence) add(item, "manual_review");
   }
   return claims;
 };
@@ -158,8 +193,9 @@ export const validateGroundedExplanation = (
   const reasonClaims = value.reason_claim_ids.map((id) => byId.get(id));
   const hookClaims = value.hook_claim_ids.map((id) => byId.get(id));
   const topDrivers = [...new Set(claims.map((claim) => claim.driver))].slice(0, 2);
+  const manualReview = lead.priority_band === "Needs Manual Review";
   if (reasonClaims.length < 1 || reasonClaims.length > 2 || reasonClaims.some((claim) => !claim) ||
-    reasonClaims.some((claim, index) => claim?.driver !== topDrivers[index]) ||
+    reasonClaims.some((claim, index) => claim?.driver !== (manualReview ? "manual_review" : topDrivers[index])) ||
     value.reason !== reasonClaims.map((claim) => claim?.text).join(" ") ||
     hookClaims.length > 1 || hookClaims.some((claim) => !claim?.hook) ||
     (hookClaims.length === 0 ? value.hook_recommendation !== fallbackHook : value.hook_recommendation !== hookClaims[0]?.hook)) {
