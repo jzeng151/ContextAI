@@ -300,6 +300,7 @@ test("enrichment rejects invalid confidence, freshness, URLs, and technology ent
   const invalidPayloads = [
     { source_name: "Provider", employees: 10, last_updated: evaluatedAt, confidence: "Certain" },
     { source_name: "Provider", employees: 10, confidence: "High" },
+    { source_name: "Provider", employees: 10, last_updated: new Date(Date.parse(evaluatedAt) + 1_000).toISOString() },
     { source_name: "Provider", employees: 10, last_updated: evaluatedAt, source_url: "ftp://example.com/profile" },
     { source_name: "Provider", employees: 10, last_updated: evaluatedAt, tech_stack: ["Astro", 42] },
   ];
@@ -335,10 +336,35 @@ test("public evidence IDs include provider record identity", async () => {
   }
 });
 
+test("public adapters drop future signals and deduplicate repeated provider records", async () => {
+  const originalFetch = globalThis.fetch;
+  const signal = { label: "Funding announced", source: "Provider", source_record_id: "record-1", published_at: evaluatedAt };
+  globalThis.fetch = async () => new Response(JSON.stringify({ signals: [
+    signal,
+    signal,
+    { ...signal, source_record_id: "future-record", published_at: new Date(Date.parse(evaluatedAt) + 1_000).toISOString() },
+  ] }), { status: 200 });
+  try {
+    const result = await fetchPublicSignals("Example", {
+      evaluatedAt,
+      env: { PUBLIC_SIGNALS_API_URL: "https://signals.example/v1/company" },
+    });
+    assert.equal(result.status, "success");
+    assert.equal(result.signals.length, 1);
+    assert.equal(result.evidence.length, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("intent adapters reject unsafe counts, missing provenance/dates, and malformed nested sections", async () => {
   const originalFetch = globalThis.fetch;
   const invalidPayloads = [
     { source_name: "Provider", intent: { source_name: "Provider", surge: true } },
+    {
+      source_name: "Provider",
+      intent: { source_name: "Provider", surge: true, last_updated: new Date(Date.parse(evaluatedAt) + 1_000).toISOString() },
+    },
     { source_name: "Provider", engagement: { source_name: "Provider", opens: 1 } },
     { intent: { surge: true, last_updated: evaluatedAt } },
     {

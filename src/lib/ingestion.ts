@@ -284,6 +284,7 @@ const parseEnrichmentResult = (payload: unknown, evaluatedAt: string): EnrichPro
     (payload.source_url !== undefined && sourceUrl === undefined) ||
     (payload.source_record_id !== undefined && sourceRecordId === undefined) ||
     (payload.last_updated !== undefined && sourceUpdatedAt === undefined) ||
+    (sourceUpdatedAt !== undefined && Date.parse(sourceUpdatedAt) > Date.parse(evaluatedAt)) ||
     (payload.employees !== undefined && employees === undefined) ||
     (payload.revenue_band !== undefined && revenueBand === undefined) ||
     (hasTechStack && (!Array.isArray(payload.tech_stack) || techStack.length !== payload.tech_stack.length))
@@ -360,6 +361,7 @@ const parseIntentSection = (
   if (
     (source.surge !== undefined && parsedSurge === undefined) ||
     (source.last_updated !== undefined && updatedAt === undefined) ||
+    (updatedAt !== undefined && Date.parse(updatedAt) > Date.parse(evaluatedAt)) ||
     (parsedSurge === true && updatedAt === undefined)
   ) {
     return {
@@ -448,7 +450,11 @@ const parseEngagementSection = (
   };
   const isMeaningful = values.opens > 0 || values.clicks > 0 || values.replies > 0 || values.demo_request || values.pricing_page_visit;
 
-  if ((source.last_updated !== undefined && updatedAt === undefined) || (isMeaningful && updatedAt === undefined)) {
+  if (
+    (source.last_updated !== undefined && updatedAt === undefined) ||
+    (updatedAt !== undefined && Date.parse(updatedAt) > Date.parse(evaluatedAt)) ||
+    (isMeaningful && updatedAt === undefined)
+  ) {
     return {
       parsed: null,
       sourceName,
@@ -577,7 +583,7 @@ const parseIntentPayload = (payload: unknown, evaluatedAt: string): IntentTrigge
   };
 };
 
-const parsePublicSignalsResult = (payload: unknown): PublicSignalItem[] | "malformed" => {
+const parsePublicSignalsResult = (payload: unknown, evaluatedAt: string): PublicSignalItem[] | "malformed" => {
   if (!isRecord(payload)) return "malformed";
   const rawSignals = payload.signals;
   if (!Object.hasOwn(payload, "signals")) return "malformed";
@@ -599,6 +605,7 @@ const parsePublicSignalsResult = (payload: unknown): PublicSignalItem[] | "malfo
 
     if (!signal.label || !signal.source || !signal.published_at) continue;
     if (signal.source_url === undefined && signal.source_record_id === undefined) continue;
+    if (Date.parse(signal.published_at) > Date.parse(evaluatedAt)) continue;
 
     validSignals.push({
       label: signal.label,
@@ -610,7 +617,10 @@ const parsePublicSignalsResult = (payload: unknown): PublicSignalItem[] | "malfo
     });
   }
 
-  return validSignals;
+  return [...new Map(validSignals.map((signal) => [
+    evidenceId(["public_signal", signal.source, signal.label, signal.published_at, signal.source_record_id ?? signal.source_url ?? ""]),
+    signal,
+  ])).values()];
 };
 
 const publicSignalEvidence = (signals: PublicSignalItem[], evaluatedAt: string): Evidence[] =>
@@ -634,7 +644,7 @@ const publicSignalEvidence = (signals: PublicSignalItem[], evaluatedAt: string):
   });
 
 const parsePublicResult = (payload: unknown, evaluatedAt: string): PublicSignalsResult => {
-  const rawSignals = parsePublicSignalsResult(payload);
+  const rawSignals = parsePublicSignalsResult(payload, evaluatedAt);
 
   if (rawSignals === "malformed") {
     return invalidResult({
