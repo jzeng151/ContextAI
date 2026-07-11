@@ -3,10 +3,10 @@
 ## Local Setup
 
 1. Install Node.js 22.12.0 or newer and npm.
-2. Install dependencies:
+2. Install dependencies from the lockfile:
 
    ```sh
-   npm install
+   npm ci
    ```
 
 3. Create local environment config:
@@ -44,9 +44,10 @@
 
    Run `npm start` separately only when working on the server runtime. It uses `DATABASE_PATH` and exposes `GET /health` on `HOST:PORT`.
 
-3. Before committing, run:
+3. Before opening a pull request, run the same commands as CI:
 
    ```sh
+   npm ci
    npm test
    npm run build
    ```
@@ -58,6 +59,10 @@
    ```
 
    The integration check is safe to run without secrets; it reports skipped services.
+
+## Required Pull Request Check
+
+Every pull request and push to `main` must pass `CI / Test and build` on Node 22. CI uses only repository fixtures and requires no secrets. Live HubSpot and OpenRouter checks are intentionally excluded.
 
 ## Parallel Development
 
