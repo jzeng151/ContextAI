@@ -33,6 +33,9 @@ export const migrations: readonly Migration[] = [
         PRIMARY KEY (tenant_id, version_id)
       );
 
+      CREATE UNIQUE INDEX config_versions_one_active_per_tenant
+      ON config_versions (tenant_id) WHERE status = 'active';
+
       CREATE TABLE evaluation_runs (
         evaluation_id TEXT PRIMARY KEY,
         tenant_id TEXT NOT NULL REFERENCES tenants(tenant_id),
@@ -48,6 +51,7 @@ export const migrations: readonly Migration[] = [
         retention_after TEXT,
         UNIQUE (tenant_id, idempotency_key),
         UNIQUE (tenant_id, evaluation_id),
+        UNIQUE (tenant_id, evaluation_id, request_id, score_version),
         FOREIGN KEY (tenant_id, score_version) REFERENCES config_versions(tenant_id, version_id)
       );
 
@@ -136,7 +140,8 @@ export const migrations: readonly Migration[] = [
         actor_type TEXT NOT NULL,
         recorded_at TEXT NOT NULL,
         UNIQUE (tenant_id, evaluation_id, audit_id),
-        FOREIGN KEY (tenant_id, evaluation_id) REFERENCES evaluation_runs(tenant_id, evaluation_id)
+        FOREIGN KEY (tenant_id, evaluation_id, request_id, score_version)
+          REFERENCES evaluation_runs(tenant_id, evaluation_id, request_id, score_version)
       );
 
       CREATE TABLE rollback_links (

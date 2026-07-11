@@ -45,6 +45,11 @@ test("complete and partial-failure evaluations persist with idempotency", () => 
     store.saveTenant("tenant-1", "Pilot tenant");
     store.saveIntegration({ integrationId: "integration-1", tenantId: "tenant-1", provider: "hubspot", externalAccountId: "portal-1", status: "active" });
     store.saveConfigVersion("tenant-1", defaultConfigVersion);
+    store.saveConfigVersion("tenant-1", { ...defaultConfigVersion, id: "score-draft", status: "draft" });
+    assert.throws(
+      () => store.saveConfigVersion("tenant-1", { ...defaultConfigVersion, id: "second-active" }),
+      /unique constraint/i
+    );
     const complete = lead("golden-normal");
     const partial = lead("no-usable-data");
     const skipped = structuredClone(lead("no-public-signal"));
@@ -78,7 +83,7 @@ test("complete and partial-failure evaluations persist with idempotency", () => 
     assert.equal(store.getEvaluation("tenant-1", skipped.evaluation_id)?.outcome, "partial_failure");
     assert.ok((store.database.prepare("SELECT count(*) AS count FROM evidence WHERE evaluation_id = ?").get(complete.evaluation_id) as { count: number }).count > 0);
     assert.ok((store.database.prepare("SELECT count(*) AS count FROM claims WHERE evaluation_id = ?").get(complete.evaluation_id) as { count: number }).count > 0);
-    assert.equal((store.database.prepare("SELECT count(*) AS count FROM config_versions").get() as { count: number }).count, 1);
+    assert.equal((store.database.prepare("SELECT count(*) AS count FROM config_versions").get() as { count: number }).count, 2);
   } finally {
     store.close();
   }
@@ -116,6 +121,14 @@ test("audit and event records are append-only and retention is only surfaced as 
       actorType: "system"
     } as const;
     assert.throws(() => store.appendAuditRecord(audit), /foreign key constraint/i);
+    assert.throws(
+      () => store.appendAuditRecord({ ...audit, auditId: "audit-wrong-request", tenantId: "tenant-1", requestId: "wrong-request" }),
+      /foreign key constraint/i
+    );
+    assert.throws(
+      () => store.appendAuditRecord({ ...audit, auditId: "audit-wrong-version", tenantId: "tenant-1", scoreVersion: "wrong-version" }),
+      /foreign key constraint/i
+    );
 
     const auditId = store.appendAuditRecord({
       ...audit,
