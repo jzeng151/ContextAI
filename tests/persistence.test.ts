@@ -201,6 +201,14 @@ test("pilot event contract records every event idempotently without PII or repor
     const missingRequired = structuredClone(events[3]!) as unknown as { data: Record<string, unknown> };
     delete missingRequired.data.actionType;
     assert.throws(() => assertPilotEvent(missingRequired), /actionType is required/i);
+    assert.throws(
+      () => assertPilotEvent({ ...editEvent, data: { ...editEvent.data, fieldName: undefined } }),
+      /fieldName is required/i
+    );
+    assert.throws(
+      () => assertPilotEvent({ ...events[2]!, retentionClass: "writeback_audit_24_months" }),
+      /lead\.viewed requires pilot_analytics_12_months/i
+    );
     assert.throws(() => assertPilotEvent({ ...events[2]!, idempotencyKey: "pii", email: "rep@example.com" }), /excluded PII/i);
 
     const failures: string[] = [];

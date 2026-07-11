@@ -119,7 +119,7 @@ export function assertPilotEvent(value: unknown): asserts value is PilotEvent {
   const data = event.data as Record<string, unknown>;
   for (const field of requiredEventData[event.name as PilotEventName]) {
     if (!Object.hasOwn(data, field)) throw new Error(`${String(event.name)} data.${field} is required`);
-    if (typeof data[field] === "string") nonEmpty(data[field], `data.${field}`);
+    if (field !== "priorityScore" && field !== "weakSignal") nonEmpty(data[field], `data.${field}`);
   }
   for (const [field, values] of Object.entries(allowedEventData[event.name as PilotEventName] ?? {})) {
     if (!values.includes(data[field])) throw new Error(`${String(event.name)} data.${field} is not supported`);
@@ -137,9 +137,8 @@ export function assertPilotEvent(value: unknown): asserts value is PilotEvent {
   }
   if (["score.shown", "recommendation.disposition"].includes(String(event.name))) nonEmpty(event.promptVersion, "promptVersion");
   if (event.name === "source.contribution" && event.evidenceRefs.length === 0) throw new Error("source.contribution requires evidenceRefs");
-  if (String(event.name).startsWith("writeback.") && event.retentionClass !== "writeback_audit_24_months") {
-    throw new Error("writeback events require writeback_audit_24_months retention");
-  }
+  const retentionClass = String(event.name).startsWith("writeback.") ? "writeback_audit_24_months" : "pilot_analytics_12_months";
+  if (event.retentionClass !== retentionClass) throw new Error(`${String(event.name)} requires ${retentionClass} retention`);
   if (event.eventId !== undefined) nonEmpty(event.eventId, "eventId");
   if (event.promptVersion !== undefined) nonEmpty(event.promptVersion, "promptVersion");
   JSON.stringify(value);
