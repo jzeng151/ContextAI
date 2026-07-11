@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  enrich_profile,
   enrichProfile,
   fetchIntentTriggers,
   fetchPublicSignals,
@@ -8,6 +9,10 @@ import {
 } from "../src/lib/ingestion.ts";
 
 const evaluatedAt = "2026-07-09T09:00:00.000Z";
+
+test("contract-named enrichment export is available", () => {
+  assert.equal(enrich_profile, enrichProfile);
+});
 const fixtures = {
   enrichProfile: {
     "enterprisecorp.com": {
@@ -267,6 +272,64 @@ test("live provider payload validation maps malformed responses to invalid_resul
       env: { PUBLIC_SIGNALS_API_URL: "https://signals.example/v1/company" },
     });
     assert.equal(malformed.status, "invalid_result");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("adapter evidence matches the shared scalar and field-map contract", async () => {
+  const enrichment = await enrichProfile("enterprisecorp.com", { evaluatedAt, fixtures });
+  assert.equal(enrichment.status, "success");
+  assert.deepEqual(enrichment.evidence[0].field_values, { employees: 500 });
+
+  const activity = await fetchIntentTriggers("john.smith@enterprisecorp.com", { evaluatedAt, fixtures });
+  assert.equal(activity.status, "success");
+  const engagement = activity.evidence.find((item) => item.source_type === "engagement");
+  assert.equal(engagement?.field_value, "engagement activity");
+  assert.deepEqual(engagement?.field_values, {
+    opens: 2,
+    clicks: 1,
+    replies: 1,
+    demo_request: true,
+    pricing_page_visit: true,
+  });
+});
+
+test("enrichment rejects invalid confidence, freshness, URLs, and technology entries", async () => {
+  const originalFetch = globalThis.fetch;
+  const invalidPayloads = [
+    { source_name: "Provider", employees: 10, last_updated: evaluatedAt, confidence: "Certain" },
+    { source_name: "Provider", employees: 10, confidence: "High" },
+    { source_name: "Provider", employees: 10, last_updated: evaluatedAt, source_url: "ftp://example.com/profile" },
+    { source_name: "Provider", employees: 10, last_updated: evaluatedAt, tech_stack: ["Astro", 42] },
+  ];
+  try {
+    for (const payload of invalidPayloads) {
+      globalThis.fetch = async () => new Response(JSON.stringify(payload), { status: 200 });
+      const result = await enrichProfile("example.com", {
+        evaluatedAt,
+        env: { ENRICHMENT_API_URL: "https://enrich.example/v1/profile" },
+      });
+      assert.equal(result.status, "invalid_result");
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("public evidence IDs include provider record identity", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ signals: [
+    { label: "Funding announced", source: "Provider", source_record_id: "record-1", published_at: evaluatedAt },
+    { label: "Funding announced", source: "Provider", source_record_id: "record-2", published_at: evaluatedAt },
+  ] }), { status: 200 });
+  try {
+    const result = await fetchPublicSignals("Example", {
+      evaluatedAt,
+      env: { PUBLIC_SIGNALS_API_URL: "https://signals.example/v1/company" },
+    });
+    assert.equal(result.status, "success");
+    assert.equal(new Set(result.evidence.map((item) => item.evidence_id)).size, 2);
   } finally {
     globalThis.fetch = originalFetch;
   }

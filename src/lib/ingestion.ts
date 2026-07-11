@@ -107,7 +107,8 @@ const asIsoDate = (value: unknown): string | undefined =>
 const asUrl = (value: unknown): string | undefined => {
   if (typeof value !== "string" || !value.trim()) return undefined;
   try {
-    return new URL(value.trim()).protocol ? value.trim() : undefined;
+    const url = new URL(value.trim());
+    return url.protocol === "http:" || url.protocol === "https:" ? value.trim() : undefined;
   } catch {
     return undefined;
   }
@@ -157,7 +158,7 @@ const baseEvidence = (
   confidence,
   field_name: fieldName,
   field_value: fieldValue,
-  field_values: fieldValues,
+  field_values: fieldValues ?? (fieldValue === undefined ? undefined : { [fieldName]: fieldValue }),
   eligible_for_crm_writeback: eligibleForWriteback,
 });
 
@@ -274,8 +275,9 @@ const parseEnrichmentResult = (payload: unknown, evaluatedAt: string): EnrichPro
   const revenueBand = asString(payload.revenue_band);
   const hasTechStack = Object.hasOwn(payload, "tech_stack");
   const techStack = asTechStack(payload.tech_stack);
-  const confidence = asConfidence(payload.confidence) ?? "Medium";
-  const validConfidence = payload.confidence === undefined || confidence !== undefined;
+  const parsedConfidence = asConfidence(payload.confidence);
+  const confidence = parsedConfidence ?? "Medium";
+  const validConfidence = payload.confidence === undefined || parsedConfidence !== undefined;
 
   if (
     !validConfidence ||
@@ -284,7 +286,7 @@ const parseEnrichmentResult = (payload: unknown, evaluatedAt: string): EnrichPro
     (payload.last_updated !== undefined && sourceUpdatedAt === undefined) ||
     (payload.employees !== undefined && employees === undefined) ||
     (payload.revenue_band !== undefined && revenueBand === undefined) ||
-    (hasTechStack && !Array.isArray(payload.tech_stack))
+    (hasTechStack && (!Array.isArray(payload.tech_stack) || techStack.length !== payload.tech_stack.length))
   ) {
     return null;
   }
@@ -300,8 +302,10 @@ const parseEnrichmentResult = (payload: unknown, evaluatedAt: string): EnrichPro
     });
   }
 
+  if (sourceUpdatedAt === undefined) return null;
+
   const evidence: Evidence[] = [];
-  const updatedAt = sourceUpdatedAt ?? evaluatedAt;
+  const updatedAt = sourceUpdatedAt;
 
   if (employees !== undefined) {
     evidence.push(baseEvidence(sourceName, "enrichment", updatedAt, confidence, "employees", employees, evaluatedAt, sourceUrl, sourceRecordId, writebackEligible("enrichment", confidence, "employees")));
@@ -447,7 +451,7 @@ const parseEngagementSection = (
         updatedAt ?? evaluatedAt,
         confidence,
         "engagement",
-        values,
+        "engagement activity",
         evaluatedAt,
         asUrl(source.source_url),
         asString(source.source_record_id),
@@ -474,7 +478,9 @@ const parseEngagementSection = (
 const parseIntentPayload = (payload: unknown, evaluatedAt: string): IntentTriggersResult | null => {
   if (!isRecord(payload)) return null;
 
-  const confidence = asConfidence(payload.confidence) ?? "Medium";
+  const parsedConfidence = asConfidence(payload.confidence);
+  if (payload.confidence !== undefined && parsedConfidence === undefined) return null;
+  const confidence = parsedConfidence ?? "Medium";
   const intentSource = isRecord(payload.intent) ? payload.intent : payload;
   const engagementSource = isRecord(payload.engagement) ? payload.engagement : payload;
 
@@ -594,7 +600,7 @@ const parsePublicSignalsResult = (payload: unknown): PublicSignalItem[] | "malfo
 const publicSignalEvidence = (signals: PublicSignalItem[], evaluatedAt: string): Evidence[] =>
   signals.map((signal) => {
     return {
-      evidence_id: evidenceId(["public_signal", signal.source, signal.label, signal.published_at]),
+      evidence_id: evidenceId(["public_signal", signal.source, signal.label, signal.published_at, signal.source_record_id ?? signal.source_url ?? ""]),
       source_name: signal.source,
       source_type: "public_signal",
       source_url: signal.source_url,
@@ -875,3 +881,4 @@ export const writeCrmEnrichment = (): Promise<WriteCrmEnrichmentResult> =>
 
 export const fetch_intent_triggers = fetchIntentTriggers;
 export const fetch_public_signals = fetchPublicSignals;
+export const enrich_profile = enrichProfile;

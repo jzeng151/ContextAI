@@ -4,7 +4,7 @@ ContextAI is a RevOps-owned lead prioritization and data-quality layer for B2B G
 
 This document is the delivery and status view of the PRD. The source-of-truth order is: `PRD.md` for product and safety requirements; shared schemas and active configuration for runtime contracts; this roadmap for phase and status; and GitHub issues for executable scope, dependencies, and acceptance criteria.
 
-Implementation status below was reconciled against merged PR #10 and the local test/build on July 9, 2026. A checked foundation item does not mean the corresponding production path is pilot-ready.
+Implementation status below was reconciled against merged PR #25 and open PR #26 on July 11, 2026. A checked foundation item does not mean the corresponding production path is pilot-ready. PR #26's reviewed adapter-contract defects are addressed locally; #5 remains incomplete until validation and review pass.
 
 ## 1. Product Focus
 
@@ -69,6 +69,8 @@ Poor-fit v0 segments:
 - [x] Lead packet contract foundation and evidence-backed fixtures merged in PR #10
 - [x] Locked v0 packet semantics for tool status, engagement, CRM associations, manual review, and writeback plan/outcome in #11
 - [x] Versioned scoring configuration defaults, safety validation, immutable publish/compare/active-selection primitives, and reusable boundary fixtures in #8
+- [x] Configurable deterministic scoring, active score-version linkage, evidence-backed drivers, freshness-aware confidence, and fixture rescoring merged in PR #25
+- [x] Provider-neutral enrichment, intent/engagement, and public-signal adapter foundation with bounded retries, terminal failure mapping, and reviewed contract fixes in PR #26; full #5 completion still requires validation and review
 - [x] Contributor setup and workflow guide
 
 ## 3. Core Agent Flow
@@ -80,7 +82,7 @@ Poor-fit v0 segments:
 - [x] Implement real `enrich_profile`
 - [x] Implement real `fetch_intent_triggers`
 - [x] Implement real `fetch_public_signals`
-- [ ] Implement deterministic scoring service
+- [x] Implement deterministic scoring service
 - [ ] Implement deterministic CRM writeback evaluation before LLM invocation
 - [x] Implement OpenRouter-backed LLM explanation client foundation
 - [x] Implement HubSpot writeback client foundation
@@ -102,22 +104,22 @@ The LLM must never calculate scores, change bands, decide writeback, draft full 
 
 ### Deterministic Scoring Model v0
 
-- [ ] Implement configurable deterministic 0-100 score
-- [ ] Store `score_version` on every evaluation
-- [ ] Keep confidence separate from score
-- [ ] Enforce that email opens alone cannot produce Hot
+- [x] Implement configurable deterministic 0-100 score
+- [x] Store `score_version` on every scored evaluation
+- [x] Keep confidence separate from score
+- [x] Enforce that email opens alone cannot produce Hot
 - [ ] Support Needs Manual Review when required data is missing, conflicting, malformed, duplicated, or too low confidence
 
 Default weights:
 
 | Category | Weight | Status |
 | --- | ---: | --- |
-| ICP fit | 30 | [ ] |
-| High-intent actions | 25 | [ ] |
-| Engagement quality | 15 | [ ] |
-| Public or licensed timing signals | 15 | [ ] |
-| CRM/process context | 10 | [ ] |
-| Data confidence | 5 | [ ] |
+| ICP fit | 30 | [x] |
+| High-intent actions | 25 | [x] |
+| Engagement quality | 15 | [x] |
+| Public or licensed timing signals | 15 | [x] |
+| CRM/process context | 10 | [x] |
+| Data confidence | 5 | [x] |
 
 Default bands:
 
@@ -125,31 +127,31 @@ These defaults are locked for v0. The PRD's earlier `54/100 Warm` label was an e
 
 | Band | Score Range | Status |
 | --- | ---: | --- |
-| Hot | 80-100 | [ ] |
-| Warm | 60-79 | [ ] |
-| Cold | 0-59 | [ ] |
+| Hot | 80-100 | [x] |
+| Warm | 60-79 | [x] |
+| Cold | 0-59 | [x] |
 | Needs Manual Review | N/A | [x] Contract and fixtures validated; scoring implementation remains in #3 |
 
 Confidence rules:
 
-- [ ] High: required fields present, key sources fresh, no major conflicts
-- [ ] Medium: optional fields missing, one source stale, or limited signal set
-- [ ] Low: required fields missing, stale enrichment, source conflict, or uncertain identity
+- [x] High: required fields present, key sources fresh, no major conflicts
+- [x] Medium: optional fields missing, one source stale, or limited signal set
+- [x] Low: required fields missing, stale enrichment, source conflict, or uncertain identity
 - [x] Needs Manual Review is a nonnumeric override with `priority_score: null`, Low confidence, explicit reasons, and precedence over numeric bands
 
 Freshness rules:
 
 - [ ] CRM ownership, lifecycle stage, routing status current at evaluation time
-- [ ] Engagement and intent strongest if under 30 days old
-- [ ] Public signals strongest if under 90 days old
-- [ ] Firmographic enrichment acceptable under 90 days, degraded at 90-180 days, stale over 180 days
+- [x] Engagement and intent strongest if under 30 days old
+- [x] Public signals strongest if under 90 days old
+- [x] Firmographic enrichment acceptable under 90 days, degraded at 90-180 days, stale over 180 days
 - [ ] Contact data acceptable under 90 days, manual review for high-impact fields older than 180 days
 - [x] Basic stale enrichment guard exists for current mock/writeback helper
 
 Source conflict rules:
 
 - [x] Contract declares CRM owner, lifecycle stage, routing, open-opportunity, association, and duplicate state authoritative; production mapping remains in #15
-- [ ] Verified customer CRM data overrides enrichment unless blank, stale, or flagged low quality
+- [x] Verified customer CRM data overrides enrichment unless blank, stale, or flagged low quality
 - [ ] Newer enrichment can replace stale CRM firmographics only after confidence/source-quality checks
 - [x] Contract requires public-signal source name, publication date, and either a URL or stable provider record ID
 - [x] Contract requires ambiguous associations, duplicate risk, unresolved/conflicting corporate domains, and material high-impact conflicts to use Needs Manual Review and block eligible writeback
@@ -201,7 +203,9 @@ Terminal step semantics:
 Provider boundary:
 
 - v0 selects normalized, provider-neutral contract-test boundaries rather than a named enrichment, intent/engagement, or public-signal vendor.
-- [x] #5 adapters now validate provider outputs for success, no-result, timeout, rate-limited, unavailable, and malformed responses before mapping terminal states; raw provider payloads remain adapter-local.
+- [x] #5 adapter foundation maps success, no-result, timeout, rate-limited, unavailable, and malformed responses to terminal states and keeps raw provider payloads adapter-local.
+- [x] PR #26 adapter review fixes cover field maps, scalar values, confidence validation, source freshness, HTTP(S) URLs, evidence-ID uniqueness, the contract-named enrichment export, and malformed technology arrays.
+- [ ] #5 adapter outputs satisfy the shared `LeadPacket` evidence contract end-to-end under the required test/build and review gates.
 
 Evidence object requirements:
 
@@ -543,9 +547,9 @@ Security requirements:
 - [ ] Tenant isolation
 - [ ] Request-level audit logs
 - [ ] Admin-visible integration status
-- [ ] Source failure handling
+- [x] Source failure handling in the provider-adapter boundary; orchestration recovery remains in #13/#15
 - [x] Basic outbound request timeout handling
-- [ ] Rate-limit handling
+- [x] Bounded retry and rate-limit terminal handling in the provider-adapter boundary; orchestration-wide handling remains in #13/#15
 - [ ] Manual disconnect/revoke controls
 - [x] No prospect-facing autonomous actions in current implementation
 
@@ -553,7 +557,7 @@ Governance questions ContextAI must answer:
 
 - [x] Why did this mocked lead score high?
 - [x] Which mocked sources contributed to the displayed score?
-- [ ] Which scoring version was used?
+- [x] Which scoring version was used in the scored packet; dashboard display remains in #7/#16
 - [x] Which fields were missing or stale in current mock data?
 - [ ] Which claims were used in the hook via `allowed_claims`?
 - [x] Which mocked fields were written/skipped/flagged?
@@ -648,8 +652,8 @@ Recommended sequencing:
 | #12 | PR CI and contribution gates | None |
 | #13 | Server runtime and persistence | #11 |
 | #8 | Pure versioned config model | #11 |
-| #3 | Deterministic score result | #8, #11 |
-| #5 | Provider adapters and normalized evidence | #11 |
+| #3 | Deterministic score result (merged in PR #25; confidence-based writeback replanning remains owned by #4) | #8, #11 |
+| #5 | Provider adapters and normalized evidence (PR #26 implementation and review fixes complete locally; not Done pending validation/review) | #11 |
 | #4 | Writeback plan, execution, audit, rollback | #8, #11, #13; #5 for live data |
 | #6 | Allowed-claim compiler, LLM validator, evals | #3, #11; #5 for real-source completion |
 | #9 | Event contract and append-only recording | #11; #13 for persistence |
