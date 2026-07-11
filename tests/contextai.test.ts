@@ -1,6 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { leads } from "../src/data/leads.ts";
+import {
+  assertConfigVersion,
+  assertScoringConfig,
+  compareConfigs,
+  configBoundaryFixtures,
+  createConfigDraft,
+  createScoringRunContext,
+  defaultConfigVersion,
+  defaultScoringConfig,
+  invalidConfigFixtures,
+  publishConfigDraft,
+  selectActiveConfig
+} from "../src/lib/config.ts";
 import { assertLeadPacket, groundedHook, hasOnlyWeakOpenIntent, isWritebackEligible } from "../src/lib/contextai.ts";
 import { explainLeadWithOpenRouter, hubSpotConfigFromEnv, listHubSpotContacts, openRouterConfigFromEnv, writeHubSpotEnrichment } from "../src/lib/integrations.ts";
 
@@ -306,7 +319,7 @@ test("runtime contract validation rejects malformed evidence", () => {
 test("runtime contract validation enforces score structure without hard-coding configurable policy", () => {
   const lead = leads[0];
   assert.throws(() => assertLeadPacket({ ...lead, priority_score: 95 }), /invalid lead packet contract/i);
-  assert.doesNotThrow(() => assertLeadPacket({ ...lead, priority_band: "Cold" }));
+  assert.doesNotThrow(() => assertLeadPacket({ ...lead, score_version: "customer-score-v2", priority_band: "Cold" }));
   assert.doesNotThrow(() => assertLeadPacket({
     ...lead,
     priority_score: 95,
@@ -324,6 +337,179 @@ test("runtime contract validation enforces score structure without hard-coding c
     ...lead,
     score_breakdown: { ...lead.score_breakdown, sensitive_affinity: 0 }
   }), /invalid lead packet contract/i);
+});
+
+test("default scoring configuration is valid and resolves the v0 boundaries", () => {
+  assert.doesNotThrow(() => assertScoringConfig(defaultScoringConfig));
+  assert.doesNotThrow(() => assertConfigVersion(defaultConfigVersion));
+  assert.deepEqual(defaultScoringConfig.categoryWeights, {
+    icp_fit: 30,
+    high_intent_actions: 25,
+    engagement_quality: 15,
+    public_timing_signals: 15,
+    crm_process_context: 10,
+    data_confidence: 5
+  });
+  assert.deepEqual(defaultScoringConfig.bandThresholds, { Cold: 0, Warm: 60, Hot: 80 });
+  assert.deepEqual(defaultScoringConfig.freshness, {
+    intent: { freshThroughDays: 30 },
+    engagement: { freshThroughDays: 30 },
+    publicSignal: { freshThroughDays: 90 },
+    firmographic: { freshThroughDays: 90, staleAfterDays: 180 },
+    contact: { freshThroughDays: 90, manualReviewAfterDays: 180 },
+    writeback: { eligibleThroughDays: 90 }
+  });
+
+  const bandFor = (score: number) =>
+    score >= defaultScoringConfig.bandThresholds.Hot ? "Hot" :
+      score >= defaultScoringConfig.bandThresholds.Warm ? "Warm" : "Cold";
+  for (const fixture of configBoundaryFixtures.scoreBands) assert.equal(bandFor(fixture.score), fixture.expectedBand);
+  assert.equal(bandFor(54), "Cold");
+});
+
+test("configuration validation rejects unsafe ranges and relationships", () => {
+  const additionalInvalid = {
+    manualReviewConfidence: { ...defaultScoringConfig, manualReview: { ...defaultScoringConfig.manualReview, confidence: "High" } },
+    manualReviewTriggers: { ...defaultScoringConfig, manualReview: { ...defaultScoringConfig.manualReview, triggers: defaultScoringConfig.manualReview.triggers.slice(1) } },
+    unapprovedSourcePrecedence: {
+      ...defaultScoringConfig,
+      sourcePolicy: {
+        ...defaultScoringConfig.sourcePolicy,
+        approvedSourceTypes: defaultScoringConfig.sourcePolicy.approvedSourceTypes.filter((source) => source !== "enrichment")
+      },
+      writeback: {
+        ...defaultScoringConfig.writeback,
+        approvedSourceTypes: defaultScoringConfig.writeback.approvedSourceTypes.filter((source) => source !== "enrichment")
+      }
+    },
+    unknownWritebackField: {
+      ...defaultScoringConfig,
+      writeback: {
+        ...defaultScoringConfig.writeback,
+        allowlist: { ...defaultScoringConfig.writeback.allowlist, company: [...defaultScoringConfig.writeback.allowlist.company, "unknown_field"] }
+      }
+    }
+  };
+
+  for (const [name, config] of [...Object.entries(invalidConfigFixtures), ...Object.entries(additionalInvalid)]) {
+    assert.throws(() => assertScoringConfig(config), /invalid scoring configuration/i, name);
+  }
+  for (const source of ["crm", "intent", "engagement", "validation"]) {
+    assert.throws(() => assertScoringConfig({
+      ...defaultScoringConfig,
+      writeback: { ...defaultScoringConfig.writeback, approvedSourceTypes: [source] }
+    }), /invalid scoring configuration/i, source);
+  }
+});
+
+test("configuration defaults and versions are deeply immutable defensive copies", () => {
+  assert.ok(Object.isFrozen(defaultScoringConfig));
+  assert.ok(Object.isFrozen(defaultScoringConfig.categoryWeights));
+  assert.ok(Object.isFrozen(defaultScoringConfig.sourcePolicy.precedence.firmographic));
+  assert.ok(Object.isFrozen(defaultScoringConfig.writeback.allowlist.company));
+  assert.ok(Object.isFrozen(defaultConfigVersion));
+  assert.ok(Object.isFrozen(defaultConfigVersion.config.freshness.firmographic));
+  assert.equal(Reflect.set(defaultScoringConfig.categoryWeights, "icp_fit", 0), false);
+
+  const input = {
+    id: "score-v0.2-draft",
+    author: "RevOps",
+    createdAt: "2026-07-11T12:00:00.000Z",
+    changeSummary: "Draft policy update.",
+    adminNotes: "Original notes.",
+    config: structuredClone(defaultScoringConfig)
+  };
+  const draft = createConfigDraft(input);
+  input.adminNotes = "Changed after creation.";
+  Reflect.set(input.config.categoryWeights, "icp_fit", 0);
+
+  assert.equal(draft.adminNotes, "Original notes.");
+  assert.equal(draft.config.categoryWeights.icp_fit, 30);
+  assert.ok(Object.isFrozen(draft));
+  assert.ok(Object.isFrozen(draft.config.categoryWeights));
+});
+
+test("configuration comparison reports only changed policy sections", () => {
+  const changed = {
+    ...defaultScoringConfig,
+    categoryWeights: { ...defaultScoringConfig.categoryWeights, icp_fit: 31, high_intent_actions: 24 },
+    bandThresholds: { ...defaultScoringConfig.bandThresholds, Warm: 61 },
+    sourcePolicy: {
+      ...defaultScoringConfig.sourcePolicy,
+      precedence: { ...defaultScoringConfig.sourcePolicy.precedence, firmographic: ["crm"] as const }
+    },
+    writeback: {
+      ...defaultScoringConfig.writeback,
+      allowlist: { ...defaultScoringConfig.writeback.allowlist, contact: defaultScoringConfig.writeback.allowlist.contact.slice(0, -1) }
+    }
+  };
+
+  assert.deepEqual(compareConfigs(defaultScoringConfig, defaultScoringConfig), []);
+  assert.deepEqual(compareConfigs(defaultScoringConfig, changed), ["categoryWeights", "bandThresholds", "sourcePolicy", "writeback"]);
+});
+
+test("publishing a draft returns a new catalog with one active immutable version", () => {
+  const draft = createConfigDraft({
+    id: "score-v0.2",
+    author: "RevOps",
+    createdAt: "2026-07-11T12:00:00.000Z",
+    changeSummary: "Raise the Warm threshold.",
+    adminNotes: "Review before rollout.",
+    config: { ...defaultScoringConfig, bandThresholds: { ...defaultScoringConfig.bandThresholds, Warm: 61 } }
+  });
+  const catalog = [defaultConfigVersion];
+  const before = structuredClone(catalog);
+  const published = publishConfigDraft(catalog, draft);
+
+  assert.deepEqual(catalog, before);
+  assert.equal(defaultConfigVersion.status, "active");
+  assert.equal(draft.status, "draft");
+  assert.deepEqual(published.map(({ id, status }) => ({ id, status })), [
+    { id: defaultConfigVersion.id, status: "inactive" },
+    { id: draft.id, status: "active" }
+  ]);
+  assert.ok(Object.isFrozen(published));
+  assert.equal(selectActiveConfig(published).id, draft.id);
+});
+
+test("active configuration selection rejects ambiguous catalogs and scoring requires the selected version", () => {
+  const secondActive = { ...defaultConfigVersion, id: "score-v0.2" };
+  const duplicateInactive = { ...defaultConfigVersion, status: "inactive" as const };
+  const draft = { ...defaultConfigVersion, id: "score-draft", status: "draft" as const };
+  assert.throws(() => selectActiveConfig([]), /exactly one active/i);
+  assert.throws(() => selectActiveConfig([defaultConfigVersion, secondActive]), /exactly one active/i);
+  assert.throws(() => selectActiveConfig([defaultConfigVersion, duplicateInactive]), /unique/i);
+  assert.throws(() => selectActiveConfig([defaultConfigVersion, { ...draft, id: defaultConfigVersion.id }]), /unique/i);
+  assert.equal(selectActiveConfig([defaultConfigVersion, draft]).id, defaultConfigVersion.id);
+
+  const selected = selectActiveConfig([defaultConfigVersion]);
+  const context = createScoringRunContext(selected);
+  assert.equal(context.score_version, selected.id);
+  assert.deepEqual(context.config, selected.config);
+  assert.ok(Object.isFrozen(context));
+  assert.ok(Object.isFrozen(context.config));
+  assert.throws(() => createScoringRunContext({ ...selected, status: "inactive" }), /active config version/i);
+});
+
+test("publishing validates version metadata and rejects an invalid draft", () => {
+  const input = {
+    id: "score-first",
+    author: "RevOps",
+    createdAt: "2026-07-11T12:00:00.000Z",
+    changeSummary: "First published policy.",
+    adminNotes: "",
+    config: defaultScoringConfig
+  };
+  for (const override of [{ id: " " }, { author: "" }, { createdAt: "not-a-date" }, { changeSummary: "" }]) {
+    assert.throws(() => createConfigDraft({ ...input, ...override }), /version metadata/i);
+  }
+
+  const draft = createConfigDraft(input);
+  assert.equal(selectActiveConfig(publishConfigDraft([], draft)).id, draft.id);
+  assert.throws(
+    () => publishConfigDraft([], { ...draft, config: invalidConfigFixtures.weightTotal } as never),
+    /invalid scoring configuration/i
+  );
 });
 
 test("runtime contract validation rejects invalid engagement counters", () => {

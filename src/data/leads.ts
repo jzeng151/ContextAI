@@ -1,7 +1,8 @@
 import type { Confidence, Evidence, LeadPacket, SourceType, ToolStatus } from "../lib/contextai";
+import { createScoringRunContext, defaultConfigVersion } from "../lib/config.ts";
 
 const evaluatedAt = "2026-07-09T09:00:00.000Z";
-const scoreVersion = "score-v0.1";
+const scoreVersion = createScoringRunContext(defaultConfigVersion).score_version;
 const requestId = "request-morning-2026-07-09";
 
 const toolStatus = (overrides: Partial<ToolStatus> = {}): ToolStatus => ({
