@@ -72,6 +72,7 @@ Poor-fit v0 segments:
 - [x] Configurable deterministic scoring, active score-version linkage, evidence-backed drivers, freshness-aware confidence, and fixture rescoring merged in PR #25
 - [x] Provider-neutral enrichment, intent/engagement, and public-signal adapter foundation with bounded retries, terminal failure mapping, and reviewed contract fixes in PR #26; full #5 completion still requires validation and review
 - [x] Native Node/SQLite runtime foundation with transactional migrations, durable evaluation/config/evidence/writeback/review records, idempotency, fixture seeding, retention hooks, and append-only audit/events in #13
+- [x] Stable pilot event contract, PII rejection, event idempotency, retention classes, failure-isolated recording, and metric dictionary inputs in #9
 - [x] Deterministic allowed-claim compilation, exact grounded-output validation, safe LLM fallbacks, and fixture-backed safety evals for #6; focused grounding audit integration with #13 remains
 - [x] Contributor setup and workflow guide
 - [x] Secret-free pull-request CI, lockfile install, test/build gate, superseded-run cancellation, and review handoff template in #12
@@ -422,15 +423,15 @@ The PRD explicitly sets the 40-60% research-time hypothesis and 60% acceptance t
 
 Instrumentation requirements:
 
-- [ ] Lead viewed timestamp
-- [ ] ContextAI score shown timestamp
-- [ ] Rep first action timestamp
-- [ ] Rep action type
-- [ ] Recommendation accepted, ignored, or overridden
-- [ ] Score version used
-- [ ] Sources contributing to score
-- [ ] Enrichment written, skipped, or flagged
-- [ ] Written field later edited or rolled back
+- [x] Lead viewed timestamp contract
+- [x] ContextAI score shown timestamp contract
+- [x] Rep first action timestamp contract
+- [x] Rep action type contract
+- [x] Recommendation accepted, ignored, or overridden contract
+- [x] Score/config/prompt version linkage
+- [x] Sources contributing to score contract
+- [x] Enrichment written, skipped, or flagged contract
+- [x] Written field later edited or rolled back contract
 
 Pilot go criteria:
 

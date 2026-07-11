@@ -201,6 +201,16 @@ export const migrations: readonly Migration[] = [
       WHEN EXISTS (SELECT 1 FROM events WHERE event_id = NEW.event_id)
       BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
     `
+  },
+  {
+    version: 3,
+    name: "pilot event idempotency and retention",
+    sql: `
+      ALTER TABLE events ADD COLUMN idempotency_key TEXT;
+      UPDATE events SET idempotency_key = event_id;
+      ALTER TABLE events ADD COLUMN retention_class TEXT NOT NULL DEFAULT 'pilot_analytics_12_months';
+      CREATE UNIQUE INDEX events_tenant_idempotency ON events (tenant_id, idempotency_key);
+    `
   }
 ];
 

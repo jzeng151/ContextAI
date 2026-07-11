@@ -26,6 +26,7 @@ The current implementation includes:
 - OpenRouter configuration, key validation, and grounded explanation client foundations.
 - HubSpot contact list/read and guarded PATCH client foundations.
 - A native Node server boundary with SQLite migrations, fixture seeding, and durable evaluation/audit/event records.
+- A typed, PII-rejecting pilot telemetry contract with idempotent append-only recording.
 - Secret-optional integration smoke checks and native Node tests.
 
 See [ROADMAP.md](ROADMAP.md) for implementation status, dependencies, and the two-developer delivery sequence.
@@ -114,6 +115,7 @@ src/
   lib/grounding.ts        Allowed-claim compiler and grounded-output validator
   lib/migrations.ts       Ordered transactional SQLite migrations
   lib/persistence.ts      Durable runtime storage boundary
+  lib/instrumentation.ts  Pilot event contract and failure-isolated recorder
   lib/integrations.ts     HubSpot and OpenRouter client foundations
   pages/index.astro       Current rep and RevOps dashboard
   server.ts               Minimal Node runtime and health endpoint
@@ -133,6 +135,8 @@ ROADMAP.md                 Product delivery plan and implementation status
 v0 uses the existing Node 22 runtime and Node's built-in SQLite module, so persistence adds no ORM or database package. `RuntimeStore` is the only storage side-effect boundary; deterministic contracts, configuration, scoring, and policy remain plain TypeScript. Two transactional migrations create tenant/integration, versioned configuration, evaluation/step, normalized evidence/claim, writeback/audit/rollback, review, and append-only event records.
 
 SQLite is the smallest deployable single-process store for the pilot. `DATABASE_PATH` is the deployment-owned durable volume. Audit and event tables reject updates and deletes. Evaluation rows expose a retention date and query hook, while production retention policy and deletion enforcement remain owned by the security workstream (#14).
+
+Telemetry producers use the recorder in `instrumentation.ts`; they do not import metric aggregation or reporting. Event names, required linkage, PII exclusions, retention classes, and metric inputs are documented in [TELEMETRY.md](TELEMETRY.md).
 
 ## Contributing
 
