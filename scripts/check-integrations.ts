@@ -1,4 +1,5 @@
 import { leads } from "../src/data/leads.ts";
+import { createScoringRunContext, defaultConfigVersion } from "../src/lib/config.ts";
 import { checkOpenRouterKey, explainLeadWithOpenRouter, listHubSpotContacts } from "../src/lib/integrations.ts";
 
 const checks: string[] = [];
@@ -8,8 +9,9 @@ if (process.env.OPENROUTER_API_KEY) {
     const key = await checkOpenRouterKey();
     checks.push(`OpenRouter ok: ${key.data.label}`);
     if (process.env.OPENROUTER_RUN_COMPLETION === "1") {
-      const result = await explainLeadWithOpenRouter(leads[0]);
-      checks.push(`OpenRouter completion ok: ${result.explanation.slice(0, 80).replace(/\s+/g, " ")}`);
+      const result = await explainLeadWithOpenRouter(leads[0], createScoringRunContext(defaultConfigVersion));
+      if (result.audit.outcome !== "validated") throw new Error(`OpenRouter completion ${result.audit.failure ?? "fell back"}`);
+      checks.push(`OpenRouter completion ok: ${result.explanation.reason.slice(0, 80).replace(/\s+/g, " ")}`);
     }
   } catch (error) {
     checks.push(`OpenRouter failed: ${error instanceof Error ? error.message : String(error)}`);
