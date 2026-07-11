@@ -46,17 +46,20 @@ export const migrations: readonly Migration[] = [
         started_at TEXT NOT NULL,
         completed_at TEXT NOT NULL,
         retention_after TEXT,
-        UNIQUE (tenant_id, idempotency_key)
+        UNIQUE (tenant_id, idempotency_key),
+        UNIQUE (tenant_id, evaluation_id),
+        FOREIGN KEY (tenant_id, score_version) REFERENCES config_versions(tenant_id, version_id)
       );
 
       CREATE TABLE evaluation_steps (
         tenant_id TEXT NOT NULL,
-        evaluation_id TEXT NOT NULL REFERENCES evaluation_runs(evaluation_id),
+        evaluation_id TEXT NOT NULL,
         step TEXT NOT NULL,
         status TEXT NOT NULL,
         detail TEXT,
         completed_at TEXT NOT NULL,
-        PRIMARY KEY (evaluation_id, step)
+        PRIMARY KEY (evaluation_id, step),
+        FOREIGN KEY (tenant_id, evaluation_id) REFERENCES evaluation_runs(tenant_id, evaluation_id)
       );
     `
   },
@@ -66,49 +69,57 @@ export const migrations: readonly Migration[] = [
     sql: `
       CREATE TABLE evidence (
         tenant_id TEXT NOT NULL,
-        evaluation_id TEXT NOT NULL REFERENCES evaluation_runs(evaluation_id),
+        evaluation_id TEXT NOT NULL,
         evidence_id TEXT NOT NULL,
         source_type TEXT NOT NULL,
         source_name TEXT NOT NULL,
         payload_json TEXT NOT NULL,
-        PRIMARY KEY (evaluation_id, evidence_id)
+        PRIMARY KEY (evaluation_id, evidence_id),
+        UNIQUE (tenant_id, evaluation_id, evidence_id),
+        FOREIGN KEY (tenant_id, evaluation_id) REFERENCES evaluation_runs(tenant_id, evaluation_id)
       );
 
       CREATE TABLE claims (
         claim_id INTEGER PRIMARY KEY AUTOINCREMENT,
         tenant_id TEXT NOT NULL,
-        evaluation_id TEXT NOT NULL REFERENCES evaluation_runs(evaluation_id),
+        evaluation_id TEXT NOT NULL,
         kind TEXT NOT NULL CHECK (kind IN ('allowed', 'disallowed')),
-        text TEXT NOT NULL
+        text TEXT NOT NULL,
+        UNIQUE (tenant_id, evaluation_id, claim_id),
+        FOREIGN KEY (tenant_id, evaluation_id) REFERENCES evaluation_runs(tenant_id, evaluation_id)
       );
 
       CREATE TABLE claim_evidence (
-        claim_id INTEGER NOT NULL REFERENCES claims(claim_id),
+        tenant_id TEXT NOT NULL,
+        claim_id INTEGER NOT NULL,
         evaluation_id TEXT NOT NULL,
         evidence_id TEXT NOT NULL,
         PRIMARY KEY (claim_id, evidence_id),
-        FOREIGN KEY (evaluation_id, evidence_id) REFERENCES evidence(evaluation_id, evidence_id)
+        FOREIGN KEY (tenant_id, evaluation_id, claim_id) REFERENCES claims(tenant_id, evaluation_id, claim_id),
+        FOREIGN KEY (tenant_id, evaluation_id, evidence_id) REFERENCES evidence(tenant_id, evaluation_id, evidence_id)
       );
 
       CREATE TABLE writeback_plans (
         tenant_id TEXT NOT NULL,
-        evaluation_id TEXT PRIMARY KEY REFERENCES evaluation_runs(evaluation_id),
+        evaluation_id TEXT PRIMARY KEY,
         decision TEXT,
-        reason TEXT
+        reason TEXT,
+        FOREIGN KEY (tenant_id, evaluation_id) REFERENCES evaluation_runs(tenant_id, evaluation_id)
       );
 
       CREATE TABLE writeback_outcomes (
         tenant_id TEXT NOT NULL,
-        evaluation_id TEXT PRIMARY KEY REFERENCES evaluation_runs(evaluation_id),
+        evaluation_id TEXT PRIMARY KEY,
         status TEXT NOT NULL,
         reason TEXT NOT NULL,
-        recorded_at TEXT NOT NULL
+        recorded_at TEXT NOT NULL,
+        FOREIGN KEY (tenant_id, evaluation_id) REFERENCES evaluation_runs(tenant_id, evaluation_id)
       );
 
       CREATE TABLE writeback_audit_records (
         audit_id TEXT PRIMARY KEY,
         tenant_id TEXT NOT NULL REFERENCES tenants(tenant_id),
-        evaluation_id TEXT NOT NULL REFERENCES evaluation_runs(evaluation_id),
+        evaluation_id TEXT NOT NULL,
         request_id TEXT NOT NULL,
         crm_object_type TEXT NOT NULL,
         crm_object_id TEXT NOT NULL,
@@ -123,37 +134,44 @@ export const migrations: readonly Migration[] = [
         reason TEXT NOT NULL,
         score_version TEXT NOT NULL,
         actor_type TEXT NOT NULL,
-        recorded_at TEXT NOT NULL
+        recorded_at TEXT NOT NULL,
+        UNIQUE (tenant_id, evaluation_id, audit_id),
+        FOREIGN KEY (tenant_id, evaluation_id) REFERENCES evaluation_runs(tenant_id, evaluation_id)
       );
 
       CREATE TABLE rollback_links (
         rollback_id TEXT PRIMARY KEY,
         tenant_id TEXT NOT NULL REFERENCES tenants(tenant_id),
-        evaluation_id TEXT NOT NULL REFERENCES evaluation_runs(evaluation_id),
-        original_audit_id TEXT NOT NULL REFERENCES writeback_audit_records(audit_id),
-        rollback_audit_id TEXT REFERENCES writeback_audit_records(audit_id),
-        created_at TEXT NOT NULL
+        evaluation_id TEXT NOT NULL,
+        original_audit_id TEXT NOT NULL,
+        rollback_audit_id TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (tenant_id, evaluation_id) REFERENCES evaluation_runs(tenant_id, evaluation_id),
+        FOREIGN KEY (tenant_id, evaluation_id, original_audit_id) REFERENCES writeback_audit_records(tenant_id, evaluation_id, audit_id),
+        FOREIGN KEY (tenant_id, evaluation_id, rollback_audit_id) REFERENCES writeback_audit_records(tenant_id, evaluation_id, audit_id)
       );
 
       CREATE TABLE review_items (
         review_id TEXT PRIMARY KEY,
         tenant_id TEXT NOT NULL REFERENCES tenants(tenant_id),
-        evaluation_id TEXT NOT NULL REFERENCES evaluation_runs(evaluation_id),
+        evaluation_id TEXT NOT NULL,
         reason TEXT NOT NULL,
         status TEXT NOT NULL CHECK (status IN ('open', 'resolved', 'dismissed')),
         payload_json TEXT NOT NULL,
         created_at TEXT NOT NULL,
-        resolved_at TEXT
+        resolved_at TEXT,
+        FOREIGN KEY (tenant_id, evaluation_id) REFERENCES evaluation_runs(tenant_id, evaluation_id)
       );
 
       CREATE TABLE events (
         event_id TEXT PRIMARY KEY,
         tenant_id TEXT NOT NULL REFERENCES tenants(tenant_id),
-        evaluation_id TEXT REFERENCES evaluation_runs(evaluation_id),
+        evaluation_id TEXT,
         request_id TEXT,
         event_type TEXT NOT NULL,
         payload_json TEXT NOT NULL,
-        occurred_at TEXT NOT NULL
+        occurred_at TEXT NOT NULL,
+        FOREIGN KEY (tenant_id, evaluation_id) REFERENCES evaluation_runs(tenant_id, evaluation_id)
       );
 
       CREATE INDEX evaluation_runs_tenant_completed ON evaluation_runs (tenant_id, completed_at);
@@ -165,10 +183,18 @@ export const migrations: readonly Migration[] = [
       BEFORE UPDATE ON writeback_audit_records BEGIN SELECT RAISE(ABORT, 'writeback audit records are append-only'); END;
       CREATE TRIGGER writeback_audit_records_no_delete
       BEFORE DELETE ON writeback_audit_records BEGIN SELECT RAISE(ABORT, 'writeback audit records are append-only'); END;
+      CREATE TRIGGER writeback_audit_records_no_duplicate
+      BEFORE INSERT ON writeback_audit_records
+      WHEN EXISTS (SELECT 1 FROM writeback_audit_records WHERE audit_id = NEW.audit_id)
+      BEGIN SELECT RAISE(ABORT, 'writeback audit records are append-only'); END;
       CREATE TRIGGER events_no_update
       BEFORE UPDATE ON events BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
       CREATE TRIGGER events_no_delete
       BEFORE DELETE ON events BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
+      CREATE TRIGGER events_no_duplicate
+      BEFORE INSERT ON events
+      WHEN EXISTS (SELECT 1 FROM events WHERE event_id = NEW.event_id)
+      BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
     `
   }
 ];

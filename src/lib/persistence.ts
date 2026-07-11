@@ -56,7 +56,12 @@ const json = (value: unknown) => {
   return serialized;
 };
 const parse = <T>(value: string) => JSON.parse(value) as T;
-const failedStatuses = new Set(["unavailable", "timeout", "rate_limited", "invalid_result"]);
+const failedStatuses = new Set(["unavailable", "timeout", "rate_limited", "invalid_result", "skipped"]);
+const isoDate = (value: string, name: string) => {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) throw new Error(`${name} must be an ISO date`);
+  return new Date(timestamp).toISOString();
+};
 
 export const createEvaluationIdentifiers = (requestId = randomUUID()) => ({
   requestId: nonEmpty(requestId, "requestId"),
@@ -111,9 +116,7 @@ export class RuntimeStore {
     assertLeadPacket(packet);
     nonEmpty(tenantId, "tenantId");
     nonEmpty(idempotencyKey, "idempotencyKey");
-    if (input.retentionAfter !== undefined && !Number.isFinite(Date.parse(input.retentionAfter))) {
-      throw new Error("retentionAfter must be an ISO date");
-    }
+    const retentionAfter = input.retentionAfter === undefined ? null : isoDate(input.retentionAfter, "retentionAfter");
     const outcome: EvaluationOutcome = Object.values(packet.tool_status).some(({ status }) => failedStatuses.has(status))
       ? "partial_failure"
       : "complete";
@@ -139,7 +142,7 @@ export class RuntimeStore {
       `).run(
         packet.evaluation_id, tenantId, packet.request_id, idempotencyKey, packet.lead_id, packet.account_id,
         packet.score_version, outcome, json(packet), packet.evaluation_timestamp, packet.evaluation_timestamp,
-        input.retentionAfter ?? null
+        retentionAfter
       );
 
       const insertStep = this.database.prepare(`
@@ -157,10 +160,10 @@ export class RuntimeStore {
       }
 
       const insertClaim = this.database.prepare("INSERT INTO claims (tenant_id, evaluation_id, kind, text) VALUES (?, ?, ?, ?) RETURNING claim_id");
-      const linkClaim = this.database.prepare("INSERT INTO claim_evidence (claim_id, evaluation_id, evidence_id) VALUES (?, ?, ?)");
+      const linkClaim = this.database.prepare("INSERT INTO claim_evidence (tenant_id, claim_id, evaluation_id, evidence_id) VALUES (?, ?, ?, ?)");
       for (const claim of packet.allowed_claims) {
         const { claim_id } = insertClaim.get(tenantId, packet.evaluation_id, "allowed", claim.text) as { claim_id: number };
-        for (const evidenceId of claim.evidence_ids) linkClaim.run(claim_id, packet.evaluation_id, evidenceId);
+        for (const evidenceId of claim.evidence_ids) linkClaim.run(tenantId, claim_id, packet.evaluation_id, evidenceId);
       }
       for (const claim of packet.disallowed_claims) insertClaim.get(tenantId, packet.evaluation_id, "disallowed", claim);
 
@@ -221,10 +224,9 @@ export class RuntimeStore {
   }
 
   listRetentionCandidates(before: string) {
-    if (!Number.isFinite(Date.parse(before))) throw new Error("before must be an ISO date");
     return this.database.prepare(`
       SELECT tenant_id, evaluation_id, retention_after FROM evaluation_runs
       WHERE retention_after IS NOT NULL AND retention_after <= ? ORDER BY retention_after
-    `).all(before);
+    `).all(isoDate(before, "before"));
   }
 }
