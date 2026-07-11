@@ -191,6 +191,19 @@ test("stale-only behavior cannot replace missing required firmographics", () => 
   assert.equal(scored.priority_score, null);
 });
 
+test("weak opens cannot replace missing firmographics and applied metadata remains valid", () => {
+  const lead = structuredClone(byId("weak-opens"));
+  lead.enrichment_fields = { tech_stack: [], evidence: [] };
+  lead.missing_fields = [];
+  lead.allowed_claims = lead.allowed_claims.filter((claim) => !claim.evidence_ids.includes("wo-enrichment"));
+  const scored = applyDeterministicScore(lead, context);
+  assert.deepEqual(scored.manual_review_reasons, ["missing_required_data"]);
+  assert.equal(scored.priority_score, null);
+  assert.deepEqual(scored.missing_fields, ["employees"]);
+  assert.equal(scored.writeback_plan?.decision, "Review");
+  assert.doesNotThrow(() => assertLeadPacket(scored));
+});
+
 test("stale scored signals deterministically lower confidence", () => {
   const lead = structuredClone(byId("golden-normal"));
   lead.engagement_signals.evidence[0].source_updated_at = sourceDate(lead, context.config.freshness.engagement.freshThroughDays + 1);
@@ -245,13 +258,13 @@ test("manual-review reasons are derived and take precedence over numeric bands",
   };
   cases.push(["malformed", malformed, "invalid_source_result"]);
 
-  cases.push(["invalid source", {
-    ...golden,
-    tool_status: {
-      ...golden.tool_status,
-      enrich_profile: { status: "invalid_result", completed_at: golden.evaluation_timestamp, detail: "Malformed provider result." },
-    },
-  }, "invalid_source_result"]);
+  const invalidSource = structuredClone(byId("no-usable-data"));
+  invalidSource.tool_status.enrich_profile = {
+    status: "invalid_result",
+    completed_at: invalidSource.evaluation_timestamp,
+    detail: "Malformed provider result.",
+  };
+  cases.push(["invalid source", invalidSource, "invalid_source_result"]);
   cases.push(["scorer unavailable", {
     ...golden,
     tool_status: {
@@ -355,6 +368,21 @@ test("future-dated scoring evidence is malformed and requires review", () => {
   assert.ok(scoreLead(invalidDate, context).manual_review_reasons.includes("invalid_source_result"));
 });
 
+test("optional source invalid results do not suppress a numeric score", () => {
+  const lead = structuredClone(byId("no-public-signal"));
+  lead.tool_status.fetch_public_signals = {
+    status: "invalid_result",
+    completed_at: lead.evaluation_timestamp,
+    detail: "Malformed optional public-signal result.",
+  };
+  assert.doesNotThrow(() => assertLeadPacket(lead));
+  const scored = applyDeterministicScore(lead, context);
+  assert.deepEqual([scored.priority_score, scored.priority_band, scored.confidence], [83, "Hot", "High"]);
+  assert.deepEqual(scored.manual_review_reasons, []);
+  assert.equal(scored.score_breakdown.public_timing_signals, 0);
+  assert.doesNotThrow(() => assertLeadPacket(scored));
+});
+
 test("higher-precedence CRM firmographics cannot be bypassed by enrichment", () => {
   const lead = structuredClone(byId("golden-normal"));
   lead.enrichment_fields.evidence.push({
@@ -375,6 +403,29 @@ test("higher-precedence CRM firmographics cannot be bypassed by enrichment", () 
   assert.ok(applied.source_conflicts.length > 0);
   assert.equal(applied.writeback_plan?.decision, "Review");
   assert.doesNotThrow(() => assertLeadPacket(applied));
+});
+
+test("stale or Low-confidence CRM firmographics yield to fresh enrichment", () => {
+  for (const [name, daysAgo, confidence] of [["stale", 181, "High"], ["Low-confidence", 0, "Low"]] as const) {
+    const lead = structuredClone(byId("golden-normal"));
+    lead.enrichment_fields.evidence.push({
+      ...lead.enrichment_fields.evidence[0],
+      evidence_id: `gn-${name}-crm-employees`,
+      source_name: "HubSpot",
+      source_type: "crm",
+      field_name: undefined,
+      field_value: 75,
+      field_values: { employees: 75 },
+      source_updated_at: sourceDate(lead, daysAgo),
+      confidence,
+      eligible_for_crm_writeback: false,
+    });
+    const scored = applyDeterministicScore(lead, context);
+    assert.deepEqual(scored.manual_review_reasons, [], name);
+    assert.equal(scored.score_breakdown.icp_fit, 30, name);
+    assert.deepEqual(scored.source_conflicts, [], name);
+    assert.doesNotThrow(() => assertLeadPacket(scored), name);
+  }
 });
 
 test("older same-source firmographics do not override the newest evidence", () => {

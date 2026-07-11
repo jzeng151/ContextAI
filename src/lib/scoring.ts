@@ -95,10 +95,15 @@ const firmographicEvidenceFor = (lead: LeadPacket, field: string, context: Scori
     Number.isFinite(ageInDays(item, lead.evaluation_timestamp)) &&
     ageInDays(item, lead.evaluation_timestamp) >= 0
   );
-  const sourceType = context.config.sourcePolicy.precedence.firmographic.find((source) => observed.some((item) => item.source_type === source));
-  const preferred = observed.filter((item) => item.source_type === sourceType);
-  const newestAge = Math.min(...preferred.map((item) => ageInDays(item, lead.evaluation_timestamp)));
-  return preferred.filter((item) => ageInDays(item, lead.evaluation_timestamp) === newestAge);
+  const newestBySource = context.config.sourcePolicy.precedence.firmographic.map((source) => {
+    const sourceEvidence = observed.filter((item) => item.source_type === source);
+    const newestAge = Math.min(...sourceEvidence.map((item) => ageInDays(item, lead.evaluation_timestamp)));
+    return sourceEvidence.filter((item) => ageInDays(item, lead.evaluation_timestamp) === newestAge);
+  });
+  return newestBySource.find((items) => items.some((item) =>
+    item.confidence !== "Low" &&
+    ageInDays(item, lead.evaluation_timestamp) <= context.config.freshness.firmographic.staleAfterDays
+  )) ?? newestBySource.find((items) => items.length > 0) ?? [];
 };
 const enrichmentEvidenceFor = (lead: LeadPacket, field: string, value: unknown, context: ScoringRunContext) =>
   firmographicEvidenceFor(lead, field, context).filter((item) => sameValue(item.field_values?.[field], value));
@@ -147,7 +152,7 @@ const hasSupportedEmployees = (lead: LeadPacket, context: ScoringRunContext) =>
 
 const hasBehavioralEvidence = (lead: LeadPacket, context: ScoringRunContext) =>
   (lead.intent_signals.surge && signalEvidenceFor(lead, "intent", "surge", true, context).length > 0) ||
-  (["opens", "clicks", "replies"] as const).some((field) =>
+  (["clicks", "replies"] as const).some((field) =>
     lead.engagement_signals[field] > 0 && signalEvidenceFor(lead, "engagement", field, lead.engagement_signals[field], context).length > 0
   ) ||
   (["demo_request", "pricing_page_visit"] as const).some((field) =>
@@ -206,7 +211,6 @@ export const manualReviewReasons = (lead: LeadPacket, context: ScoringRunContext
   const failedRequiredSource = sourceSteps.some((step) => !["success", "no_result"].includes(lead.tool_status[step].status));
   if (
     malformedScoringInput(lead) ||
-    sourceSteps.some((step) => lead.tool_status[step].status === "invalid_result") ||
     (failedRequiredSource && (missingRequiredData || lead.crm_context.domain_status !== "verified"))
   ) reasons.add("invalid_source_result");
   if (lead.tool_status.deterministic_score.status !== "success") reasons.add("scoring_unavailable");
@@ -442,6 +446,9 @@ export const applyDeterministicScore = (lead: LeadPacket, context: ScoringRunCon
       : {}),
     ...(lead.source_conflicts.length === 0 && hasFirmographicConflict(lead, context)
       ? { source_conflicts: ["Authoritative CRM firmographic evidence conflicts with the selected value."] }
+      : {}),
+    ...(scored.manual_review_reasons.includes("missing_required_data") && !lead.missing_fields.includes("employees")
+      ? { missing_fields: [...lead.missing_fields, "employees"] }
       : {}),
   };
 };
