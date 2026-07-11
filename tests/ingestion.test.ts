@@ -335,6 +335,36 @@ test("public evidence IDs include provider record identity", async () => {
   }
 });
 
+test("intent adapters reject unsafe counts, missing provenance/dates, and malformed nested sections", async () => {
+  const originalFetch = globalThis.fetch;
+  const invalidPayloads = [
+    { source_name: "Provider", intent: { source_name: "Provider", surge: true } },
+    { source_name: "Provider", engagement: { source_name: "Provider", opens: 1 } },
+    { intent: { surge: true, last_updated: evaluatedAt } },
+    {
+      source_name: "Provider",
+      intent: "malformed",
+      engagement: { source_name: "Provider", demo_request: true, last_updated: evaluatedAt },
+    },
+    {
+      source_name: "Provider",
+      engagement: { source_name: "Provider", opens: Number.MAX_SAFE_INTEGER + 1, last_updated: evaluatedAt },
+    },
+  ];
+  try {
+    for (const payload of invalidPayloads) {
+      globalThis.fetch = async () => new Response(JSON.stringify(payload), { status: 200 });
+      const result = await fetchIntentTriggers("person@example.com", {
+        evaluatedAt,
+        env: { INTENT_API_URL: "https://signals.example/v1/intent" },
+      });
+      assert.equal(result.status, "invalid_result");
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("live provider timeouts retry a bounded number of times then return timeout", async () => {
   const originalFetch = globalThis.fetch;
   let attempts = 0;

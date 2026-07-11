@@ -96,7 +96,7 @@ const asString = (value: unknown): string | undefined =>
   typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 
 const asNonNegativeInteger = (value: unknown): number | undefined =>
-  typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
+  typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 
 const asBoolean = (value: unknown): boolean | undefined =>
   typeof value === "boolean" ? value : undefined;
@@ -357,7 +357,11 @@ const parseIntentSection = (
   const parsedSurge = asBoolean(source.surge);
   const updatedAt = asIsoDate(source.last_updated);
 
-  if (source.surge !== undefined && parsedSurge === undefined) {
+  if (
+    (source.surge !== undefined && parsedSurge === undefined) ||
+    (source.last_updated !== undefined && updatedAt === undefined) ||
+    (parsedSurge === true && updatedAt === undefined)
+  ) {
     return {
       parsed: null,
       sourceName,
@@ -365,10 +369,10 @@ const parseIntentSection = (
     };
   }
 
-  const evidence = parsedSurge ? baseEvidence(
+  const evidence = parsedSurge && updatedAt ? baseEvidence(
     sourceName,
     "intent",
-    updatedAt ?? evaluatedAt,
+    updatedAt,
     confidence,
     "surge",
     parsedSurge,
@@ -444,11 +448,19 @@ const parseEngagementSection = (
   };
   const isMeaningful = values.opens > 0 || values.clicks > 0 || values.replies > 0 || values.demo_request || values.pricing_page_visit;
 
+  if ((source.last_updated !== undefined && updatedAt === undefined) || (isMeaningful && updatedAt === undefined)) {
+    return {
+      parsed: null,
+      sourceName,
+      malformed: true,
+    };
+  }
+
   const evidence = isMeaningful
     ? baseEvidence(
         sourceName,
         "engagement",
-        updatedAt ?? evaluatedAt,
+        updatedAt as string,
         confidence,
         "engagement",
         "engagement activity",
@@ -481,13 +493,17 @@ const parseIntentPayload = (payload: unknown, evaluatedAt: string): IntentTrigge
   const parsedConfidence = asConfidence(payload.confidence);
   if (payload.confidence !== undefined && parsedConfidence === undefined) return null;
   const confidence = parsedConfidence ?? "Medium";
+  if (
+    (Object.hasOwn(payload, "intent") && !isRecord(payload.intent)) ||
+    (Object.hasOwn(payload, "engagement") && !isRecord(payload.engagement))
+  ) return null;
   const intentSource = isRecord(payload.intent) ? payload.intent : payload;
   const engagementSource = isRecord(payload.engagement) ? payload.engagement : payload;
 
   const sourceName = asString(payload.source_name)
     ?? asString(intentSource.source_name)
-    ?? asString(engagementSource.source_name)
-    ?? "intent";
+    ?? asString(engagementSource.source_name);
+  if (!sourceName) return null;
 
   const intentParsed = parseIntentSection(intentSource, sourceName, confidence, evaluatedAt);
   const engagementParsed = parseEngagementSection(engagementSource, sourceName, confidence, evaluatedAt);
