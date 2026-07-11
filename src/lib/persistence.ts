@@ -2,8 +2,10 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { isDeepStrictEqual } from "node:util";
 import { assertConfigVersion, type ScoringConfigVersion } from "./config.ts";
 import { assertLeadPacket, type Evidence, type LeadPacket } from "./contextai.ts";
+import { assertPilotEvent, type PilotEvent } from "./instrumentation.ts";
 import { migrateDatabase } from "./migrations.ts";
 
 export type EvaluationOutcome = "complete" | "partial_failure";
@@ -34,16 +36,6 @@ type AuditRecord = Readonly<{
   scoreVersion: string;
   actorType: string;
   recordedAt?: string;
-}>;
-
-type EventRecord = Readonly<{
-  eventId?: string;
-  tenantId: string;
-  evaluationId?: string;
-  requestId?: string;
-  eventType: string;
-  payload: unknown;
-  occurredAt?: string;
 }>;
 
 const nonEmpty = (value: string, name: string) => {
@@ -211,16 +203,58 @@ export class RuntimeStore {
     return auditId;
   }
 
-  appendEvent(input: EventRecord) {
+  recordEvent(input: PilotEvent) {
+    assertPilotEvent(input);
+    const existing = this.database.prepare(`
+      SELECT event_id, payload_json FROM events WHERE tenant_id = ? AND idempotency_key = ?
+    `).get(input.tenantId, input.idempotencyKey) as { event_id: string; payload_json: string } | undefined;
+    if (existing) {
+      const { eventId: _storedEventId, ...stored } = parse<PilotEvent>(existing.payload_json);
+      const { eventId: _inputEventId, ...candidate } = input;
+      if (!isDeepStrictEqual(stored, candidate)) throw new Error("Idempotency key already belongs to a different event");
+      return { created: false, eventId: existing.event_id } as const;
+    }
+
+    const linkedEvaluation = this.database.prepare(`
+      SELECT 1 FROM evaluation_runs
+      WHERE tenant_id = ? AND evaluation_id = ? AND request_id = ? AND score_version = ?
+    `).get(input.tenantId, input.evaluationId, input.requestId, input.scoreVersion);
+    if (!linkedEvaluation) throw new Error("Event does not match its tenant, request, evaluation, and score version");
+    const linkedConfig = this.database.prepare(`
+      SELECT 1 FROM config_versions WHERE tenant_id = ? AND version_id = ?
+    `).get(input.tenantId, input.configVersion);
+    if (!linkedConfig) throw new Error("Event config version does not belong to its tenant");
+
+    const evidenceExists = this.database.prepare(`
+      SELECT 1 FROM evidence WHERE tenant_id = ? AND evaluation_id = ? AND evidence_id = ?
+    `);
+    if (input.evidenceRefs.some((ref) => !evidenceExists.get(input.tenantId, input.evaluationId, ref))) {
+      throw new Error("Event references evidence outside its evaluation");
+    }
+
+    if (input.name === "writeback.edit" || input.name === "writeback.rollback") {
+      const outcomes = this.database.prepare(`
+        SELECT payload_json FROM events
+        WHERE tenant_id = ? AND evaluation_id = ? AND event_type = 'writeback.outcome'
+      `).all(input.tenantId, input.evaluationId) as Array<{ payload_json: string }>;
+      const linkedWrite = outcomes.some(({ payload_json }) => {
+        const event = parse<PilotEvent>(payload_json);
+        return event.name === "writeback.outcome" && event.data.writebackId === input.data.writebackId && event.data.outcome === "Written";
+      });
+      if (!linkedWrite) throw new Error(`${input.name} requires a linked Written writeback.outcome`);
+    }
+
     const eventId = input.eventId ?? randomUUID();
+    const stored = { ...input, eventId };
     this.database.prepare(`
-      INSERT INTO events (event_id, tenant_id, evaluation_id, request_id, event_type, payload_json, occurred_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO events (
+        event_id, tenant_id, evaluation_id, request_id, event_type, payload_json, occurred_at, idempotency_key, retention_class
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      eventId, input.tenantId, input.evaluationId ?? null, input.requestId ?? null,
-      nonEmpty(input.eventType, "eventType"), json(input.payload), input.occurredAt ?? new Date().toISOString()
+      eventId, input.tenantId, input.evaluationId, input.requestId, input.name, json(stored), input.occurredAt,
+      input.idempotencyKey, input.retentionClass
     );
-    return eventId;
+    return { created: true, eventId } as const;
   }
 
   listRetentionCandidates(before: string) {
