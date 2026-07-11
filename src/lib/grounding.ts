@@ -81,12 +81,12 @@ const claimFor = (lead: LeadPacket, item: Evidence, driver: ClaimDriver): Omit<G
   if (typeof fields.employees === "number") text = `${source} reports ${company} has ${fields.employees} employees.`;
   else if (typeof fields.revenue_band === "string" && safeText(fields.revenue_band)) text = `${source} reports ${company}'s revenue band is ${fields.revenue_band}.`;
   else if (Array.isArray(fields.tech_stack) && fields.tech_stack.every((value) => safeText(value))) text = `${source} reports ${company} uses ${fields.tech_stack.join(", ")}.`;
-  else if (fields.demo_request === true) text = `${source} recorded a demo request for ${company}.`;
-  else if (fields.pricing_page_visit === true) text = `${source} recorded a pricing-page visit for ${company}.`;
-  else if (typeof fields.replies === "number" && fields.replies > 0) text = `${source} recorded ${fields.replies} sales ${fields.replies === 1 ? "reply" : "replies"} for ${company}.`;
-  else if (typeof fields.clicks === "number" && fields.clicks > 0) text = `${source} recorded ${fields.clicks} email ${fields.clicks === 1 ? "click" : "clicks"} for ${company}.`;
+  else if (fields.demo_request === true) return { text: `${source} recorded a demo request for ${company}.`, evidence_ids: [item.evidence_id], driver, hook: `Reference ${company}'s demo request recorded by ${source}.` };
+  else if (fields.pricing_page_visit === true) return { text: `${source} recorded a pricing-page visit for ${company}.`, evidence_ids: [item.evidence_id], driver, hook: `Reference ${company}'s pricing-page visit recorded by ${source}.` };
+  else if (typeof fields.replies === "number" && fields.replies > 0) return { text: `${source} recorded ${fields.replies} sales ${fields.replies === 1 ? "reply" : "replies"} for ${company}.`, evidence_ids: [item.evidence_id], driver, hook: `Reference ${company}'s recent sales reply recorded by ${source}.` };
+  else if (typeof fields.clicks === "number" && fields.clicks > 0) return { text: `${source} recorded ${fields.clicks} email ${fields.clicks === 1 ? "click" : "clicks"} for ${company}.`, evidence_ids: [item.evidence_id], driver, hook: `Reference ${company}'s recent email click recorded by ${source}.` };
   else if (typeof fields.opens === "number" && fields.opens > 0) text = `${source} recorded ${fields.opens} email opens for ${company}; opens alone are weak engagement, not buying intent.`;
-  else if (fields.surge === true) text = `${source} reported a category intent surge for ${company}.`;
+  else if (fields.surge === true) return { text: `${source} reported a category intent surge for ${company}.`, evidence_ids: [item.evidence_id], driver, hook: `Reference ${company}'s category intent surge reported by ${source}.` };
   else if (typeof fields.routing_status === "string" && safeText(fields.routing_status)) text = `${source} records ${company}'s routing status as ${fields.routing_status}.`;
   else if (typeof fields.label === "string" && safeText(fields.label) && item.source_published_at) {
     const date = item.source_published_at.slice(0, 10);
@@ -125,7 +125,7 @@ export const compileAllowedClaims = (
   const add = (item: Evidence, driver: ClaimDriver) => {
     if (!eligible(lead, item, config)) return;
     const claim = claimFor(lead, item, driver);
-    if (!claim || claims.some((candidate) => candidate.text === claim.text)) return;
+    if (!claim || claims.some((candidate) => candidate.driver === driver && candidate.text === claim.text)) return;
     claims.push({ ...claim, claim_id: `${driver}:${item.evidence_id}:${claims.length + 1}` });
   };
   for (const driver of lead.top_drivers) {
@@ -202,12 +202,14 @@ export const validateGroundedExplanation = (
   const byId = new Map(claims.map((claim) => [claim.claim_id, claim]));
   const reasonClaims = value.reason_claim_ids.map((id) => byId.get(id));
   const hookClaims = value.hook_claim_ids.map((id) => byId.get(id));
+  const hasEligibleHook = claims.some((claim) => claim.hook !== null);
   const topDrivers = [...new Set(claims.map((claim) => claim.driver))].slice(0, 2);
   const manualReview = lead.priority_band === "Needs Manual Review";
   if (reasonClaims.length < 1 || reasonClaims.length > 2 || reasonClaims.some((claim) => !claim) ||
     reasonClaims.some((claim, index) => claim?.driver !== (manualReview ? "manual_review" : topDrivers[index])) ||
     value.reason !== reasonClaims.map((claim) => claim?.text).join(" ") ||
     hookClaims.length > 1 || hookClaims.some((claim) => !claim?.hook) ||
+    (hasEligibleHook ? hookClaims.length !== 1 : hookClaims.length !== 0) ||
     (hookClaims.length === 0 ? value.hook_recommendation !== fallbackHook : value.hook_recommendation !== hookClaims[0]?.hook)) {
     throw new Error("Invalid grounded explanation");
   }

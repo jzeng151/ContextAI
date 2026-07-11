@@ -656,8 +656,7 @@ test("OpenRouter prompt excludes disallowed provider text", async () => {
     const payload = JSON.parse(prompt);
     assert.deepEqual(Object.keys(payload).sort(), [
       "allowed_claims",
-      "required_output",
-      "score_breakdown"
+      "required_output"
     ]);
     assert.ok(payload.allowed_claims.length > 0);
     assert.equal(payload.required_output.priority_score, lead.priority_score);
