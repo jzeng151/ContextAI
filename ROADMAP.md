@@ -74,6 +74,7 @@ Poor-fit v0 segments:
 - [x] Native Node/SQLite runtime foundation with transactional migrations, durable evaluation/config/evidence/writeback/review records, idempotency, fixture seeding, retention hooks, and append-only audit/events in #13
 - [x] Deterministic allowed-claim compilation, exact grounded-output validation, safe LLM fallbacks, and fixture-backed safety evals for #6; focused grounding audit integration with #13 remains
 - [x] Contributor setup and workflow guide
+- [x] Secret-free pull-request CI, lockfile install, test/build gate, superseded-run cancellation, and review handoff template in #12
 
 ## 3. Core Agent Flow
 
@@ -611,7 +612,7 @@ PR #10 completed the initial lead-packet/fixture foundation. Work now proceeds t
 ### Phase 0: Contract and Collaboration Foundation
 
 1. [x] #11 locks remaining product decisions and contract semantics.
-2. [ ] #12 adds secret-free pull-request test/build checks and the review handoff template; it can run immediately in parallel.
+2. [x] #12 adds secret-free pull-request test/build checks and the review handoff template.
 3. [ ] #13 establishes the minimum server runtime, durable schemas, migrations, and append-only records after #11.
 
 Only one developer owns shared contract files at a time. Merge #11 contract changes before both lanes build against different semantics.
@@ -626,7 +627,7 @@ Only one developer owns shared contract files at a time. Merge #11 contract chan
 
 Recommended sequencing:
 
-- Foundation: #11 is the locked contract baseline; #12 remains parallel-safe PR CI work.
+- Foundation: #11 is the locked contract baseline; #12 provides the required PR CI and review handoff.
 - After #11: decision developer runs #8 → #3 → #6; platform/workflow developer runs #13 → #5 → #4, then #7.
 - Merge #9's narrow event contract before #3-#7 add emitters; whichever developer finishes a current item first can own that prerequisite PR.
 - Start #19 aggregation only after the producing workstreams, #13, and #18's metric dictionary exist.
