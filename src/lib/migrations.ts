@@ -262,6 +262,13 @@ export const migrations: readonly Migration[] = [
       WHEN EXISTS (SELECT 1 FROM rollback_links WHERE rollback_id = NEW.rollback_id)
       BEGIN SELECT RAISE(ABORT, 'rollback links are append-only'); END;
     `
+  },
+  {
+    version: 6,
+    name: "writeback audit actor identity",
+    sql: `
+      ALTER TABLE writeback_audit_records ADD COLUMN actor_id TEXT NOT NULL DEFAULT 'legacy';
+    `
   }
 ];
 

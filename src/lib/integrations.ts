@@ -198,7 +198,7 @@ export const getHubSpotContact = async (
 
 export const writeHubSpotEnrichment = async (
   plan: WritebackPlan,
-  options: Readonly<{ store: RuntimeStore; tenantId: string; actorType: string; mode?: "dry-run" | "live"; authorizedLiveWrite?: boolean }>,
+  options: Readonly<{ store: RuntimeStore; tenantId: string; actorType: string; actorId: string; mode?: "dry-run" | "live"; authorizedLiveWrite?: boolean }>,
   config?: HubSpotConfig
 ) => executeWriteback(plan, {
   ...options,
