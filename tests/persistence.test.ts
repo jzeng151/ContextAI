@@ -239,14 +239,14 @@ test("integration credentials are encrypted, rate limited, and revoked on discon
   const key = Buffer.alloc(32, 7);
   try {
     store.saveTenant("tenant-1", "Pilot tenant");
-    store.saveIntegration(identity, { integrationId: "hubspot-1", provider: "hubspot", externalAccountId: "portal-1", status: "disabled" });
+    store.saveIntegration(identity, { integrationId: "hubspot-1", provider: "hubspot", externalAccountId: "123", status: "disabled" });
     assert.throws(
       () => store.activateHubSpotIntegration(identity, "hubspot-1", {
         accessToken: "access-secret",
         refreshToken: "refresh-secret",
         scopes: ["oauth", "crm.objects.contacts.read"],
         expiresAt: "2026-07-12T00:00:00.000Z",
-        externalAccountId: "portal-1",
+        externalAccountId: "123",
       }, key),
       /scopes are insufficient/i
     );
@@ -255,36 +255,59 @@ test("integration credentials are encrypted, rate limited, and revoked on discon
       refreshToken: "refresh-secret",
       scopes: ["oauth", "crm.objects.contacts.read", "crm.objects.contacts.write"],
       expiresAt: "2026-07-12T00:00:00.000Z",
-      externalAccountId: "portal-1",
+      externalAccountId: "123",
     }, key);
     const stored = store.database.prepare(`
       SELECT access_token_ciphertext, refresh_token_ciphertext FROM integrations WHERE integration_id = 'hubspot-1'
     `).get() as { access_token_ciphertext: string; refresh_token_ciphertext: string };
     assert.doesNotMatch(stored.access_token_ciphertext, /access-secret/);
     assert.doesNotMatch(stored.refresh_token_ciphertext, /refresh-secret/);
-    assert.equal(store.getHubSpotAccessToken(integrationIdentity, "hubspot-1", key, "2026-07-11T23:00:00.000Z"), "access-secret");
-    assert.throws(() => store.getHubSpotAccessToken(identity, "hubspot-1", key), /worker access/i);
+    assert.equal(await store.getHubSpotAccessToken(integrationIdentity, "hubspot-1", key, "2026-07-11T23:00:00.000Z"), "access-secret");
+    await assert.rejects(store.getHubSpotAccessToken(identity, "hubspot-1", key), /worker access/i);
 
     store.recordIntegrationHealth(integrationIdentity, "hubspot-1", "rate_limited", "2026-07-11T23:05:00.000Z");
-    assert.throws(
-      () => store.getHubSpotAccessToken(integrationIdentity, "hubspot-1", key, "2026-07-11T23:01:00.000Z"),
+    await assert.rejects(
+      store.getHubSpotAccessToken(integrationIdentity, "hubspot-1", key, "2026-07-11T23:01:00.000Z"),
       /rate limited/i
     );
     store.recordIntegrationHealth(integrationIdentity, "hubspot-1", "healthy");
     store.recordIntegrationHealth(integrationIdentity, "hubspot-1", "rate_limited");
     const defaultRateLimit = (store.database.prepare("SELECT rate_limited_until FROM integrations WHERE integration_id = 'hubspot-1'").get() as { rate_limited_until: string }).rate_limited_until;
     assert.ok(defaultRateLimit);
-    assert.throws(
-      () => store.getHubSpotAccessToken(integrationIdentity, "hubspot-1", key, new Date(Date.parse(defaultRateLimit) - 1).toISOString()),
+    await assert.rejects(
+      store.getHubSpotAccessToken(integrationIdentity, "hubspot-1", key, new Date(Date.parse(defaultRateLimit) - 1).toISOString()),
       /rate limited/i
     );
     store.recordIntegrationHealth(integrationIdentity, "hubspot-1", "healthy");
 
+    let refreshedWith = "";
+    assert.equal(await store.getHubSpotAccessToken(
+      integrationIdentity,
+      "hubspot-1",
+      key,
+      "2026-07-12T00:00:01.000Z",
+      async (refreshToken) => {
+        refreshedWith = refreshToken;
+        return {
+          access_token: "access-rotated",
+          refresh_token: "refresh-rotated",
+          expires_in: 1800,
+          hub_id: 123,
+          scopes: ["oauth", "crm.objects.contacts.read", "crm.objects.contacts.write"],
+        };
+      }
+    ), "access-rotated");
+    assert.equal(refreshedWith, "refresh-secret");
+    assert.equal(
+      (store.database.prepare("SELECT token_expires_at FROM integrations WHERE integration_id = 'hubspot-1'").get() as { token_expires_at: string }).token_expires_at,
+      "2026-07-12T00:30:01.000Z"
+    );
+
     let revoked = "";
     await store.disconnectHubSpotIntegration(identity, "hubspot-1", key, async (token) => { revoked = token; });
-    assert.equal(revoked, "refresh-secret");
-    assert.throws(
-      () => store.getHubSpotAccessToken(integrationIdentity, "hubspot-1", key, "2026-07-11T23:01:00.000Z"),
+    assert.equal(revoked, "refresh-rotated");
+    await assert.rejects(
+      store.getHubSpotAccessToken(integrationIdentity, "hubspot-1", key, "2026-07-11T23:01:00.000Z"),
       /disconnected/i
     );
     const status = store.getIntegrationStatus(identity, "hubspot-1") as { revoked_at: string; scopes_json: string };
@@ -314,9 +337,21 @@ test("integration credentials are encrypted, rate limited, and revoked on discon
     assert.equal(failedIntegration.status, "error");
     assert.equal(failedIntegration.access_token_ciphertext, null);
     assert.ok(failedIntegration.revoked_at);
-    assert.throws(
-      () => store.getHubSpotAccessToken(integrationIdentity, "hubspot-fail", key, "2026-07-11T23:01:00.000Z"),
+    await assert.rejects(
+      store.getHubSpotAccessToken(integrationIdentity, "hubspot-fail", key, "2026-07-11T23:01:00.000Z"),
       /disconnected/i
+    );
+    const tokenAudits = store.database.prepare(`
+      SELECT outcome FROM access_audit_records WHERE action = 'integration.token' ORDER BY access_audit_id
+    `).all() as Array<{ outcome: string }>;
+    assert.ok(tokenAudits.some(({ outcome }) => outcome === "allowed"));
+    assert.ok(tokenAudits.some(({ outcome }) => outcome === "denied"));
+
+    store.saveIntegration(identity, { integrationId: "hubspot-placeholder", provider: "hubspot", externalAccountId: "456", status: "disabled" });
+    assert.throws(() => store.recordIntegrationHealth(integrationIdentity, "hubspot-placeholder", "healthy"), /not found/i);
+    assert.equal(
+      (store.database.prepare("SELECT status FROM integrations WHERE integration_id = 'hubspot-placeholder'").get() as { status: string }).status,
+      "disabled"
     );
   } finally {
     store.close();
@@ -352,14 +387,14 @@ test("retention purges customer data while preserving required audits", () => {
       reason: "Eligible fixture write",
       scoreVersion: packet.score_version,
     } as const;
-    assert.throws(() => store.appendAuditRecord(admin("tenant-2"), audit), /foreign key constraint/i);
+    assert.throws(() => store.appendAuditRecord(admin("tenant-2"), audit), /purged or unavailable/i);
     assert.throws(
       () => store.appendAuditRecord(admin("tenant-1"), { ...audit, auditId: "audit-wrong-request", requestId: "wrong-request" }),
-      /foreign key constraint/i
+      /purged or unavailable/i
     );
     assert.throws(
       () => store.appendAuditRecord(admin("tenant-1"), { ...audit, auditId: "audit-wrong-version", scoreVersion: "wrong-version" }),
-      /foreign key constraint/i
+      /purged or unavailable/i
     );
 
     const auditId = store.appendAuditRecord(admin("tenant-1", "access-write-1"), {
@@ -413,6 +448,11 @@ test("retention purges customer data while preserving required audits", () => {
     assert.equal(purged.packet_json, "null");
     assert.equal(purged.lead_id, "[deleted]");
     assert.ok(purged.purged_at);
+    assert.throws(
+      () => store.appendAuditRecord(admin("tenant-1", "late-writeback"), { ...audit, auditId: "late-audit" }),
+      /purged or unavailable/i
+    );
+    assert.equal((store.database.prepare("SELECT count(*) AS count FROM writeback_audit_records").get() as { count: number }).count, 1);
   } finally {
     store.close();
   }

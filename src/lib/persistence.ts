@@ -7,7 +7,7 @@ import { assertConfigVersion, type ScoringConfigVersion } from "./config.ts";
 import { assertLeadPacket, type Evidence, type LeadPacket } from "./contextai.ts";
 import { assertPilotEvent, type PilotEvent } from "./instrumentation.ts";
 import { migrateDatabase } from "./migrations.ts";
-import { hubSpotRequiredScopes } from "./integrations.ts";
+import { hubSpotRequiredScopes, refreshHubSpotAccessToken, type HubSpotOAuthTokens } from "./integrations.ts";
 import { assertAdminAccess, assertRequestIdentity, assertTenantAccess, canReadAssignedEvaluation, type RequestIdentity } from "./security.ts";
 import { decryptSecret, encryptSecret } from "./secrets.ts";
 import type { GroundedClaim, GroundedExplanation, GroundingAudit } from "./grounding.ts";
@@ -154,26 +154,60 @@ export class RuntimeStore {
     this.recordAccess(identity, "integration.connect", "integration", integrationId, "allowed");
   }
 
-  getHubSpotAccessToken(identity: RequestIdentity, integrationId: string, key: Buffer, now = new Date().toISOString()) {
+  async getHubSpotAccessToken(
+    identity: RequestIdentity,
+    integrationId: string,
+    key: Buffer,
+    now = new Date().toISOString(),
+    refresh: (refreshToken: string) => Promise<HubSpotOAuthTokens> = refreshHubSpotAccessToken,
+  ) {
     assertTenantAccess(identity, identity.tenantId);
-    if (identity.role !== "system" && identity.role !== "integration") throw new Error("Integration worker access required");
-    const integration = this.database.prepare(`
-      SELECT status, access_token_ciphertext, token_expires_at, rate_limited_until, revoked_at
-      FROM integrations WHERE tenant_id = ? AND integration_id = ? AND provider = 'hubspot'
-    `).get(identity.tenantId, integrationId) as {
-      status: string;
-      access_token_ciphertext: string | null;
-      token_expires_at: string | null;
-      rate_limited_until: string | null;
-      revoked_at: string | null;
-    } | undefined;
-    const nowMs = Date.parse(isoDate(now, "now"));
-    if (!integration || integration.status !== "active" || integration.revoked_at || !integration.access_token_ciphertext) {
-      throw new Error("HubSpot integration is disconnected");
+    try {
+      if (identity.role !== "system" && identity.role !== "integration") throw new Error("Integration worker access required");
+      const integration = this.database.prepare(`
+        SELECT status, external_account_id, access_token_ciphertext, refresh_token_ciphertext, token_expires_at,
+          rate_limited_until, revoked_at
+        FROM integrations WHERE tenant_id = ? AND integration_id = ? AND provider = 'hubspot'
+      `).get(identity.tenantId, integrationId) as {
+        status: string;
+        external_account_id: string;
+        access_token_ciphertext: string | null;
+        refresh_token_ciphertext: string | null;
+        token_expires_at: string | null;
+        rate_limited_until: string | null;
+        revoked_at: string | null;
+      } | undefined;
+      const nowMs = Date.parse(isoDate(now, "now"));
+      if (!integration || integration.status !== "active" || integration.revoked_at || !integration.access_token_ciphertext) {
+        throw new Error("HubSpot integration is disconnected");
+      }
+      if (integration.rate_limited_until && Date.parse(integration.rate_limited_until) > nowMs) throw new Error("HubSpot integration is rate limited");
+      let accessToken: string;
+      if (!integration.token_expires_at || Date.parse(integration.token_expires_at) <= nowMs) {
+        if (!integration.refresh_token_ciphertext) throw new Error("HubSpot refresh token is unavailable");
+        const tokens = await refresh(decryptSecret(integration.refresh_token_ciphertext, key));
+        if (String(tokens.hub_id) !== integration.external_account_id || hubSpotRequiredScopes.some((scope) => !tokens.scopes.includes(scope))) {
+          throw new Error("HubSpot returned tokens for the wrong account or scopes");
+        }
+        const result = this.database.prepare(`
+          UPDATE integrations SET access_token_ciphertext = ?, refresh_token_ciphertext = ?, scopes_json = ?,
+            token_expires_at = ?, last_error = NULL
+          WHERE tenant_id = ? AND integration_id = ? AND status = 'active' AND revoked_at IS NULL
+        `).run(
+          encryptSecret(tokens.access_token, key), encryptSecret(tokens.refresh_token, key), json(tokens.scopes),
+          new Date(nowMs + tokens.expires_in * 1000).toISOString(), identity.tenantId, integrationId
+        );
+        if (result.changes !== 1) throw new Error("HubSpot integration changed during token refresh");
+        accessToken = tokens.access_token;
+      } else {
+        accessToken = decryptSecret(integration.access_token_ciphertext, key);
+      }
+      this.recordAccess(identity, "integration.token", "integration", integrationId, "allowed");
+      return accessToken;
+    } catch (error) {
+      this.recordAccess(identity, "integration.token", "integration", integrationId, "denied");
+      throw error;
     }
-    if (integration.rate_limited_until && Date.parse(integration.rate_limited_until) > nowMs) throw new Error("HubSpot integration is rate limited");
-    if (!integration.token_expires_at || Date.parse(integration.token_expires_at) <= nowMs) throw new Error("HubSpot access token is expired");
-    return decryptSecret(integration.access_token_ciphertext, key);
   }
 
   async disconnectHubSpotIntegration(
@@ -218,7 +252,8 @@ export class RuntimeStore {
       : null;
     const result = this.database.prepare(`
       UPDATE integrations SET status = ?, last_health_at = ?, last_error = ?, rate_limited_until = ?
-      WHERE tenant_id = ? AND integration_id = ?
+      WHERE tenant_id = ? AND integration_id = ? AND status IN ('active', 'error')
+        AND access_token_ciphertext IS NOT NULL AND refresh_token_ciphertext IS NOT NULL AND revoked_at IS NULL
     `).run(
       status === "error" ? "error" : "active", new Date().toISOString(), status === "error" ? "provider_error" : null,
       rateLimitedUntil, identity.tenantId, integrationId
@@ -340,6 +375,14 @@ export class RuntimeStore {
   appendAuditRecord(identity: RequestIdentity, input: AuditRecord) {
     this.requireAdmin(identity, "writeback.execute", "evaluation", input.evaluationId);
     json(input);
+    const activeEvaluation = this.database.prepare(`
+      SELECT 1 FROM evaluation_runs
+      WHERE tenant_id = ? AND evaluation_id = ? AND request_id = ? AND score_version = ? AND purged_at IS NULL
+    `).get(identity.tenantId, input.evaluationId, input.requestId, input.scoreVersion);
+    if (!activeEvaluation) {
+      this.recordAccess(identity, "writeback.execute", "evaluation", input.evaluationId, "denied");
+      throw new Error("Writeback audit evaluation is purged or unavailable");
+    }
     const auditId = input.auditId ?? randomUUID();
     this.database.prepare(`
       INSERT INTO writeback_audit_records (

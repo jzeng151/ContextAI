@@ -97,7 +97,7 @@ export const hubSpotAuthorizationUrl = (config: Omit<HubSpotOAuthConfig, "client
 
 const validateHubSpotTokens = (tokens: HubSpotOAuthTokens) => {
   if (!tokens.access_token || !tokens.refresh_token || !Number.isSafeInteger(tokens.expires_in) || tokens.expires_in <= 0 ||
-    !Array.isArray(tokens.scopes) || hubSpotRequiredScopes.some((scope) => !tokens.scopes.includes(scope))) {
+    !Number.isSafeInteger(tokens.hub_id) || !Array.isArray(tokens.scopes) || hubSpotRequiredScopes.some((scope) => !tokens.scopes.includes(scope))) {
     throw new Error("HubSpot returned invalid or insufficiently scoped OAuth tokens");
   }
   return tokens;
@@ -112,6 +112,21 @@ export const exchangeHubSpotAuthorizationCode = async (code: string, config: Hub
       grant_type: "authorization_code",
       code,
       redirect_uri: config.redirectUri,
+      client_id: config.clientId,
+      client_secret: config.clientSecret,
+    }),
+  });
+  return validateHubSpotTokens(await readJson<HubSpotOAuthTokens>(response));
+};
+
+export const refreshHubSpotAccessToken = async (refreshToken: string, config = hubSpotOAuthConfigFromEnv()) => {
+  const response = await fetch(hubSpotOAuthEndpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    signal: AbortSignal.timeout(timeoutMs),
+    body: new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
       client_id: config.clientId,
       client_secret: config.clientSecret,
     }),

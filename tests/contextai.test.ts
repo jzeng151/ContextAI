@@ -22,6 +22,7 @@ import {
   hubSpotConfigFromEnv,
   listHubSpotContacts,
   openRouterConfigFromEnv,
+  refreshHubSpotAccessToken,
   revokeHubSpotRefreshToken,
   writeHubSpotEnrichment,
 } from "../src/lib/integrations.ts";
@@ -790,11 +791,14 @@ test("HubSpot OAuth requests least privilege and keeps secrets in request bodies
   try {
     const tokens = await exchangeHubSpotAuthorizationCode("authorization-code", config);
     assert.equal(tokens.hub_id, 123);
+    await refreshHubSpotAccessToken(tokens.refresh_token, config);
     await revokeHubSpotRefreshToken(tokens.refresh_token, config);
-    assert.equal(requests.length, 2);
+    assert.equal(requests.length, 3);
     assert.ok(requests.every(({ url }) => !url.includes("secret") && !url.includes("authorization-code")));
     assert.match(requests[0]!.body, /client_secret=client-secret/);
-    assert.match(requests[1]!.body, /token=refresh-secret/);
+    assert.match(requests[1]!.body, /grant_type=refresh_token/);
+    assert.match(requests[1]!.body, /refresh_token=refresh-secret/);
+    assert.match(requests[2]!.body, /token=refresh-secret/);
   } finally {
     globalThis.fetch = originalFetch;
   }
