@@ -362,6 +362,25 @@ export const migrations: readonly Migration[] = [
       SET retention_after = strftime('%Y-%m-%dT%H:%M:%fZ', completed_at, '+365 days')
       WHERE retention_after IS NULL;
     `
+  },
+  {
+    version: 12,
+    name: "governance review and immutable config controls",
+    sql: `
+      ALTER TABLE review_items ADD COLUMN resolved_by TEXT;
+      ALTER TABLE review_items ADD COLUMN resolution_note TEXT;
+
+      CREATE TRIGGER config_versions_no_delete
+      BEFORE DELETE ON config_versions BEGIN SELECT RAISE(ABORT, 'config versions are immutable'); END;
+      CREATE TRIGGER config_versions_content_immutable
+      BEFORE UPDATE ON config_versions
+      WHEN OLD.tenant_id != NEW.tenant_id
+        OR OLD.version_id != NEW.version_id
+        OR OLD.created_by != NEW.created_by
+        OR OLD.created_at != NEW.created_at
+        OR OLD.config_json != NEW.config_json
+      BEGIN SELECT RAISE(ABORT, 'config versions are immutable'); END;
+    `
   }
 ];
 

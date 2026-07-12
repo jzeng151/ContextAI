@@ -26,6 +26,7 @@ The current implementation includes:
 - OpenRouter configuration, key validation, and grounded explanation client foundations.
 - HubSpot contact list/read and guarded PATCH client foundations.
 - A native Node server boundary with SQLite migrations, fixture seeding, and durable evaluation/audit/event records.
+- A RevOps governance workspace with validated config publishing, immutable history, manual-review decisions, audit tracing, rollback access, and integration health.
 - A typed, PII-rejecting pilot telemetry contract with idempotent append-only recording.
 - Secret-optional integration smoke checks and native Node tests.
 
@@ -117,7 +118,9 @@ src/
   lib/persistence.ts      Durable runtime storage boundary
   lib/instrumentation.ts  Pilot event contract and failure-isolated recorder
   lib/integrations.ts     HubSpot and OpenRouter client foundations
+  lib/governance.ts       Governance review reason codes
   pages/index.astro       Current rep and RevOps dashboard
+  pages/admin.astro       RevOps governance and manual-review workspace
   server.ts               Minimal Node runtime and health endpoint
 scripts/
   database.ts             Local migration and fixture-seed command

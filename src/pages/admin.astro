@@ -1,0 +1,253 @@
+---
+import { leads } from "../data/leads";
+import { compareConfigs, defaultConfigVersion, type ConfigSection } from "../lib/config";
+import { governanceReviewReasons } from "../lib/governance";
+
+const draft = {
+  ...defaultConfigVersion,
+  id: "score-v0.2-draft",
+  author: "Maya Chen",
+  createdAt: "2026-07-12T14:30:00.000Z",
+  status: "draft" as const,
+  changeSummary: "Tighten warm qualification and shorten intent freshness.",
+  adminNotes: "Pilot change for review before the Monday run.",
+  config: {
+    ...defaultConfigVersion.config,
+    bandThresholds: { ...defaultConfigVersion.config.bandThresholds, Warm: 65 },
+    freshness: { ...defaultConfigVersion.config.freshness, intent: { freshThroughDays: 21 } }
+  }
+};
+const changed = compareConfigs(defaultConfigVersion.config, draft.config);
+const reviewItems = leads.flatMap((lead) => governanceReviewReasons(lead).map((reason) => ({ lead, reason })));
+const audits = leads.map((lead) => ({
+  lead,
+  evidence: lead.allowed_claims.flatMap(({ evidence_ids }) => evidence_ids).length,
+  claims: lead.allowed_claims.length,
+  policy: lead.writeback_plan?.decision ?? "Unavailable",
+  outcome: lead.writeback_outcome.status
+}));
+const sections: Readonly<Record<ConfigSection, string>> = {
+  categoryWeights: "Score weights",
+  bandThresholds: "Bands",
+  confidenceRules: "Confidence",
+  manualReview: "Manual review",
+  freshness: "Freshness",
+  sourcePolicy: "Approved sources",
+  weakSignals: "Weak signals",
+  writeback: "Writeback"
+};
+const label = (value: string) => value.replaceAll("_", " ").replaceAll(/\b\w/g, (letter) => letter.toUpperCase());
+const date = (value: string) => new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", timeZone: "UTC" }).format(new Date(value));
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>RevOps governance · ContextAI</title>
+  </head>
+  <body>
+    <a class="skip-link" href="#admin-main">Skip to governance workspace</a>
+    <div class="shell">
+      <aside class="nav" aria-label="ContextAI navigation">
+        <a class="brand" href="/"><span aria-hidden="true">C</span><strong>ContextAI</strong></a>
+        <nav>
+          <a href="/">Lead queue</a>
+          <a class="active" href="/admin" aria-current="page">Governance</a>
+        </nav>
+        <div class="account"><span aria-hidden="true">MC</span><p><strong>Maya Chen</strong><small>RevOps Admin</small></p></div>
+      </aside>
+
+      <main id="admin-main">
+        <header class="page-header">
+          <div><p>RevOps governance</p><h1>Policy control room</h1><span>Inspect every rule change and reverse CRM writes without touching code.</span></div>
+          <div class="active-version"><span>Active configuration</span><strong>{defaultConfigVersion.id}</strong><small>Published {date(defaultConfigVersion.createdAt)}</small></div>
+        </header>
+
+        <nav class="section-nav" aria-label="Governance sections">
+          <a href="#configuration">Configuration</a><a href="#history">History</a><a href="#review">Manual review</a><a href="#audit">Audit</a><a href="#integrations">Integrations</a>
+        </nav>
+
+        <section class="summary" aria-label="Governance status">
+          <div><strong>{changed.length}</strong><span>draft sections changed</span></div>
+          <div><strong>{reviewItems.length}</strong><span>open review reasons</span></div>
+          <div><strong>{audits.length}</strong><span>evaluation traces</span></div>
+          <div class="healthy"><strong>Protected</strong><span>admin role + immutable history</span></div>
+        </section>
+
+        <section id="configuration" class="workspace" aria-labelledby="configuration-title">
+          <div class="section-heading"><div><h2 id="configuration-title">Draft configuration</h2><p>Only safe policy values can be published. Historical evaluations keep their original version.</p></div><span class="status draft">Draft</span></div>
+          <form id="config-form" data-active-config={JSON.stringify(defaultConfigVersion.config)} novalidate>
+            <div class="editor">
+              <fieldset data-config-section="categoryWeights">
+                <legend>Score weights <span>must total 100</span></legend>
+                <div class="field-grid">
+                  {Object.entries(draft.config.categoryWeights).map(([name, value]) => <label><span>{label(name)}</span><input type="number" name={`categoryWeights.${name}`} min="0" max="100" value={value} /></label>)}
+                </div>
+                <output class="inline-status" data-weight-total>100 / 100</output>
+              </fieldset>
+
+              <fieldset data-config-section="bandThresholds">
+                <legend>Numeric bands <span>Cold &lt; Warm &lt; Hot</span></legend>
+                <div class="field-grid three">
+                  {Object.entries(draft.config.bandThresholds).map(([name, value]) => <label><span>{name}</span><input type="number" name={`bandThresholds.${name}`} min="0" max="100" value={value} /></label>)}
+                </div>
+              </fieldset>
+
+              <fieldset data-config-section="freshness">
+                <legend>Freshness thresholds <span>whole days</span></legend>
+                <div class="field-grid three">
+                  <label><span>Intent</span><input type="number" name="freshness.intent.freshThroughDays" min="0" value={draft.config.freshness.intent.freshThroughDays} /></label>
+                  <label><span>Engagement</span><input type="number" name="freshness.engagement.freshThroughDays" min="0" value={draft.config.freshness.engagement.freshThroughDays} /></label>
+                  <label><span>Public signal</span><input type="number" name="freshness.publicSignal.freshThroughDays" min="0" value={draft.config.freshness.publicSignal.freshThroughDays} /></label>
+                  <label><span>Firmographic fresh</span><input type="number" name="freshness.firmographic.freshThroughDays" min="0" value={draft.config.freshness.firmographic.freshThroughDays} /></label>
+                  <label><span>Firmographic stale</span><input type="number" name="freshness.firmographic.staleAfterDays" min="0" value={draft.config.freshness.firmographic.staleAfterDays} /></label>
+                  <label><span>Manual review after</span><input type="number" name="freshness.contact.manualReviewAfterDays" min="0" value={draft.config.freshness.contact.manualReviewAfterDays} /></label>
+                </div>
+              </fieldset>
+
+              <fieldset data-config-section="sourcePolicy">
+                <legend>Approved evidence sources</legend>
+                <div class="check-grid">
+                  {draft.config.sourcePolicy.approvedSourceTypes.map((source) => <label><input type="checkbox" name="approvedSources" value={source} checked /><span>{label(source)}</span></label>)}
+                </div>
+              </fieldset>
+
+              <fieldset data-config-section="weakSignals">
+                <legend>Weak-signal safety</legend>
+                <div class="locked-rule"><div><strong>Email opens stay weak engagement</strong><p>They cannot count as buying intent or produce Hot alone.</p></div><span>Locked</span></div>
+              </fieldset>
+
+              <fieldset data-config-section="writeback">
+                <legend>Writeback governance</legend>
+                <div class="split-fields">
+                  <label><span>Contact allowlist</span><textarea name="writeback.allowlist.contact" rows="5">{draft.config.writeback.allowlist.contact.join("\n")}</textarea></label>
+                  <label><span>Company allowlist</span><textarea name="writeback.allowlist.company" rows="5">{draft.config.writeback.allowlist.company.join("\n")}</textarea></label>
+                  <label><span>Contact fields requiring approval</span><textarea name="writeback.manualApprovalFields.contact" rows="3" placeholder="One allowlisted field per line">{draft.config.writeback.manualApprovalFields.contact.join("\n")}</textarea></label>
+                  <label><span>Company fields requiring approval</span><textarea name="writeback.manualApprovalFields.company" rows="3" placeholder="One allowlisted field per line">{draft.config.writeback.manualApprovalFields.company.join("\n")}</textarea></label>
+                </div>
+              </fieldset>
+            </div>
+
+            <aside class="publish-panel" aria-labelledby="compare-title">
+              <div><span>Compare with active</span><h3 id="compare-title">{draft.id}</h3><p>{draft.changeSummary}</p></div>
+              <ul data-change-list>{changed.map((section) => <li data-change={section}><strong>{sections[section]}</strong><span>Changed</span></li>)}</ul>
+              <label><span>Admin notes</span><textarea name="adminNotes" rows="4" required>{draft.adminNotes}</textarea></label>
+              <div class="error" data-config-error role="alert" hidden></div>
+              <button type="submit">Validate and publish</button>
+              <output data-publish-status aria-live="polite">No changes published.</output>
+            </aside>
+          </form>
+        </section>
+
+        <section id="history" aria-labelledby="history-title">
+          <div class="section-heading"><div><h2 id="history-title">Version history</h2><p>Version content is immutable; publishing only changes which version is active.</p></div></div>
+          <div class="table-wrap"><table><thead><tr><th>Version</th><th>Status</th><th>Author</th><th>Created</th><th>Changed rules</th><th>Admin notes</th></tr></thead><tbody data-history-body>
+            <tr><td><strong>{draft.id}</strong></td><td><span class="status draft">Draft</span></td><td>{draft.author}</td><td>{date(draft.createdAt)}</td><td>{changed.map((item) => sections[item]).join(", ")}</td><td>{draft.adminNotes}</td></tr>
+            <tr><td><strong>{defaultConfigVersion.id}</strong></td><td><span class="status active">Active</span></td><td>{defaultConfigVersion.author}</td><td>{date(defaultConfigVersion.createdAt)}</td><td>Initial policy</td><td>{defaultConfigVersion.adminNotes}</td></tr>
+          </tbody></table></div>
+        </section>
+
+        <section id="review" aria-labelledby="review-title">
+          <div class="section-heading"><div><h2 id="review-title">Manual-review queue</h2><p>Resolve or dismiss one reason at a time. Every decision records the actor, note, and timestamp.</p></div><span class="status warning">{reviewItems.length} open</span></div>
+          <div class="review-list" data-review-list>
+            {reviewItems.map(({ lead, reason }) => <article data-review-item>
+              <div><strong>{lead.lead_identity.company}</strong><span>{lead.lead_identity.name} · {lead.lead_id}</span></div>
+              <div><strong>{label(reason)}</strong><span>{lead.source_conflicts[0] || lead.missing_fields.map(label).join(", ") || lead.writeback_plan?.reason || "Policy review required"}</span></div>
+              <form data-review-form><label><span>Decision note</span><input name="note" required placeholder="What was verified or corrected?" /></label><button name="decision" value="resolved">Resolve</button><button class="secondary" name="decision" value="dismissed">Dismiss</button></form>
+            </article>)}
+            {reviewItems.length === 0 && <div class="empty"><strong>No open review items</strong><p>New manual-review evaluations will appear here with their reason codes.</p></div>}
+          </div>
+        </section>
+
+        <section id="audit" aria-labelledby="audit-title">
+          <div class="section-heading"><div><h2 id="audit-title">Decision and writeback audit</h2><p>Trace version, evidence, claim, policy, actor, and outcome for every evaluated lead.</p></div></div>
+          <div class="table-wrap"><table><thead><tr><th>Evaluation</th><th>Version</th><th>Evidence / claims</th><th>Writeback policy</th><th>Outcome</th><th>Rollback</th></tr></thead><tbody>
+            {audits.map(({ lead, evidence, claims, policy, outcome }) => <tr><td><strong>{lead.lead_identity.company}</strong><span>{lead.evaluation_id}</span></td><td>{lead.score_version}</td><td>{evidence} / {claims}</td><td>{policy}</td><td>{outcome}</td><td><div class="row-actions"><button type="button" class="secondary" data-rollback-field disabled={outcome !== "Written"}>Field</button><button type="button" class="secondary" data-rollback-lead disabled={outcome !== "Written"}>Lead</button></div></td></tr>)}
+          </tbody></table></div>
+        </section>
+
+        <section id="integrations" aria-labelledby="integrations-title">
+          <div class="section-heading"><div><h2 id="integrations-title">Integration health</h2><p>Connection health is visible here; credential revocation remains in the security-owned control.</p></div></div>
+          <article class="integration-row"><div class="provider"><span aria-hidden="true">H</span><div><strong>HubSpot</strong><small>Pilot CRM · OAuth reconnect required</small></div></div><div><span class="status warning">Disconnected</span><small>Last error: oauth_reconnect_required</small></div><a href="https://github.com/jzeng151/ContextAI/blob/main/SECURITY.md">Disconnect and revoke controls</a></article>
+        </section>
+      </main>
+    </div>
+
+    <script>
+      const configForm = document.querySelector<HTMLFormElement>("#config-form");
+      const total = document.querySelector<HTMLOutputElement>("[data-weight-total]");
+      const error = document.querySelector<HTMLElement>("[data-config-error]");
+      const status = document.querySelector<HTMLOutputElement>("[data-publish-status]");
+      const changedSections = new Set(Array.from(document.querySelectorAll<HTMLElement>("[data-change]")).map((item) => item.dataset.change));
+      const refreshWeights = () => {
+        const weights = Array.from(configForm?.querySelectorAll<HTMLInputElement>('[name^="categoryWeights."]') ?? []);
+        const sum = weights.reduce((value, input) => value + Number(input.value), 0);
+        if (total) { total.value = `${sum} / 100`; total.classList.toggle("invalid", sum !== 100); }
+        return sum;
+      };
+      configForm?.addEventListener("input", (event) => {
+        const fieldset = (event.target as HTMLElement).closest<HTMLElement>("[data-config-section]");
+        if (fieldset?.dataset.configSection) changedSections.add(fieldset.dataset.configSection);
+        refreshWeights();
+      });
+      configForm?.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const form = event.currentTarget as HTMLFormElement;
+        const values = new FormData(form);
+        const cold = Number(values.get("bandThresholds.Cold"));
+        const warm = Number(values.get("bandThresholds.Warm"));
+        const hot = Number(values.get("bandThresholds.Hot"));
+        const message = refreshWeights() !== 100 ? "Score weights must total 100." : !(cold < warm && warm < hot) ? "Bands must remain in Cold, Warm, Hot order." : !String(values.get("adminNotes") ?? "").trim() ? "Admin notes are required." : "";
+        if (error) { error.hidden = !message; error.textContent = message; }
+        if (message) return;
+        if (status) status.value = "Validated. Publish through the authenticated governance service to make this version active.";
+      });
+      document.querySelectorAll<HTMLFormElement>("[data-review-form]").forEach((form) => form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        if (!form.reportValidity()) return;
+        const item = form.closest<HTMLElement>("[data-review-item]");
+        item?.setAttribute("data-closed", "true");
+        form.querySelectorAll("input, button").forEach((control) => (control as HTMLInputElement | HTMLButtonElement).disabled = true);
+      }));
+    </script>
+  </body>
+</html>
+
+<style>
+  :global(*) { box-sizing: border-box; margin: 0; }
+  :root { font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #17211d; background: #f3f6f4; --ink: #17211d; --muted: #52635b; --line: #cbd5d0; --surface: #fff; --soft: #edf4f0; --accent: #167052; --accent-dark: #0f563f; --warning: #8a5a08; --warning-soft: #fff3d9; --danger: #9b2c2c; }
+  :global(body) { min-width: 320px; min-height: 100dvh; font-size: 14px; line-height: 1.5; }
+  :global(button), :global(input), :global(textarea) { font: inherit; }
+  :global(button), :global(a) { -webkit-tap-highlight-color: transparent; }
+  :global(button:focus-visible), :global(a:focus-visible), :global(input:focus-visible), :global(textarea:focus-visible) { outline: 3px solid #73b79f; outline-offset: 2px; }
+  .skip-link { position: fixed; top: 8px; left: 8px; z-index: 20; padding: 9px 12px; color: white; background: var(--accent-dark); transform: translateY(-150%); }.skip-link:focus { transform: none; }
+  .shell { display: grid; grid-template-columns: 190px minmax(0, 1fr); min-height: 100dvh; }
+  .nav { height: 100dvh; position: sticky; top: 0; display: flex; flex-direction: column; padding: 18px 12px; color: #dbe8e2; background: #13241d; }
+  .brand { display: flex; align-items: center; gap: 9px; padding: 0 8px 18px; color: white; text-decoration: none; }.brand > span, .account > span { width: 27px; height: 27px; display: grid; place-items: center; border-radius: 5px; color: #13241d; background: #8fd0b8; font-weight: 900; }
+  .nav nav { display: grid; gap: 4px; }.nav nav a { padding: 9px 10px; border-radius: 5px; color: #b9cbc2; text-decoration: none; font-weight: 700; }.nav nav a:hover, .nav nav a.active { color: white; background: #244235; }
+  .account { display: flex; align-items: center; gap: 9px; margin-top: auto; padding: 12px 8px 0; border-top: 1px solid #395047; }.account p { display: grid; }.account small { color: #9cb1a7; }
+  main { min-width: 0; padding: 0 28px 72px; }
+  .page-header { min-height: 138px; display: flex; align-items: center; justify-content: space-between; gap: 24px; border-bottom: 1px solid var(--line); }.page-header p { color: var(--accent-dark); font-size: 12px; font-weight: 800; }.page-header h1 { font-size: 28px; letter-spacing: -.025em; text-wrap: balance; }.page-header > div > span { color: var(--muted); }.active-version { min-width: 220px; padding: 13px 15px; border: 1px solid var(--line); background: var(--surface); }.active-version span, .active-version small, td span { display: block; color: var(--muted); font-size: 11px; }.active-version strong { display: block; margin: 2px 0; font-family: ui-monospace, monospace; }
+  .section-nav { position: sticky; top: 0; z-index: 5; display: flex; gap: 22px; padding: 13px 0; border-bottom: 1px solid var(--line); background: rgba(243,246,244,.96); }.section-nav a { color: var(--muted); text-decoration: none; font-size: 12px; font-weight: 750; }.section-nav a:hover { color: var(--accent-dark); }
+  .summary { display: grid; grid-template-columns: repeat(4, 1fr); margin: 20px 0 44px; border-block: 1px solid var(--line); background: var(--surface); }.summary div { min-height: 76px; display: grid; align-content: center; padding: 10px 16px; border-right: 1px solid var(--line); }.summary div:last-child { border-right: 0; }.summary strong { font-size: 20px; }.summary span { color: var(--muted); font-size: 11px; }.summary .healthy { background: var(--soft); }.summary .healthy strong { color: var(--accent-dark); font-size: 14px; }
+  section { scroll-margin-top: 52px; margin-bottom: 52px; }.section-heading { min-height: 68px; display: flex; align-items: end; justify-content: space-between; gap: 20px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }.section-heading h2 { font-size: 19px; text-wrap: balance; }.section-heading p { max-width: 70ch; color: var(--muted); font-size: 12px; }
+  .status { display: inline-flex; align-items: center; min-height: 24px; padding: 2px 8px; border-radius: 999px; font-size: 10px; font-weight: 800; white-space: nowrap; }.status.active { color: var(--accent-dark); background: #ddefe7; }.status.draft, .status.warning { color: var(--warning); background: var(--warning-soft); }
+  #config-form { display: grid; grid-template-columns: minmax(0, 1fr) 290px; gap: 24px; align-items: start; }.editor fieldset { min-width: 0; padding: 20px 0; border: 0; border-bottom: 1px solid var(--line); }.editor legend { width: 100%; margin-bottom: 12px; font-weight: 800; }.editor legend span { float: right; color: var(--muted); font-size: 10px; font-weight: 600; }
+  .field-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }.field-grid.three { grid-template-columns: repeat(3, 1fr); }.field-grid label, .split-fields label, .publish-panel label, .review-list label { display: grid; gap: 5px; color: var(--muted); font-size: 11px; font-weight: 700; }
+  input, textarea { width: 100%; border: 1px solid #aebbb5; border-radius: 5px; color: var(--ink); background: var(--surface); }.field-grid input, .review-list input { height: 39px; padding: 0 9px; }.split-fields textarea, .publish-panel textarea { padding: 8px 9px; resize: vertical; }.field-grid input:hover, input:focus, textarea:hover, textarea:focus { border-color: var(--accent); }
+  .inline-status { display: block; margin-top: 8px; color: var(--accent-dark); font-size: 11px; font-weight: 800; }.inline-status.invalid { color: var(--danger); }
+  .check-grid { display: flex; flex-wrap: wrap; gap: 7px; }.check-grid label { position: relative; }.check-grid input { position: absolute; opacity: 0; }.check-grid span { display: block; padding: 8px 10px; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); background: var(--surface); cursor: pointer; }.check-grid input:checked + span { color: var(--accent-dark); border-color: #73a994; background: var(--soft); }.check-grid input:focus-visible + span { outline: 3px solid #73b79f; outline-offset: 2px; }
+  .locked-rule { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 12px; background: var(--soft); }.locked-rule p { color: var(--muted); font-size: 11px; }.locked-rule > span { color: var(--accent-dark); font-size: 10px; font-weight: 800; }
+  .split-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .publish-panel { position: sticky; top: 60px; display: grid; gap: 15px; padding: 17px; border: 1px solid var(--line); background: var(--surface); }.publish-panel > div > span { color: var(--muted); font-size: 10px; font-weight: 750; }.publish-panel h3 { margin-top: 2px; font-family: ui-monospace, monospace; font-size: 14px; }.publish-panel p { margin-top: 5px; color: var(--muted); font-size: 11px; }.publish-panel ul { padding: 0; list-style: none; border-block: 1px solid var(--line); }.publish-panel li { display: flex; justify-content: space-between; gap: 10px; padding: 8px 0; font-size: 11px; }.publish-panel li + li { border-top: 1px solid var(--line); }.publish-panel li span { color: var(--warning); }.publish-panel button, .review-list button, .row-actions button { min-height: 38px; padding: 0 11px; border: 1px solid var(--accent); border-radius: 5px; color: white; background: var(--accent); font-weight: 800; }.publish-panel button:hover, .review-list button:hover { background: var(--accent-dark); }.publish-panel output { min-height: 32px; color: var(--muted); font-size: 10px; }.error { padding: 9px; color: var(--danger); background: #fff0f0; }
+  .table-wrap { overflow-x: auto; border-bottom: 1px solid var(--line); }table { width: 100%; border-collapse: collapse; background: var(--surface); }th, td { padding: 11px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }th { color: var(--muted); background: #eef2f0; font-size: 10px; }td { font-size: 11px; }td:first-child strong { font-size: 12px; }
+  .review-list { background: var(--surface); }.review-list article { display: grid; grid-template-columns: 1fr 1.3fr minmax(390px, 1.7fr); align-items: center; gap: 16px; padding: 13px; border-bottom: 1px solid var(--line); }.review-list article > div { display: grid; }.review-list article span { color: var(--muted); font-size: 10px; }.review-list form { display: grid; grid-template-columns: 1fr auto auto; align-items: end; gap: 7px; }.review-list button.secondary, .row-actions button.secondary { color: var(--accent-dark); background: transparent; }.review-list article[data-closed="true"] { opacity: .55; background: var(--soft); }.empty { padding: 32px; text-align: center; }.empty p { color: var(--muted); }
+  .row-actions { display: flex; gap: 5px; }.row-actions button { min-height: 30px; padding-inline: 8px; font-size: 10px; }.row-actions button:disabled { color: #718079; border-color: var(--line); cursor: not-allowed; opacity: .65; }
+  .integration-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 17px; background: var(--surface); }.integration-row > div { display: grid; }.provider { display: flex !important; align-items: center; gap: 11px; }.provider > span { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 6px; color: white; background: #ff6c35; font-weight: 900; }.provider div { display: grid; }.integration-row small { color: var(--muted); }.integration-row a { color: var(--accent-dark); font-weight: 800; }
+  @media (max-width: 1050px) { #config-form { grid-template-columns: 1fr; }.publish-panel { position: static; }.review-list article { grid-template-columns: 1fr 1fr; }.review-list form { grid-column: 1 / -1; } }
+  @media (max-width: 760px) { .shell { display: block; }.nav { height: auto; position: static; flex-direction: row; align-items: center; gap: 14px; padding: 9px 12px; }.brand { padding: 0; }.nav nav { display: flex; }.account { display: none; }main { padding: 0 12px 48px; }.page-header { align-items: flex-start; flex-direction: column; padding: 20px 0; }.active-version { width: 100%; }.section-nav { gap: 16px; overflow-x: auto; }.summary { grid-template-columns: 1fr 1fr; }.summary div:nth-child(2) { border-right: 0; }.summary div:nth-child(-n+2) { border-bottom: 1px solid var(--line); }.field-grid, .field-grid.three, .split-fields { grid-template-columns: 1fr 1fr; }.review-list article { grid-template-columns: 1fr; }.review-list form { grid-column: auto; grid-template-columns: 1fr 1fr; }.review-list form label { grid-column: 1 / -1; }.integration-row { align-items: flex-start; flex-direction: column; } }
+  @media (max-width: 460px) { .field-grid, .field-grid.three, .split-fields { grid-template-columns: 1fr; }.summary { grid-template-columns: 1fr; }.summary div { border-right: 0; border-bottom: 1px solid var(--line); }.review-list form { grid-template-columns: 1fr; }.review-list form label { grid-column: auto; }.review-list button { width: 100%; }.section-heading { align-items: flex-start; flex-direction: column; } }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; } }
+</style>
