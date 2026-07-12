@@ -166,21 +166,22 @@ test("HubSpot PATCH only receives policy-planned properties after explicit live 
   const policy = {
     ...hubSpotWritebackPolicy,
     liveWritesEnabled: true,
-    fields: { employees: hubSpotWritebackPolicy.fields.employees! }
+    fields: { employees: hubSpotWritebackPolicy.fields.employees!, tech_stack: hubSpotWritebackPolicy.fields.tech_stack! }
   };
   const plan = planWriteback(eligible, policy);
 
   const originalFetch = globalThis.fetch;
-  let body = "";
+  const bodies: Array<{ properties: Record<string, string> }> = [];
   globalThis.fetch = async (_input, init) => {
-    body = String(init?.body);
+    bodies.push(JSON.parse(String(init?.body)));
     return new Response(JSON.stringify({ id: "1", properties: { numberofemployees: "900" } }), { status: 200 });
   };
   try {
     await writeHubSpotEnrichment(plan, { store, tenantId: "tenant-1", actorType: "system", actorId: "writeback-service", policy }, config);
-    assert.equal(body, "");
+    assert.equal(bodies.length, 0);
     await writeHubSpotEnrichment(plan, { store, tenantId: "tenant-1", actorType: "system", actorId: "writeback-service", policy, mode: "live", authorizedLiveWrite: true }, config);
-    assert.deepEqual(JSON.parse(body), { properties: { numberofemployees: 900 } });
+    assert.ok(bodies.some(({ properties }) => properties.numberofemployees === "900"));
+    assert.ok(bodies.some(({ properties }) => properties.technology_tags === "HubSpot;Salesforce"));
   } finally {
     globalThis.fetch = originalFetch;
     store.close();

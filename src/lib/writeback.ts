@@ -128,12 +128,13 @@ export const planWriteback = (packet: LeadPacket, policy: WritebackPolicy): Writ
     const newValue = valuesFrom(candidate).get(canonicalField);
     const crmEvidence = evidence.filter((item) => item.source_type === "crm" && valuesFrom(item).has(canonicalField)).toSorted(newestFirst)[0];
     const previousValue = crmEvidence && valuesFrom(crmEvidence).get(canonicalField);
-    const freshHighConfidence = (item: Evidence) => item.confidence === policy.minimumConfidence && Number.isFinite(ageInDays(packet, item)) && ageInDays(packet, item) >= 0 && ageInDays(packet, item) <= policy.maxAgeDays;
+    const fresh = (item: Evidence) => Number.isFinite(ageInDays(packet, item)) && ageInDays(packet, item) >= 0 && ageInDays(packet, item) <= policy.maxAgeDays;
+    const freshHighConfidence = (item: Evidence) => item.confidence === policy.minimumConfidence && fresh(item);
     const sourceConflict = candidates.some((item) =>
       item !== candidate && item.source_name !== candidate.source_name && rank(item) === rank(candidate) && freshHighConfidence(item) &&
       !sameValue(valuesFrom(item).get(canonicalField), newValue)
     );
-    const authoritativeCrmConflict = crmEvidence !== undefined && rank(crmEvidence) <= rank(candidate) && freshHighConfidence(crmEvidence) && !sameValue(previousValue, newValue);
+    const authoritativeCrmConflict = crmEvidence !== undefined && crmEvidence.confidence !== "Low" && rank(crmEvidence) <= rank(candidate) && fresh(crmEvidence) && !sameValue(previousValue, newValue);
     const base = {
       canonicalField,
       crmObjectType: rule?.object ?? "company" as const,
@@ -186,7 +187,9 @@ export const executeWriteback = async (
   }>
 ) => {
   if (![options.tenantId, options.actorType, options.actorId].every((value) => value.trim())) throw new Error("Tenant and actor identity are required");
-  const verifiedPlan = planWriteback(plan.packet, options.policy);
+  const stored = options.store.getEvaluation(options.tenantId, plan.packet.evaluation_id);
+  if (!stored || JSON.stringify(stored.packet) !== JSON.stringify(plan.packet)) throw new Error("Writeback plan does not match the stored evaluation packet");
+  const verifiedPlan = planWriteback(stored.packet, options.policy);
   if (plan.policyVersion !== verifiedPlan.policyVersion) throw new Error("Writeback plan policy version does not match the trusted policy");
   const mode = options.mode ?? "dry-run";
   if (mode === "live" && (!options.policy.liveWritesEnabled || options.authorizedLiveWrite !== true || !options.write)) {
@@ -224,6 +227,7 @@ export const executeWriteback = async (
       const reservationReason = "Reserved before live CRM write.";
       const reservation = options.store.getAuditRecord(reservationId);
       if (reservation && !matches(reservation, "Pending", reservationReason)) throw new Error("Writeback reservation does not match the verified plan");
+      if (reservation) throw new Error("Writeback has a pending reservation and requires manual reconciliation");
       if (!reservation) record(reservationId, "Pending", reservationReason);
       await options.write!({ object: field.crmObjectType, objectId: field.crmObjectId, properties: { [field.crmField]: field.newValue } });
     }
@@ -267,6 +271,7 @@ export const rollbackWriteback = async (
     if (reservation && (reservation.tenant_id !== original.tenant_id || reservation.evaluation_id !== original.evaluation_id || reservation.field_name !== original.field_name || reservation.new_value_json !== JSON.stringify(rollbackValue) || reservation.outcome !== "Pending" || reservation.reason !== reservationReason)) {
       throw new Error("Rollback reservation does not match the original write");
     }
+    if (reservation) throw new Error("Rollback has a pending reservation and requires manual reconciliation");
     if (!reservation) options.store.appendAuditRecord({
       auditId: reservationId, tenantId: original.tenant_id, evaluationId: original.evaluation_id, requestId: original.request_id,
       crmObjectType: original.crm_object_type, crmObjectId: original.crm_object_id, fieldName: original.field_name,

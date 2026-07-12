@@ -203,6 +203,7 @@ export const writeHubSpotEnrichment = async (
 ) => executeWriteback(plan, {
   ...options,
   write: async ({ object, objectId, properties }) => {
+    const serialized = Object.fromEntries(Object.entries(properties).map(([name, value]) => [name, Array.isArray(value) ? value.join(";") : String(value)]));
     const response = await fetch(`https://api.hubapi.com/crm/v3/objects/${object === "contact" ? "contacts" : "companies"}/${objectId}`, {
       method: "PATCH",
       headers: {
@@ -210,7 +211,7 @@ export const writeHubSpotEnrichment = async (
         "Content-Type": "application/json"
       },
       signal: AbortSignal.timeout(timeoutMs),
-      body: JSON.stringify({ properties })
+      body: JSON.stringify({ properties: serialized })
     });
     await readJson<HubSpotContact>(response);
   }

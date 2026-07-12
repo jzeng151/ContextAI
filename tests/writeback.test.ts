@@ -38,7 +38,8 @@ test("planning handles empty, invalid, stale, low-confidence, and conflicting fi
     ["invalid", (_lead: ReturnType<typeof packet>) => {}, "Blocked"],
     ["stale", (lead: ReturnType<typeof packet>) => { lead.enrichment_fields.evidence[0]!.source_updated_at = "2025-01-01T00:00:00.000Z"; lead.enrichment_fields.last_updated_days_ago = Math.floor((Date.parse(lead.evaluation_timestamp) - Date.parse("2025-01-01T00:00:00.000Z")) / 86_400_000); }, "Flagged for Review"],
     ["low", (lead: ReturnType<typeof packet>) => { lead.enrichment_fields.evidence[0]!.confidence = "Low"; }, "Flagged for Review"],
-    ["conflict", (lead: ReturnType<typeof packet>) => { lead.enrichment_fields.evidence.push({ ...lead.enrichment_fields.evidence[0]!, evidence_id: "crm-employees", source_type: "crm", source_name: "HubSpot", eligible_for_crm_writeback: false, field_name: undefined, field_values: { employees: 25 }, field_value: 25 }); }, "Flagged for Review"]
+    ["conflict", (lead: ReturnType<typeof packet>) => { lead.enrichment_fields.evidence.push({ ...lead.enrichment_fields.evidence[0]!, evidence_id: "crm-employees", source_type: "crm", source_name: "HubSpot", eligible_for_crm_writeback: false, field_name: undefined, field_values: { employees: 25 }, field_value: 25 }); }, "Flagged for Review"],
+    ["medium CRM conflict", (lead: ReturnType<typeof packet>) => { lead.enrichment_fields.evidence.push({ ...lead.enrichment_fields.evidence[0]!, evidence_id: "medium-crm-employees", source_type: "crm", source_name: "HubSpot", confidence: "Medium", eligible_for_crm_writeback: false, field_name: undefined, field_values: { employees: 25 }, field_value: 25 }); }, "Flagged for Review"]
   ] as const) {
     const lead = packet();
     mutate(lead);
@@ -115,11 +116,23 @@ test("execution is dry-run-first and retries do not repeat writes", async () => 
     assert.equal(writtenFields.includes("owner"), false);
     assert.equal(writtenFields.includes("annualrevenue"), false);
 
+    const attackerPacket = { ...lead, account_id: "attacker-company", crm_context: { ...lead.crm_context, company_association: { ...lead.crm_context.company_association, candidate_account_ids: ["attacker-company"] } } };
+    await assert.rejects(executeWriteback({ ...livePlan, packet: attackerPacket }, { ...options, write: async () => { writes += 1; } }), /stored evaluation packet/i);
+    assert.equal(writes, first.length);
+
+    const pendingStore = storeFor(lead);
+    let pendingWrites = 0;
+    const uncertainWrite = { ...options, store: pendingStore, write: async () => { pendingWrites += 1; throw new Error("connection lost"); } };
+    await assert.rejects(executeWriteback(livePlan, uncertainWrite), /connection lost/i);
+    await assert.rejects(executeWriteback(livePlan, { ...uncertainWrite, write: async () => { pendingWrites += 1; } }), /manual reconciliation/i);
+    assert.equal(pendingWrites, 1);
+    pendingStore.close();
+
     const missingEvaluation = new RuntimeStore(":memory:");
     missingEvaluation.saveTenant("tenant-1", "Pilot tenant");
     missingEvaluation.saveConfigVersion("tenant-1", defaultConfigVersion);
     let unauditedWrites = 0;
-    await assert.rejects(executeWriteback(livePlan, { ...options, store: missingEvaluation, write: async () => { unauditedWrites += 1; } }), /foreign key/i);
+    await assert.rejects(executeWriteback(livePlan, { ...options, store: missingEvaluation, write: async () => { unauditedWrites += 1; } }), /stored evaluation packet/i);
     assert.equal(unauditedWrites, 0);
     missingEvaluation.close();
   } finally {
