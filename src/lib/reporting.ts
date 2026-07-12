@@ -147,8 +147,6 @@ export function createPilotReport(
       (!filters.source || evaluation.packet.crm_context.source === filters.source) &&
       (!filters.configVersion || allRunByEvaluation.get(evaluation.evaluationId)?.configVersion === filters.configVersion);
   const candidateEvaluations = windowEvaluations.filter(matchesSegments);
-  const endEvaluations = new Map<string, Evaluation>();
-  for (const evaluation of candidateEvaluations) endEvaluations.set(evaluation.leadId, evaluation);
   const evaluations = candidateEvaluations.filter((evaluation) => !filters.band || evaluation.packet.priority_band === filters.band);
 
   const evaluationIds = new Set(evaluations.map(({ evaluationId }) => evaluationId));
@@ -156,6 +154,8 @@ export function createPilotReport(
     (!filters.configVersion || event.configVersion === filters.configVersion));
   const byEvaluation = new Map(evaluations.map((evaluation) => [evaluation.evaluationId, evaluation]));
   const indexEvaluations = new Map([...allIndexes].filter(([, evaluation]) => matchesSegments(evaluation) && (!filters.band || evaluation.packet.priority_band === filters.band)));
+  const endEvaluations = new Map<string, Evaluation>();
+  for (const evaluation of windowEvaluations) if (indexEvaluations.has(evaluation.leadId)) endEvaluations.set(evaluation.leadId, evaluation);
   const indexEvaluationIds = new Set([...indexEvaluations.values()].map(({ evaluationId }) => evaluationId));
   const eventRuns = events.filter((event): event is Extract<PilotEvent, { name: "evaluation.run" }> => event.name === "evaluation.run");
   const runByEvaluation = firstBy(eventRuns, ({ evaluationId }) => evaluationId);
@@ -232,7 +232,7 @@ export function createPilotReport(
   }
   const matured = [...indexEvaluations.values()].filter(({ evaluationId }) => {
     const run = runByEvaluation.get(evaluationId);
-    return run && generated - eventAt(run) >= 60 * day;
+    return run && effectiveTo - eventAt(run) >= 60 * day;
   });
   const conversions = Object.fromEntries((["Hot", "Warm"] as const).map((band) => {
     const denominator = matured.filter(({ evaluationId, cohort }) => (cohort === "contextai" ? shown.get(evaluationId) : cohort === "control" ? runByEvaluation.get(evaluationId) : undefined)?.data.priorityBand === band);
@@ -255,11 +255,12 @@ export function createPilotReport(
   const falsePositiveLeads = new Set(maturedHot.filter(({ evaluationId }) => ["bad_fit", "disqualified"].includes(firstOutcomes.get(evaluationId)?.data.outcomeType ?? "")).map(({ leadId }) => leadId));
   const hotLeads = new Set(maturedHot.map(({ leadId }) => leadId));
 
-  const treatmentEvaluationIds = new Set(evaluations.filter(({ cohort }) => cohort === "contextai").map(({ evaluationId }) => evaluationId));
-  const auditRows = (database.prepare(`
-    SELECT audit_id, evaluation_id, field_name, outcome, recorded_at FROM writeback_audit_records WHERE tenant_id = ?
-  `).all(tenantId) as Array<{ audit_id: string; evaluation_id: string; field_name: string; outcome: string; recorded_at: string }>)
-    .filter(({ evaluation_id }) => treatmentEvaluationIds.has(evaluation_id));
+  const allAuditRows = database.prepare(`
+    SELECT audit_id, evaluation_id, field_name, outcome, recorded_at FROM writeback_audit_records
+    WHERE tenant_id = ? AND julianday(recorded_at) <= julianday(?)
+  `).all(tenantId, new Date(effectiveTo).toISOString()) as Array<{ audit_id: string; evaluation_id: string; field_name: string; outcome: string; recorded_at: string }>;
+  const auditRows = allAuditRows.filter(({ evaluation_id }) => byEvaluation.get(evaluation_id)?.cohort === "contextai");
+  for (const { evaluation_id } of allAuditRows) if (byEvaluation.get(evaluation_id)?.cohort === "control") controlWritebackExposure.add(evaluation_id);
   const auditIds = new Set(auditRows.map(({ audit_id }) => audit_id));
   const unresolvedReservations = auditRows.filter(({ audit_id }) => audit_id.startsWith("pending:") && !auditIds.has(audit_id.slice("pending:".length)));
   const originalAudits = auditRows.filter(({ audit_id }) => !audit_id.startsWith("pending:") && !audit_id.startsWith("rollback:"));
@@ -269,11 +270,11 @@ export function createPilotReport(
   const written = firstBy(writeEvents.filter(({ data }) => data.outcome === "Written"), ({ data }) => data.writebackId);
   const auditWritten = firstBy(originalAudits.filter(({ outcome }) => outcome === "Written"), ({ audit_id }) => audit_id);
   const pendingWrites = [
-    ...[...written.values()].filter((event) => generated - eventAt(event) < 30 * day),
-    ...[...auditWritten.values()].filter(({ recorded_at }) => generated - Date.parse(recorded_at) < 30 * day)
+    ...[...written.values()].filter((event) => effectiveTo - eventAt(event) < 30 * day),
+    ...[...auditWritten.values()].filter(({ recorded_at }) => effectiveTo - Date.parse(recorded_at) < 30 * day)
   ];
-  const maturedWritten = firstBy([...written.values()].filter((event) => generated - eventAt(event) >= 30 * day), ({ data }) => data.writebackId);
-  const maturedAuditWritten = firstBy([...auditWritten.values()].filter(({ recorded_at }) => generated - Date.parse(recorded_at) >= 30 * day), ({ audit_id }) => audit_id);
+  const maturedWritten = firstBy([...written.values()].filter((event) => effectiveTo - eventAt(event) >= 30 * day), ({ data }) => data.writebackId);
+  const maturedAuditWritten = firstBy([...auditWritten.values()].filter(({ recorded_at }) => effectiveTo - Date.parse(recorded_at) >= 30 * day), ({ audit_id }) => audit_id);
   const writtenIds = new Set([...maturedWritten.keys()].map((id) => `event:${id}`).concat([...maturedAuditWritten.keys()].map((id) => `audit:${id}`)));
   const rollbackIds = new Set(treatmentWritebackEvents.filter((event): event is Extract<PilotEvent, { name: "writeback.rollback" }> => {
     if (event.name !== "writeback.rollback") return false;
@@ -281,8 +282,8 @@ export function createPilotReport(
     return write !== undefined && eventAt(event) >= eventAt(write) && eventAt(event) - eventAt(write) <= 30 * day;
   }).map(({ data }) => `event:${data.writebackId}`));
   const rollbackLinks = database.prepare(`
-    SELECT original_audit_id, created_at FROM rollback_links WHERE tenant_id = ?
-  `).all(tenantId) as Array<{ original_audit_id: string; created_at: string }>;
+    SELECT original_audit_id, created_at FROM rollback_links WHERE tenant_id = ? AND julianday(created_at) <= julianday(?)
+  `).all(tenantId, new Date(effectiveTo).toISOString()) as Array<{ original_audit_id: string; created_at: string }>;
   for (const link of rollbackLinks) {
     const write = maturedAuditWritten.get(link.original_audit_id);
     if (write && Date.parse(link.created_at) >= Date.parse(write.recorded_at) && Date.parse(link.created_at) - Date.parse(write.recorded_at) <= 30 * day) rollbackIds.add(`audit:${link.original_audit_id}`);
@@ -325,7 +326,7 @@ export function createPilotReport(
   }
 
   const weakHotEvaluations = new Set(events.filter((event): event is Extract<PilotEvent, { name: "source.contribution" }> => {
-    if (event.name !== "source.contribution" || !indexEvaluationIds.has(event.evaluationId) || !event.data.weakSignal || !event.data.hotMaking || event.data.sourceType !== "engagement") return false;
+    if (event.name !== "source.contribution" || runByEvaluation.get(event.evaluationId)?.data.priorityBand !== "Hot" || !indexEvaluationIds.has(event.evaluationId) || !event.data.weakSignal || !event.data.hotMaking || event.data.sourceType !== "engagement") return false;
     const packet = byEvaluation.get(event.evaluationId)?.packet;
     return packet !== undefined && hasOnlyWeakOpenIntent(packet) && event.evidenceRefs.some((ref) => {
       const evidence = packetEvidence(packet).find(({ evidence_id }) => evidence_id === ref);
@@ -408,6 +409,8 @@ export function exportPilotReport(report: ReturnType<typeof createPilotReport>) 
   add("hot_false_positive", report.hotFalsePositives.numerator, report.hotFalsePositives.denominator, report.hotFalsePositives.rate, true);
   add("crm_completeness_index", report.crmCompleteness.index.numerator, report.crmCompleteness.index.denominator, report.crmCompleteness.index.rate);
   add("crm_completeness", report.crmCompleteness.numerator, report.crmCompleteness.denominator, report.crmCompleteness.rate);
+  for (const [field, count] of Object.entries(report.crmCompleteness.index.fieldCoverage)) add(`crm_field_index:${field}`, count, report.crmCompleteness.index.denominator, ratio(count, report.crmCompleteness.index.denominator));
+  for (const [field, count] of Object.entries(report.crmCompleteness.fieldCoverage)) add(`crm_field_end:${field}`, count, report.crmCompleteness.denominator, ratio(count, report.crmCompleteness.denominator));
   add("writeback_rollback", report.writebacks.rolledBack, report.writebacks.written, report.writebacks.rate);
   for (const [outcome, count] of Object.entries(report.writebacks.byOutcome)) add(`writeback_outcome:${outcome}`, count, report.leads.processed, count);
   add("weak_signal_contribution", report.weakSignalContribution.numerator, report.weakSignalContribution.denominator, report.weakSignalContribution.rate);

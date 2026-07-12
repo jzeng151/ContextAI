@@ -79,6 +79,22 @@ test("ordered evaluation persists a complete run and replay is idempotent", asyn
   store.close();
 });
 
+test("baseline history preserves the first exposure index", async () => {
+  const store = setup();
+  const run = (id: string, evaluatedAt: string, evaluationKind?: "baseline_anchor") => evaluateLead({
+    identity, idempotencyKey: id, contactId: record.id, store, dependencies: dependencies(), evaluatedAt,
+    ...(evaluationKind ? { evaluationKind } : {})
+  });
+  await run("baseline", "2026-07-10T09:00:00.000Z", "baseline_anchor");
+  await run("exposure", "2026-07-11T09:00:00.000Z");
+  await run("rescore", "2026-07-12T09:00:00.000Z");
+  assert.deepEqual(
+    (store.database.prepare("SELECT evaluation_kind FROM pilot_evaluation_owners ORDER BY recorded_at").all() as Array<{ evaluation_kind: string }>).map(({ evaluation_kind }) => evaluation_kind),
+    ["baseline_anchor", "exposure_index", "rescore"]
+  );
+  store.close();
+});
+
 test("new evaluations use the tenant's published active configuration", async () => {
   const store = setup();
   const draft = createConfigDraft({

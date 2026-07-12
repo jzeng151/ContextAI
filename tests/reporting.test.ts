@@ -97,6 +97,8 @@ test("pilot reports reconcile tenant-scoped events, filters, duplicates, windows
     assert.match(csv, /"pilot-v1","tenant-1","contextai"/);
     assert.match(csv, /"recommendation_acceptance","1","1","1"/);
     assert.match(csv, /"meetings_per_active_rep_week"/);
+    assert.match(csv, /"crm_field_index:company_domain"/);
+    assert.match(csv, /"crm_field_end:company_domain"/);
     const promptCsv = exportPilotReport(promptV2);
     assert.equal(csvRow(promptCsv, "leads_processed")[7], "all");
     assert.equal(csvRow(promptCsv, "recommendation_acceptance")[7], "grounding-v2");
@@ -285,6 +287,7 @@ test("contact indexes preserve their original cohort and ownerless meetings stay
   try {
     const controlIndex = { ...structuredClone(leads[0]!), evaluation_id: "eval-transfer-a-control", request_id: "request-transfer-control", lead_id: "lead-transfer" };
     const contextRescore = { ...structuredClone(leads[0]!), evaluation_id: "eval-transfer-z-context", request_id: "request-transfer-context", lead_id: "lead-transfer" };
+    contextRescore.crm_context.evidence.push({ ...contextRescore.crm_context.evidence[0]!, evidence_id: "transfer-department", field_name: "contact_department", field_value: "Operations", field_values: { contact_department: "Operations" }, source_updated_at: contextRescore.evaluation_timestamp });
     const ownerless = { ...structuredClone(leads[1]!), evaluation_id: "eval-ownerless", request_id: "request-ownerless", lead_id: "lead-ownerless" };
     store.saveTenant("tenant-1", "Pilot tenant");
     store.saveConfigVersion(admin("tenant-1"), defaultConfigVersion);
@@ -306,7 +309,12 @@ test("contact indexes preserve their original cohort and ownerless meetings stay
     const event = <T extends PilotEvent>(value: T) => store.recordEvent(value);
     event({ ...base(controlIndex), idempotencyKey: "control-run", occurredAt: "2026-01-01T09:00:00.000Z", name: "evaluation.run", data: { outcome: "complete", priorityScore: 94, priorityBand: "Hot" } });
     event({ ...base(controlIndex), idempotencyKey: "control-shown", occurredAt: "2026-01-01T09:01:00.000Z", name: "score.shown", data: { priorityScore: 94, priorityBand: "Hot", surface: "dashboard" } });
-    event({ ...base(controlIndex), retentionClass: "writeback_audit_24_months", idempotencyKey: "control-write", occurredAt: "2026-01-01T09:02:00.000Z", name: "writeback.outcome", data: { writebackId: "control-write", outcome: "Written" } });
+    store.appendAuditRecord(admin("tenant-1"), {
+      auditId: "control-write", evaluationId: controlIndex.evaluation_id, requestId: controlIndex.request_id,
+      crmObjectType: "contact", crmObjectId: controlIndex.lead_id, fieldName: "contact_title", sourceName: "HubSpot",
+      sourceRef: controlIndex.lead_id, sourceUpdatedAt: controlIndex.evaluation_timestamp, confidence: "High",
+      outcome: "Written", reason: "Live write", scoreVersion: controlIndex.score_version, recordedAt: "2026-01-01T09:02:00.000Z"
+    });
     event({ ...base(contextRescore), idempotencyKey: "context-run", occurredAt: "2026-01-02T09:00:00.000Z", name: "evaluation.run", data: { outcome: "complete", priorityScore: 94, priorityBand: "Hot" } });
     event({ ...base(ownerless), idempotencyKey: "ownerless-run", occurredAt: "2026-01-01T09:00:00.000Z", name: "evaluation.run", data: { outcome: "complete", priorityScore: ownerless.priority_score, priorityBand: ownerless.priority_band } });
     event({ ...base(ownerless), idempotencyKey: "ownerless-shown", occurredAt: "2026-01-01T09:01:00.000Z", name: "score.shown", data: { priorityScore: ownerless.priority_score, priorityBand: ownerless.priority_band, surface: "dashboard" } });
@@ -316,6 +324,8 @@ test("contact indexes preserve their original cohort and ownerless meetings stay
     const contextReport = createPilotReport(store.database, "tenant-1", { cohort: "contextai" }, "2026-04-01T00:00:00.000Z");
     assert.equal(contextReport.leads.processed, 0);
     assert.equal(contextReport.crmCompleteness.denominator, 0);
+    const controlReport = createPilotReport(store.database, "tenant-1", { cohort: "control" }, "2026-04-01T00:00:00.000Z");
+    assert.equal(controlReport.crmCompleteness.fieldCoverage.contact_department, 1);
     const report = createPilotReport(store.database, "tenant-1", {}, "2026-04-01T00:00:00.000Z");
     assert.equal(report.leads.processed, 2);
     assert.equal(report.meetings.total, 0);
@@ -403,10 +413,19 @@ test("default report window excludes future evaluations and events", () => {
       idempotencyKey: "future-shown", occurredAt: "2027-01-01T09:01:00.000Z", name: "score.shown",
       data: { priorityScore: current.priority_score!, priorityBand: current.priority_band, surface: "dashboard" }
     });
+    store.appendAuditRecord(admin("tenant-1"), {
+      auditId: "future-write", evaluationId: current.evaluation_id, requestId: current.request_id,
+      crmObjectType: "contact", crmObjectId: current.lead_id, fieldName: "contact_title", sourceName: "HubSpot",
+      sourceRef: current.lead_id, sourceUpdatedAt: current.evaluation_timestamp, confidence: "High",
+      outcome: "Written", reason: "Future write", scoreVersion: current.score_version, recordedAt: "2027-01-01T09:02:00.000Z"
+    });
 
     const report = createPilotReport(store.database, "tenant-1", {}, "2026-10-01T00:00:00.000Z");
     assert.equal(report.leads.processed, 1);
     assert.equal(report.recommendations.coverage.denominator, 0);
+    assert.equal(report.writebacks.byOutcome.Written, 0);
+    const historical = createPilotReport(store.database, "tenant-1", { to: "2026-07-15T00:00:00.000Z" }, "2026-10-01T00:00:00.000Z");
+    assert.match(historical.metadata.caveats.join(" "), /without a complete 60-day maturation window/i);
   } finally {
     store.close();
   }
@@ -456,14 +475,18 @@ test("purged evaluations are excluded and only open-only evidence counts as weak
   const store = new RuntimeStore(":memory:");
   try {
     const weak = structuredClone(leads.find(({ lead_id }) => lead_id === "weak-opens")!);
+    const warm = { ...structuredClone(weak), evaluation_id: "eval-warm-weak", request_id: "request-warm-weak", lead_id: "lead-warm-weak" };
     const purged = { ...structuredClone(leads[1]!), evaluation_id: "eval-purged", request_id: "request-purged", lead_id: "lead-purged" };
     store.saveTenant("tenant-1", "Pilot tenant");
     store.saveConfigVersion(admin("tenant-1"), defaultConfigVersion);
     store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "weak", packet: weak });
+    store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "warm", packet: warm });
     store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "purged", packet: purged, retentionAfter: "2026-01-02T00:00:00.000Z" });
     store.database.prepare("UPDATE evaluation_runs SET completed_at = ? WHERE evaluation_id = ?").run("2026-01-01T09:00:00.000Z", weak.evaluation_id);
+    store.database.prepare("UPDATE evaluation_runs SET completed_at = ? WHERE evaluation_id = ?").run("2026-01-01T09:00:00.000Z", warm.evaluation_id);
     store.registerPilotParticipant({ tenantId: "tenant-1", repId: "rep-1", cohort: "contextai", teamId: "team-1", activeFrom: "2026-01-01T00:00:00.000Z" });
     store.recordEvaluationOwner({ tenantId: "tenant-1", evaluationId: weak.evaluation_id, repId: "rep-1", evaluationKind: "exposure_index" });
+    store.recordEvaluationOwner({ tenantId: "tenant-1", evaluationId: warm.evaluation_id, repId: "rep-1", evaluationKind: "exposure_index" });
     const base = {
       tenantId: "tenant-1", requestId: weak.request_id, evaluationId: weak.evaluation_id, leadId: weak.lead_id,
       accountId: weak.account_id, actorType: "system" as const, actorId: "system-1", scoreVersion: weak.score_version,
@@ -471,10 +494,12 @@ test("purged evaluations are excluded and only open-only evidence counts as weak
     };
     store.recordEvent({ ...base, idempotencyKey: "weak-run", occurredAt: "2026-01-01T09:00:00.000Z", name: "evaluation.run", data: { outcome: "complete", priorityScore: 90, priorityBand: "Hot" } });
     store.recordEvent({ ...base, evidenceRefs: ["wo-intent"], idempotencyKey: "weak-open", occurredAt: "2026-01-01T09:01:00.000Z", name: "source.contribution", data: { sourceType: "engagement", contribution: "supporting", weakSignal: true, hotMaking: true } });
+    store.recordEvent({ ...base, requestId: warm.request_id, evaluationId: warm.evaluation_id, leadId: warm.lead_id, idempotencyKey: "warm-run", occurredAt: "2026-01-01T09:00:00.000Z", name: "evaluation.run", data: { outcome: "complete", priorityScore: 70, priorityBand: "Warm" } });
+    store.recordEvent({ ...base, requestId: warm.request_id, evaluationId: warm.evaluation_id, leadId: warm.lead_id, evidenceRefs: ["wo-intent"], idempotencyKey: "warm-open", occurredAt: "2026-01-01T09:01:00.000Z", name: "source.contribution", data: { sourceType: "engagement", contribution: "supporting", weakSignal: true, hotMaking: true } });
     assert.equal(store.purgeExpiredEvaluations(admin("tenant-1"), "2026-01-03T00:00:00.000Z"), 1);
 
     const report = createPilotReport(store.database, "tenant-1", {}, "2026-04-01T00:00:00.000Z");
-    assert.equal(report.leads.processed, 1);
+    assert.equal(report.leads.processed, 2);
     assert.deepEqual(report.weakSignalContribution, { numerator: 1, denominator: 1, rate: 1 });
   } finally {
     store.close();

@@ -361,7 +361,7 @@ export class RuntimeStore {
       FROM evaluation_runs current
       JOIN evaluation_runs prior ON prior.tenant_id = current.tenant_id AND prior.lead_id = current.lead_id
       JOIN pilot_evaluation_owners owner ON owner.tenant_id = prior.tenant_id AND owner.evaluation_id = prior.evaluation_id
-      WHERE current.tenant_id = ? AND current.evaluation_id = ? AND owner.evaluation_kind != 'rescore'
+      WHERE current.tenant_id = ? AND current.evaluation_id = ? AND owner.evaluation_kind = 'exposure_index'
         AND (prior.completed_at < current.completed_at OR (prior.completed_at = current.completed_at AND prior.evaluation_id < current.evaluation_id))
       LIMIT 1
     `).get(input.tenantId, input.evaluationId);
