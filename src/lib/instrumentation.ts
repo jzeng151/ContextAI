@@ -172,6 +172,6 @@ export const pilotMetricInputs = {
   firstMeaningfulAction: { value: "earliest action.first_meaningful occurredAt after lead.viewed for an evaluation" },
   hotFalsePositive: { numerator: "distinct eligible contacts whose Hot index evaluation has an attributed bad_fit or disqualified outcome", denominator: "distinct eligible contacts with a Hot score.shown for their index evaluation" },
   coreField: { value: "a field listed in coreFields with current source-backed evidence no older than 90 days" },
-  badWriteback: { numerator: "distinct Written writeback IDs later rolled back", denominator: "distinct writeback.outcome events with outcome=Written" },
+  badWriteback: { numerator: "distinct Written writeback IDs later rolled back", denominator: "distinct writeback IDs with a writeback.outcome event whose outcome=Written" },
   weakSignalPrimaryDriver: { numerator: "distinct Hot index evaluations with a weak email-open source contribution marked hotMaking", denominator: "distinct Hot index evaluation.run events" }
 } as const;

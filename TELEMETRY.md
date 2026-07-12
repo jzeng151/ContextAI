@@ -49,7 +49,7 @@ These measurable definitions are inputs to issue #18, which owns final pilot app
 - **First meaningful action:** earliest `action.first_meaningful` after `lead.viewed` for the evaluation.
 - **Hot false positive:** distinct eligible contacts whose Hot index evaluation is later attributed `bad_fit` or `disqualified`; denominator is distinct eligible contacts with a Hot `score.shown` for their index evaluation.
 - **Core field:** one of the exported `coreFields` with current, source-backed evidence no older than 90 days.
-- **Bad writeback:** distinct Written writeback IDs later rolled back; denominator is distinct Written writeback outcomes. An edit alone is diagnostic, not automatically bad.
+- **Bad writeback:** distinct Written writeback IDs later rolled back; denominator is distinct writeback IDs with a Written outcome. An edit alone is diagnostic, not automatically bad.
 - **Weak-signal primary driver:** distinct Hot index evaluations with a weak email-open contribution marked `hotMaking`; denominator is distinct Hot index evaluation runs.
 
 Meeting and other outcome rates use their attribution events and the cohort/window approved by issue #18. Reporting queries do not belong in producers or this recording boundary.
