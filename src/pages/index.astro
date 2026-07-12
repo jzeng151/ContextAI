@@ -1,313 +1,856 @@
 ---
 import { leads } from "../data/leads";
-import { freshnessLabel, groundedHook, hasOnlyWeakOpenIntent, isWritebackEligible, scoreLabel, toolRun } from "../lib/contextai";
+import { dashboardPromptVersion } from "../lib/dashboard";
+import { defaultConfigVersion } from "../lib/config";
+import {
+  groundedHook,
+  hasOnlyWeakOpenIntent,
+  requiredToolSteps,
+  scoreLabel,
+  type Evidence,
+  type LeadPacket,
+  type ScoreBreakdown
+} from "../lib/contextai";
 
-const selected = leads[0];
-const hot = leads.filter((lead) => lead.priority_band === "Hot").length;
-const review = leads.filter((lead) => lead.priority_band === "Needs Manual Review").length;
-const writebackSafe = leads.filter(isWritebackEligible).length;
-const totalScore = Object.values(selected.score_breakdown).reduce((sum, value) => sum + value, 0);
+const bandRank: Record<LeadPacket["priority_band"], number> = {
+  Hot: 4,
+  "Needs Manual Review": 3,
+  Warm: 2,
+  Cold: 1
+};
+const queueLeads = [...leads].sort((a, b) =>
+  bandRank[b.priority_band] - bandRank[a.priority_band] ||
+  (b.priority_score ?? -1) - (a.priority_score ?? -1)
+);
+const selected = queueLeads[0];
+const scoreCaps = defaultConfigVersion.config.categoryWeights;
+const scoreKeys = Object.keys(scoreCaps) as Array<keyof ScoreBreakdown>;
+const hot = leads.filter(({ priority_band }) => priority_band === "Hot").length;
+const review = leads.filter(({ priority_band }) => priority_band === "Needs Manual Review").length;
+const partial = leads.filter((lead) => Object.values(lead.tool_status).some(({ status }) => !["success", "no_result"].includes(status))).length;
+const writebackReview = leads.filter(({ writeback_plan }) => writeback_plan?.decision === "Review").length;
+
+const humanize = (value: string) => value
+  .replaceAll("_", " ")
+  .replaceAll(/\b\w/g, (letter) => letter.toUpperCase())
+  .replaceAll(/\bCrm\b/g, "CRM")
+  .replaceAll(/\bIcp\b/g, "ICP")
+  .replaceAll(/\bId\b/g, "ID")
+  .replaceAll(/\bUrl\b/g, "URL");
+const formatTimestamp = (value: string) => new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+  year: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+  timeZone: "UTC",
+  timeZoneName: "short"
+}).format(new Date(value));
+const bandSlug = (value: string) => value.toLowerCase().replaceAll(" ", "-");
+const allEvidence = (lead: LeadPacket): Evidence[] => [
+  ...lead.crm_context.evidence,
+  ...lead.enrichment_fields.evidence,
+  ...lead.intent_signals.evidence,
+  ...lead.engagement_signals.evidence,
+  ...lead.public_signals.flatMap(({ evidence }) => evidence),
+  ...lead.validation_evidence
+];
+const evidenceDate = (item: Evidence) => item.source_published_at ?? item.source_updated_at ?? item.retrieved_at;
+const evidenceAge = (lead: LeadPacket, item: Evidence) => {
+  const days = Math.max(0, Math.floor((Date.parse(lead.evaluation_timestamp) - Date.parse(evidenceDate(item))) / 86_400_000));
+  return days === 0 ? "Today" : `${days} ${days === 1 ? "day" : "days"} old`;
+};
+const evidenceLedger = (lead: LeadPacket) => {
+  const evidenceById = new Map(allEvidence(lead).map((item) => [item.evidence_id, item]));
+  return lead.allowed_claims.map((claim) => ({
+    ...claim,
+    evidence: claim.evidence_ids.flatMap((id) => evidenceById.get(id) ?? [])
+  }));
+};
+const approvedSources = (lead: LeadPacket) => [...new Set(evidenceLedger(lead).flatMap(({ evidence }) => evidence.map(({ source_name }) => source_name)))];
+const topDriver = (lead: LeadPacket) => {
+  if (lead.priority_band === "Needs Manual Review") {
+    if (lead.manual_review_reasons.includes("source_conflict")) return "Source conflict";
+    if (lead.manual_review_reasons.includes("invalid_source_result")) return "Enrichment unavailable";
+    return "Required data missing";
+  }
+  if (lead.engagement_signals.demo_request || lead.engagement_signals.pricing_page_visit) return "Demo + pricing activity";
+  if (lead.intent_signals.surge) return "Category intent surge";
+  if (hasOnlyWeakOpenIntent(lead)) return "Weak opens only";
+  if (lead.public_signals.length) return lead.public_signals[0].label;
+  return "Verified fit";
+};
+const sourceGroups = (lead: LeadPacket) => {
+  const approvedIds = new Set(lead.allowed_claims.flatMap(({ evidence_ids }) => evidence_ids));
+  return allEvidence(lead)
+    .filter(({ evidence_id }) => approvedIds.has(evidence_id))
+    .reduce<Record<string, number>>((groups, { source_type }) => ({ ...groups, [source_type]: (groups[source_type] ?? 0) + 1 }), {});
+};
+const eventPackets = Object.fromEntries(leads.map((lead) => [lead.lead_id, {
+  request_id: lead.request_id,
+  evaluation_id: lead.evaluation_id,
+  lead_id: lead.lead_id,
+  account_id: lead.account_id,
+  score_version: lead.score_version,
+  priority_score: lead.priority_score,
+  priority_band: lead.priority_band
+}]));
+const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
 ---
 
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width" />
-    <title>ContextAI Dashboard</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>ContextAI Lead Triage</title>
   </head>
-  <body>
-    <main>
-      <header class="hero">
-        <div>
-          <p class="eyebrow">ContextAI</p>
-          <h1>Agentic lead triage dashboard</h1>
-          <p>Vendor-neutral lead context, deterministic scoring, grounded hooks, and RevOps auditability in one view.</p>
+  <body data-config-version={defaultConfigVersion.id} data-prompt-version={dashboardPromptVersion}>
+    <a class="skip-link" href="#queue-workspace">Skip to lead queue</a>
+    <div class="app-shell" data-app-shell>
+      <aside class="app-nav" aria-label="ContextAI navigation">
+        <a class="brand" href="/" aria-label="ContextAI dashboard">
+          <span aria-hidden="true">C</span>
+          <strong>ContextAI</strong>
+        </a>
+        <nav>
+          <button type="button" class="nav-item active" data-nav-view="today" aria-current="page"><span>Today</span><strong>{leads.length}</strong></button>
+          <button type="button" class="nav-item" data-nav-view="review"><span>Manual review</span><strong>{review}</strong></button>
+          <button type="button" class="nav-item" data-nav-tab="run"><span>Runs</span><strong>{partial}</strong></button>
+          <button type="button" class="nav-item" data-nav-tab="score"><span>Scoring</span></button>
+          <button type="button" class="nav-item" data-nav-tab="evidence"><span>Sources</span></button>
+          <button type="button" class="nav-item" data-nav-tab="audit"><span>Writeback audit</span><strong>{writebackReview}</strong></button>
+        </nav>
+        <div class="nav-account">
+          <span aria-hidden="true">MC</span>
+          <p><strong>Maya Chen</strong><small>Pilot workspace</small></p>
         </div>
-        <div class="run-card">
-          <span>Latest run</span>
-          <strong>Morning schedule</strong>
-          <small>6 leads evaluated with required tool order</small>
-        </div>
-      </header>
+      </aside>
 
-      <section class="metrics" aria-label="Pipeline summary">
-        <article><span>Processed</span><strong>{leads.length}</strong></article>
-        <article><span>Hot leads</span><strong>{hot}</strong></article>
-        <article><span>Manual review</span><strong>{review}</strong></article>
-        <article><span>Writeback safe</span><strong>{writebackSafe}</strong></article>
-      </section>
-
-      <section class="split">
-        <div>
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Rep queue</p>
-              <h2>Prioritized leads</h2>
-            </div>
-            <button type="button">Export CSV</button>
+      <main class="queue-pane" id="queue-workspace" aria-labelledby="queue-title">
+        <header class="queue-toolbar">
+          <div>
+            <h1 id="queue-title">Today’s lead queue</h1>
+            <p>Morning schedule · {formatTimestamp(selected.evaluation_timestamp)} · {leads.length} evaluated</p>
           </div>
-
-          <div class="lead-list">
-            {leads.map((lead) => (
-              <article class:list={["lead", lead.lead_id === selected.lead_id && "active"]}>
-                <div class="lead-top">
-                  <div>
-                    <h3>{lead.lead_identity.name}</h3>
-                    <p>{lead.lead_identity.title} · {lead.lead_identity.company}</p>
-                  </div>
-                  <div class="score">
-                    <strong>{scoreLabel(lead)}</strong>
-                    <span>{lead.priority_band}</span>
-                  </div>
-                </div>
-                <p class="reason">{lead.reason}</p>
-                <p class="hook">{groundedHook(lead)}</p>
-                <div class="tags">
-                  <span>{lead.confidence}</span>
-                  <span>{lead.crm_context.owner}</span>
-                  {hasOnlyWeakOpenIntent(lead) && <span class="warn">Weak opens only</span>}
-                </div>
-              </article>
-            ))}
+          <div class="toolbar-controls">
+            <label class="search-control">
+              <span>Search leads</span>
+              <input id="lead-search" type="search" placeholder="Lead or company" autocomplete="off" />
+            </label>
+            <label class="filter-control">
+              <span>Band</span>
+              <select id="band-filter">
+                <option value="all">All bands</option>
+                <option value="Hot">Hot</option>
+                <option value="Warm">Warm</option>
+                <option value="Cold">Cold</option>
+                <option value="Needs Manual Review">Manual review</option>
+              </select>
+            </label>
+            <button type="button" class="quiet-button" data-refresh-queue>Refresh</button>
           </div>
+        </header>
+
+        <section class="run-summary" aria-label="Morning run summary">
+          <p><strong>{hot}</strong><span>Hot leads</span></p>
+          <p><strong>{review}</strong><span>Needs manual review</span></p>
+          <p><strong>{partial}</strong><span>Partial source run</span></p>
+          <p class="run-complete"><strong>Run complete</strong><span>All required steps are terminal</span></p>
+        </section>
+
+        <div class="queue-status" aria-live="polite">
+          <span><strong data-result-count>{leads.length}</strong> leads shown</span>
+          <button type="button" data-clear-filters hidden>Clear filters</button>
         </div>
 
-        <aside class="audit" aria-label="RevOps audit panel">
-          <p class="eyebrow">RevOps audit</p>
-          <h2>{selected.lead_identity.company}</h2>
-          <dl>
-            <div><dt>Score</dt><dd>{scoreLabel(selected)} · {selected.priority_band}</dd></div>
-            <div><dt>Version</dt><dd>{selected.score_version}</dd></div>
-            <div><dt>Confidence</dt><dd>{selected.confidence}</dd></div>
-            <div><dt>CRM owner</dt><dd>{selected.crm_context.owner}</dd></div>
-            <div><dt>Source</dt><dd>{selected.crm_context.source}</dd></div>
-          </dl>
+        <div class="loading-ledger" data-loading-ledger hidden aria-hidden="true">
+          {Array.from({ length: 5 }).map(() => <span></span>)}
+        </div>
 
-          <h3>Score breakdown</h3>
-          <div class="bars">
-            {Object.entries(selected.score_breakdown).map(([label, value]) => (
-              <div>
-                <span>{label.replaceAll("_", " ")}</span>
-                <progress value={value} max={Math.max(totalScore, 1)}></progress>
-                <strong>{value}</strong>
+        <div class="queue-table-wrap" data-queue-table>
+          <table class="lead-table">
+            <caption class="visually-hidden">Prioritized leads from the latest morning evaluation</caption>
+            <thead><tr><th>Score</th><th>Lead and account</th><th>Top driver</th><th>Owner</th><th>Plan / outcome</th></tr></thead>
+            <tbody>
+              {queueLeads.map((lead, index) => (
+                <tr
+                  class:list={[index === 0 && "selected", lead.priority_band === "Needs Manual Review" && "review-row"]}
+                  data-lead-row={lead.lead_id}
+                  data-search={`${lead.lead_identity.name} ${lead.lead_identity.company} ${lead.lead_identity.title} ${lead.crm_context.owner ?? ""}`.toLowerCase()}
+                  data-band={lead.priority_band}
+                >
+                  <td><strong class={`score score-${bandSlug(lead.priority_band)}`}>{scoreLabel(lead)}</strong><small>{lead.priority_band}</small></td>
+                  <td><button type="button" class="lead-select" data-select-lead={lead.lead_id} aria-pressed={index === 0 ? "true" : "false"}><strong>{lead.lead_identity.name}</strong><span>{lead.lead_identity.title} at {lead.lead_identity.company}</span></button></td>
+                  <td><strong>{topDriver(lead)}</strong><span>{lead.confidence} confidence</span></td>
+                  <td><strong>{lead.crm_context.owner ?? "Unassigned"}</strong><span>{lead.crm_context.source ?? "Data unavailable"}</span></td>
+                  <td><strong>{lead.writeback_plan?.decision ?? "Unavailable"} / {lead.writeback_outcome.status}</strong><span>{lead.writeback_plan?.reason ?? "Writeback evaluation unavailable"}</span></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <ol class="mobile-lead-list" data-mobile-list aria-label="Prioritized leads">
+          {queueLeads.map((lead, index) => (
+            <li
+              data-mobile-lead={lead.lead_id}
+              data-search={`${lead.lead_identity.name} ${lead.lead_identity.company} ${lead.lead_identity.title} ${lead.crm_context.owner ?? ""}`.toLowerCase()}
+              data-band={lead.priority_band}
+            >
+              <button type="button" data-select-lead={lead.lead_id} aria-pressed={index === 0 ? "true" : "false"}>
+                <span class="mobile-score"><strong>{scoreLabel(lead)}</strong><small>{lead.priority_band}</small></span>
+                <span class="mobile-identity"><strong>{lead.lead_identity.company}</strong><small>{lead.lead_identity.name}, {lead.lead_identity.title}</small><em>{topDriver(lead)}</em></span>
+                <span class="mobile-outcome"><strong>{lead.writeback_outcome.status}</strong><small>{lead.confidence}</small></span>
+              </button>
+            </li>
+          ))}
+        </ol>
+
+        <section class="empty-state" data-empty-state hidden>
+          <h2>No leads match these filters</h2>
+          <p>Clear the search and band filter to return to the full morning queue.</p>
+          <button type="button" class="primary-button" data-clear-filters>Clear filters</button>
+        </section>
+      </main>
+
+      <aside class="detail-pane" id="lead-detail" aria-label="Selected lead detail">
+        <section class="no-selection" data-no-selection hidden>
+          <h2>Select a lead</h2>
+          <p>Choose a visible lead to inspect its decision, evidence, CRM context, score, and run audit.</p>
+        </section>
+
+        {queueLeads.map((lead, leadIndex) => {
+          const ledger = evidenceLedger(lead);
+          const sources = approvedSources(lead);
+          const groups = sourceGroups(lead);
+          const hookEvidence = ledger.flatMap(({ evidence }) => evidence).find(({ source_type }) => source_type === "public_signal" || source_type === "intent" || source_type === "engagement");
+          const failedTools = requiredToolSteps.filter((step) => !["success", "no_result"].includes(lead.tool_status[step].status));
+          const hasDataIssues = lead.manual_review_reasons.length + lead.missing_fields.length + lead.stale_fields.length + lead.source_conflicts.length + failedTools.length > 0;
+          const manualReview = lead.priority_band === "Needs Manual Review";
+          return (
+            <article class="lead-detail" data-lead-detail={lead.lead_id} hidden={leadIndex !== 0}>
+              <header class="detail-header">
+                <button type="button" class="back-button" data-back-to-queue>Back to queue</button>
+                <div>
+                  <span>Selected lead</span>
+                  <h2 tabindex="-1" data-detail-heading>{lead.lead_identity.company}</h2>
+                  <p>{lead.lead_identity.name}, {lead.lead_identity.title}</p>
+                </div>
+                <div class="detail-score"><strong>{scoreLabel(lead)}</strong><span>{lead.priority_band}</span><small>{lead.confidence} confidence</small></div>
+              </header>
+
+              <div class="detail-tabs" role="tablist" aria-label={`${lead.lead_identity.company} details`}>
+                {(["decision", "evidence", "crm", "score", "run", "audit"] as const).map((tab, index) => (
+                  <button
+                    type="button"
+                    role="tab"
+                    id={`${lead.lead_id}-${tab}-tab`}
+                    aria-controls={`${lead.lead_id}-${tab}-panel`}
+                    aria-selected={index === 0 ? "true" : "false"}
+                    tabindex={index === 0 ? 0 : -1}
+                    data-tab={tab}
+                  >{humanize(tab)}</button>
+                ))}
               </div>
-            ))}
-          </div>
 
-          <h3>Sources</h3>
-          <ul class="sources">
-            <li>CRM lifecycle: {selected.crm_context.lifecycle_stage ?? "Data unavailable"}</li>
-            <li>Enrichment: {freshnessLabel(selected.enrichment_fields.last_updated_days_ago)}</li>
-            <li>Intent: {selected.intent_signals.surge ? "Category surge" : "No verified intent"}</li>
-            <li>Engagement: {selected.engagement_signals.demo_request ? "Demo request" : selected.engagement_signals.pricing_page_visit ? "Pricing page visit" : selected.engagement_signals.opens ? `${selected.engagement_signals.opens} opens` : "No verified engagement"}</li>
-            <li>Public signal: {selected.public_signals[0] ? `${selected.public_signals[0].label} (${selected.public_signals[0].source})` : "Public signal not found"}</li>
-            <li>Allowed claims: {selected.allowed_claims.length}</li>
-            <li>Source conflicts: {selected.source_conflicts.length ? selected.source_conflicts.join("; ") : "None"}</li>
-          </ul>
+              <div class="detail-scroll">
+                <section class="tab-panel decision-panel" role="tabpanel" id={`${lead.lead_id}-decision-panel`} aria-labelledby={`${lead.lead_id}-decision-tab`} data-panel="decision">
+                  {manualReview && (
+                    <div class="review-notice" role="note"><strong>Manual review required</strong><p>This evaluation has no numeric priority score. Resolve the listed data issues before accepting a recommendation.</p></div>
+                  )}
+                  <section class="decision-copy">
+                    <h3>Why prioritized</h3>
+                    <p>{lead.reason}</p>
+                    <small>Approved sources: {sources.length ? sources.slice(0, 3).join(", ") : "ContextAI validation only"}</small>
+                  </section>
+                  <section class:list={["decision-copy", "hook-copy", groundedHook(lead).startsWith("No grounded hook") && "unavailable"]}>
+                    <div><h3>Grounded hook</h3><button type="button" data-copy-hook disabled={!hookEvidence}>Copy</button></div>
+                    <p data-hook-text>{groundedHook(lead)}</p>
+                    <small>{hookEvidence ? `${hookEvidence.source_name} · ${evidenceAge(lead, hookEvidence)} · ${hookEvidence.confidence} confidence` : "No approved recent signal is available for outreach."}</small>
+                  </section>
+                  {hasOnlyWeakOpenIntent(lead) && (
+                    <div class="weak-warning" role="note"><strong>Weak engagement only</strong><p>Email opens are not buying intent and cannot justify Hot status or a grounded hook.</p></div>
+                  )}
+                  <section class="data-health">
+                    <h3>Data health</h3>
+                    {!hasDataIssues && <p class="healthy-state">No material missing, stale, conflicting, or failed source data.</p>}
+                    {lead.manual_review_reasons.length > 0 && <div><strong>Review reasons</strong><p>{lead.manual_review_reasons.map(humanize).join(", ")}</p></div>}
+                    {lead.missing_fields.length > 0 && <div><strong>Missing</strong><p>{lead.missing_fields.map(humanize).join(", ")}</p></div>}
+                    {lead.stale_fields.length > 0 && <div><strong>Stale</strong><p>{lead.stale_fields.map(humanize).join(", ")}</p></div>}
+                    {lead.source_conflicts.length > 0 && <div><strong>Conflicts</strong><p>{lead.source_conflicts.join(" ")}</p></div>}
+                    {failedTools.length > 0 && <div><strong>Source failures</strong><p>{failedTools.map((step) => `${humanize(step)}: ${humanize(lead.tool_status[step].status)}`).join(", ")}</p></div>}
+                  </section>
+                  <form class="outcome-form" data-outcome-form={lead.lead_id}>
+                    <div class="form-heading"><div><h3>Capture rep outcome</h3><p>This records a choice only. ContextAI does not call, send, sequence, enrich, nurture, disqualify, route, score, or write to CRM.</p></div><span>Not emitted</span></div>
+                    <fieldset>
+                      <legend>Recommendation disposition</legend>
+                      <div class="segmented-control">
+                        <label class:list={[manualReview && "disabled"]}><input type="radio" name={`disposition-${lead.lead_id}`} value="accepted" required disabled={manualReview} /><span>Accept</span></label>
+                        <label><input type="radio" name={`disposition-${lead.lead_id}`} value="overridden" required /><span>Override</span></label>
+                        <label><input type="radio" name={`disposition-${lead.lead_id}`} value="ignored" required /><span>Ignore</span></label>
+                      </div>
+                    </fieldset>
+                    <label class="action-select"><span>Observed action (optional)</span><select name="actionType"><option value="">No linked action</option><option value="call">Call</option><option value="email">Email</option><option value="sequence">Sequence</option><option value="manual_enrichment" selected={manualReview}>Manual enrichment</option><option value="nurture">Nurture</option><option value="disqualify">Disqualify</option></select></label>
+                    <button type="submit" class="primary-button">Emit outcome events</button>
+                    <output data-outcome-status aria-live="polite"></output>
+                  </form>
+                  <section class="writeback-pair">
+                    <div><span>Deterministic plan</span><strong>{lead.writeback_plan?.decision ?? "Data unavailable"}</strong><p>{lead.writeback_plan?.reason ?? "Writeback evaluation did not produce a plan."}</p></div>
+                    <div><span>Execution outcome</span><strong>{lead.writeback_outcome.status}</strong><p>{lead.writeback_outcome.reason}</p></div>
+                  </section>
+                </section>
 
-          <div class:list={["writeback", isWritebackEligible(selected) ? "ok" : "hold"]}>
-            <span>CRM writeback</span>
-            <strong>{selected.writeback_outcome.status}</strong>
-            <p>{selected.writeback_outcome.reason}</p>
-          </div>
-        </aside>
-      </section>
+                <section class="tab-panel evidence-panel" role="tabpanel" id={`${lead.lead_id}-evidence-panel`} aria-labelledby={`${lead.lead_id}-evidence-tab`} data-panel="evidence" hidden>
+                  <header class="panel-heading"><div><h3>Approved evidence ledger</h3><p>Only claims approved by the packet contract are displayed.</p></div><strong>{ledger.length} {ledger.length === 1 ? "claim" : "claims"}</strong></header>
+                  <dl class="source-summary">
+                    {Object.entries(groups).map(([type, count]) => <div><dt>{humanize(type)}</dt><dd>{count}</dd></div>)}
+                  </dl>
+                  <div class="claim-ledger">
+                    {ledger.map((claim, index) => (
+                      <article>
+                        <span class="claim-number">C{index + 1}</span>
+                        <div class="claim-copy"><strong>{claim.text}</strong><p>{claim.evidence_ids.join(", ")}</p></div>
+                        <dl>
+                          <div><dt>Source</dt><dd>{[...new Set(claim.evidence.map(({ source_name }) => source_name))].join(" + ")}</dd></div>
+                          <div><dt>Type</dt><dd>{[...new Set(claim.evidence.map(({ source_type }) => humanize(source_type)))].join(" + ")}</dd></div>
+                          <div><dt>Freshness</dt><dd>{claim.evidence.map((item) => evidenceAge(lead, item)).join(" / ")}</dd></div>
+                          <div><dt>Confidence</dt><dd>{[...new Set(claim.evidence.map(({ confidence }) => confidence))].join(" / ")}</dd></div>
+                        </dl>
+                        <details>
+                          <summary>Inspect {claim.evidence.length} evidence {claim.evidence.length === 1 ? "record" : "records"}</summary>
+                          <ul>{claim.evidence.map((item) => <li><div><strong>{item.source_name}</strong><span>{humanize(item.source_type)} · {formatTimestamp(evidenceDate(item))}</span></div>{item.source_url ? <a href={item.source_url} target="_blank" rel="noreferrer">Open source</a> : <span>Provider record</span>}</li>)}</ul>
+                        </details>
+                      </article>
+                    ))}
+                  </div>
+                </section>
 
-      <section class="lower">
-        <article>
-          <p class="eyebrow">Agent flow</p>
-          <h2>Required tool order</h2>
-          <ol class="timeline">
-            {toolRun.map((tool) => <li>{tool}</li>)}
-          </ol>
-        </article>
-        <article>
-          <p class="eyebrow">Safeguards</p>
-          <h2>Current checks</h2>
-          <ul class="checks">
-            <li>LLM explains the deterministic score but never calculates it.</li>
-            <li>Hooks fall back when no verified public or intent signal exists.</li>
-            <li>Email opens alone stay weak and cannot justify Hot status.</li>
-            <li>Stale enrichment is flagged for review before CRM writeback.</li>
-          </ul>
-        </article>
-      </section>
-    </main>
+                <section class="tab-panel crm-panel" role="tabpanel" id={`${lead.lead_id}-crm-panel`} aria-labelledby={`${lead.lead_id}-crm-tab`} data-panel="crm" hidden>
+                  <header class="panel-heading"><div><h3>Authoritative CRM context</h3><p>Workflow and association fields remain controlled by HubSpot.</p></div><strong>{lead.account_id ? "Associated" : "No account"}</strong></header>
+                  <dl class="definition-grid">
+                    <div><dt>Owner</dt><dd>{lead.crm_context.owner ?? "Data unavailable"}</dd></div>
+                    <div><dt>Lifecycle stage</dt><dd>{lead.crm_context.lifecycle_stage ?? "Data unavailable"}</dd></div>
+                    <div><dt>Routing status</dt><dd>{lead.crm_context.routing_status ?? "Data unavailable"}</dd></div>
+                    <div><dt>Open opportunity</dt><dd>{humanize(lead.crm_context.open_opportunity_status)}</dd></div>
+                    <div><dt>Company association</dt><dd>{humanize(lead.crm_context.company_association.status)}{lead.crm_context.company_association.basis ? ` (${lead.crm_context.company_association.basis})` : ""}</dd></div>
+                    <div><dt>Duplicate state</dt><dd>{humanize(lead.crm_context.duplicate_status)}</dd></div>
+                    <div><dt>Domain state</dt><dd>{humanize(lead.crm_context.domain_status)}</dd></div>
+                    <div><dt>Account ID</dt><dd class="mono">{lead.account_id ?? "None"}</dd></div>
+                  </dl>
+                  <section class="enrichment-summary"><h3>Normalized enrichment</h3><dl><div><dt>Employees</dt><dd>{lead.enrichment_fields.employees ?? "Data unavailable"}</dd></div><div><dt>Revenue band</dt><dd>{lead.enrichment_fields.revenue_band ?? "Data unavailable"}</dd></div><div><dt>Technology</dt><dd>{lead.enrichment_fields.tech_stack.length ? lead.enrichment_fields.tech_stack.join(", ") : "Data unavailable"}</dd></div><div><dt>Freshness</dt><dd>{lead.enrichment_fields.last_updated_days_ago === undefined ? "Data unavailable" : `${lead.enrichment_fields.last_updated_days_ago} days`}</dd></div></dl></section>
+                  <section class="writeback-pair"><div><span>Plan</span><strong>{lead.writeback_plan?.decision ?? "Data unavailable"}</strong><p>{lead.writeback_plan?.reason ?? "No deterministic plan available."}</p></div><div><span>Outcome</span><strong>{lead.writeback_outcome.status}</strong><p>{lead.writeback_outcome.reason}</p></div></section>
+                </section>
+
+                <section class="tab-panel score-panel" role="tabpanel" id={`${lead.lead_id}-score-panel`} aria-labelledby={`${lead.lead_id}-score-tab`} data-panel="score" hidden>
+                  <header class="panel-heading"><div><h3>Deterministic score</h3><p>The LLM explains this score but never calculates or changes it.</p></div><strong>{scoreLabel(lead)}</strong></header>
+                  {manualReview && <div class="review-notice"><strong>Nonnumeric override</strong><p>Needs Manual Review takes precedence over the numeric bands. Category evidence is shown without calculating a total.</p></div>}
+                  <div class="score-ledger">
+                    {scoreKeys.map((key) => <div><span>{humanize(key)}</span><meter min="0" max={scoreCaps[key]} value={lead.score_breakdown[key]} aria-label={`${humanize(key)} ${lead.score_breakdown[key]} of ${scoreCaps[key]}`}></meter><strong>{lead.score_breakdown[key]} / {scoreCaps[key]}</strong></div>)}
+                  </div>
+                  <dl class="version-grid"><div><dt>Score version</dt><dd>{lead.score_version}</dd></div><div><dt>Config version</dt><dd>{defaultConfigVersion.id}</dd></div><div><dt>Cold</dt><dd>0-59</dd></div><div><dt>Warm</dt><dd>60-79</dd></div><div><dt>Hot</dt><dd>80-100</dd></div><div><dt>Manual review</dt><dd>Nonnumeric override</dd></div></dl>
+                </section>
+
+                <section class="tab-panel run-panel" role="tabpanel" id={`${lead.lead_id}-run-panel`} aria-labelledby={`${lead.lead_id}-run-tab`} data-panel="run" hidden>
+                  <header class="panel-heading"><div><h3>Evaluation run</h3><p>Every required step has exactly one terminal status.</p></div><strong>{failedTools.length ? "Partial" : "Complete"}</strong></header>
+                  <dl class="identifier-grid"><div><dt>Request ID</dt><dd>{lead.request_id}</dd></div><div><dt>Evaluation ID</dt><dd>{lead.evaluation_id}</dd></div><div><dt>Evaluated</dt><dd>{formatTimestamp(lead.evaluation_timestamp)}</dd></div><div><dt>Prompt</dt><dd>{dashboardPromptVersion}</dd></div></dl>
+                  <ol class="tool-ledger">
+                    {requiredToolSteps.map((step) => { const result = lead.tool_status[step]; return <li><span>{humanize(step)}</span><strong class={`status-${result.status}`}>{humanize(result.status)}</strong><time datetime={result.completed_at}>{formatTimestamp(result.completed_at)}</time><p>{result.detail ?? (result.status === "success" ? "Completed with normalized data." : "Completed with no matching data.")}</p></li>; })}
+                  </ol>
+                </section>
+
+                <section class="tab-panel audit-panel" role="tabpanel" id={`${lead.lead_id}-audit-panel`} aria-labelledby={`${lead.lead_id}-audit-tab`} data-panel="audit" hidden>
+                  <header class="panel-heading"><div><h3>Audit view</h3><p>Plans, observed outcomes, and emitted UI events remain distinct.</p></div><strong>{lead.writeback_outcome.status}</strong></header>
+                  <section class="writeback-pair"><div><span>Deterministic plan</span><strong>{lead.writeback_plan?.decision ?? "Data unavailable"}</strong><p>{lead.writeback_plan?.reason ?? "No plan was produced."}</p></div><div><span>Authoritative execution outcome</span><strong>{lead.writeback_outcome.status}</strong><p>{lead.writeback_outcome.reason}</p></div></section>
+                  <dl class="identifier-grid"><div><dt>Evaluation</dt><dd>{lead.evaluation_id}</dd></div><div><dt>Score / config</dt><dd>{lead.score_version} / {defaultConfigVersion.id}</dd></div><div><dt>Writeback recorded</dt><dd>{formatTimestamp(lead.writeback_outcome.recorded_at)}</dd></div><div><dt>Actor</dt><dd>System fixture</dd></div></dl>
+                  <section class="session-events"><h3>UI events emitted this session</h3><p>No telemetry endpoint is connected to this static surface. Valid #9 events are emitted through the browser boundary for the recorder to consume.</p><ol data-session-events><li>No rep outcome events emitted.</li></ol></section>
+                </section>
+              </div>
+            </article>
+          );
+        })}
+      </aside>
+    </div>
+    <div class="sr-status" aria-live="polite" data-live-status></div>
+    <script type="application/json" id="event-packets" set:html={safeJson}></script>
   </body>
 </html>
 
+<script>
+  import { dashboardOutcomeEvents, dashboardViewEvents } from "../lib/dashboard.ts";
+  import type { ActionType, PilotEvent } from "../lib/instrumentation.ts";
+
+  type EventPacket = Parameters<typeof dashboardViewEvents>[0]["packet"];
+  const packetElement = document.querySelector<HTMLScriptElement>("#event-packets");
+  const packets = JSON.parse(packetElement?.textContent ?? "{}") as Record<string, EventPacket>;
+  const shell = document.querySelector<HTMLElement>("[data-app-shell]");
+  const search = document.querySelector<HTMLInputElement>("#lead-search");
+  const band = document.querySelector<HTMLSelectElement>("#band-filter");
+  const live = document.querySelector<HTMLElement>("[data-live-status]");
+  const queuePane = document.querySelector<HTMLElement>("#queue-workspace");
+  const detailPane = document.querySelector<HTMLElement>("#lead-detail");
+  const noSelection = document.querySelector<HTMLElement>("[data-no-selection]");
+  const desktopRows = [...document.querySelectorAll<HTMLElement>("[data-lead-row]")];
+  const mobileRows = [...document.querySelectorAll<HTMLElement>("[data-mobile-lead]")];
+  const detailPanels = [...document.querySelectorAll<HTMLElement>("[data-lead-detail]")];
+  const selectButtons = [...document.querySelectorAll<HTMLButtonElement>("[data-select-lead]")];
+  const mobile = matchMedia("(max-width: 820px)");
+  const emittedViews = new Set<string>();
+  let selectedId = detailPanels.find((panel) => !panel.hidden)?.dataset.leadDetail ?? null;
+  let activeTab = "decision";
+  let originButton: HTMLButtonElement | null = null;
+  let queueScroll = 0;
+
+  const announce = (message: string) => { if (live) live.textContent = message; };
+  const emit = (events: PilotEvent[]) => events.forEach((event) => window.dispatchEvent(new CustomEvent("contextai:pilot-event", { detail: event })));
+  const emitView = (leadId: string) => {
+    if (emittedViews.has(leadId) || !packets[leadId]) return;
+    emittedViews.add(leadId);
+    emit(dashboardViewEvents({
+      packet: packets[leadId],
+      tenantId: "pilot-workspace",
+      actorType: "rep",
+      actorId: "rep-fixture-1",
+      configVersion: document.body.dataset.configVersion ?? "score-v0.1",
+      occurredAt: new Date().toISOString(),
+      idempotencySeed: `dashboard:${packets[leadId].evaluation_id}:view`
+    }));
+  };
+  const activeDetail = () => detailPanels.find((panel) => panel.dataset.leadDetail === selectedId) ?? null;
+  const updateHash = () => {
+    if (!selectedId) return;
+    history.replaceState(null, "", `#lead=${encodeURIComponent(selectedId)}&tab=${encodeURIComponent(activeTab)}`);
+  };
+  const activateTab = (panel: HTMLElement, tabName: string, focus = false) => {
+    const tabs = [...panel.querySelectorAll<HTMLButtonElement>("[role=tab]")];
+    const tab = tabs.find((item) => item.dataset.tab === tabName) ?? tabs[0];
+    if (!tab) return;
+    activeTab = tab.dataset.tab ?? "decision";
+    tabs.forEach((item) => {
+      const active = item === tab;
+      item.setAttribute("aria-selected", String(active));
+      item.tabIndex = active ? 0 : -1;
+      const target = panel.querySelector<HTMLElement>(`#${item.getAttribute("aria-controls")}`);
+      if (target) target.hidden = !active;
+    });
+    if (focus) tab.focus();
+    updateHash();
+  };
+  const showNoSelection = () => {
+    selectedId = null;
+    detailPanels.forEach((panel) => panel.hidden = true);
+    selectButtons.forEach((button) => button.setAttribute("aria-pressed", "false"));
+    desktopRows.forEach((row) => row.classList.remove("selected"));
+    if (noSelection) noSelection.hidden = false;
+  };
+  const selectLead = (leadId: string, tabName = "decision", openMobile = true, focusDetail = true) => {
+    const panel = detailPanels.find((item) => item.dataset.leadDetail === leadId);
+    if (!panel) return;
+    selectedId = leadId;
+    activeTab = tabName;
+    if (noSelection) noSelection.hidden = true;
+    detailPanels.forEach((item) => item.hidden = item !== panel);
+    desktopRows.forEach((row) => row.classList.toggle("selected", row.dataset.leadRow === leadId));
+    selectButtons.forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.selectLead === leadId)));
+    activateTab(panel, tabName);
+    if (mobile.matches && openMobile) {
+      queueScroll = window.scrollY;
+      shell?.classList.add("mobile-detail");
+      if (focusDetail) panel.querySelector<HTMLElement>("[data-back-to-queue]")?.focus();
+      window.scrollTo({ top: 0, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+      emitView(leadId);
+    } else if (!mobile.matches) emitView(leadId);
+    announce(`${panel.querySelector("h2")?.textContent ?? "Lead"} selected.`);
+    updateHash();
+  };
+  const visibleLeadIds = () => desktopRows.filter((row) => !row.hidden).map((row) => row.dataset.leadRow ?? "");
+  const applyFilters = () => {
+    const query = search?.value.trim().toLowerCase() ?? "";
+    const selectedBand = band?.value ?? "all";
+    const matches = (item: HTMLElement) => (!query || item.dataset.search?.includes(query)) && (selectedBand === "all" || item.dataset.band === selectedBand);
+    desktopRows.forEach((row) => row.hidden = !matches(row));
+    mobileRows.forEach((row) => row.hidden = !matches(row));
+    const visible = visibleLeadIds();
+    const count = document.querySelector<HTMLElement>("[data-result-count]");
+    if (count) count.textContent = String(visible.length);
+    const filtered = Boolean(query || selectedBand !== "all");
+    document.querySelectorAll<HTMLElement>("[data-clear-filters]").forEach((button) => button.hidden = !filtered);
+    const empty = document.querySelector<HTMLElement>("[data-empty-state]");
+    if (empty) empty.hidden = visible.length > 0;
+    if (selectedId && !visible.includes(selectedId)) showNoSelection();
+    announce(`${visible.length} ${visible.length === 1 ? "lead" : "leads"} shown.`);
+  };
+  const clearFilters = () => { if (search) search.value = ""; if (band) band.value = "all"; applyFilters(); };
+
+  selectButtons.forEach((button) => button.addEventListener("click", () => {
+    originButton = button;
+    selectLead(button.dataset.selectLead ?? "");
+  }));
+  desktopRows.forEach((row) => row.addEventListener("click", (event) => {
+    if ((event.target as HTMLElement).closest("button")) return;
+    selectLead(row.dataset.leadRow ?? "", "decision", false, false);
+  }));
+  search?.addEventListener("input", applyFilters);
+  band?.addEventListener("change", applyFilters);
+  document.querySelectorAll<HTMLButtonElement>("[data-clear-filters]").forEach((button) => button.addEventListener("click", clearFilters));
+
+  document.querySelectorAll<HTMLButtonElement>("[data-nav-view]").forEach((button) => button.addEventListener("click", () => {
+    document.querySelectorAll("[data-nav-view], [data-nav-tab]").forEach((item) => item.classList.remove("active"));
+    button.classList.add("active");
+    if (button.dataset.navView === "today") clearFilters();
+    if (button.dataset.navView === "review") {
+      if (search) search.value = "";
+      if (band) band.value = "Needs Manual Review";
+      applyFilters();
+      const first = visibleLeadIds()[0];
+      if (first && !mobile.matches) selectLead(first, "decision", false, false);
+    }
+    shell?.classList.remove("mobile-detail");
+    queuePane?.focus({ preventScroll: true });
+  }));
+  document.querySelectorAll<HTMLButtonElement>("[data-nav-tab]").forEach((button) => button.addEventListener("click", () => {
+    document.querySelectorAll("[data-nav-view], [data-nav-tab]").forEach((item) => item.classList.remove("active"));
+    button.classList.add("active");
+    const leadId = selectedId ?? visibleLeadIds()[0];
+    if (leadId) selectLead(leadId, button.dataset.navTab ?? "decision");
+  }));
+
+  detailPanels.forEach((panel) => {
+    const tabs = [...panel.querySelectorAll<HTMLButtonElement>("[role=tab]")];
+    tabs.forEach((tab, index) => {
+      tab.addEventListener("click", () => activateTab(panel, tab.dataset.tab ?? "decision"));
+      tab.addEventListener("keydown", (event) => {
+        const keys = ["ArrowLeft", "ArrowRight", "Home", "End"];
+        if (!keys.includes(event.key)) return;
+        event.preventDefault();
+        const nextIndex = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+        activateTab(panel, tabs[nextIndex]?.dataset.tab ?? "decision", true);
+      });
+    });
+  });
+  document.querySelectorAll<HTMLButtonElement>("[data-back-to-queue]").forEach((button) => button.addEventListener("click", () => {
+    shell?.classList.remove("mobile-detail");
+    window.scrollTo({ top: queueScroll, behavior: "auto" });
+    originButton?.focus({ preventScroll: true });
+  }));
+  document.querySelectorAll<HTMLButtonElement>("[data-copy-hook]").forEach((button) => button.addEventListener("click", async () => {
+    const text = button.closest(".hook-copy")?.querySelector<HTMLElement>("[data-hook-text]")?.textContent?.trim();
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      const previous = button.textContent;
+      button.textContent = "Copied";
+      announce("Grounded hook copied.");
+      setTimeout(() => button.textContent = previous, 1200);
+    } catch {
+      announce("Copy failed. Select the hook text and copy it manually.");
+    }
+  }));
+
+  document.querySelectorAll<HTMLFormElement>("[data-outcome-form]").forEach((form) => {
+    const action = form.elements.namedItem("actionType") as HTMLSelectElement | null;
+    form.querySelectorAll<HTMLInputElement>("input[type=radio]").forEach((radio) => radio.addEventListener("change", () => {
+      if (action) { action.disabled = radio.value === "ignored"; if (action.disabled) action.value = ""; }
+    }));
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const leadId = form.dataset.outcomeForm ?? "";
+      const packet = packets[leadId];
+      const disposition = new FormData(form).get(`disposition-${leadId}`);
+      if (!packet || !["accepted", "ignored", "overridden"].includes(String(disposition))) return;
+      const button = form.querySelector<HTMLButtonElement>("button[type=submit]");
+      const output = form.querySelector<HTMLOutputElement>("[data-outcome-status]");
+      const actionType = action?.disabled || !action?.value ? undefined : action.value as ActionType;
+      if (button) button.disabled = true;
+      try {
+        const events = dashboardOutcomeEvents({
+          packet,
+          disposition: disposition as "accepted" | "ignored" | "overridden",
+          actionType,
+          tenantId: "pilot-workspace",
+          actorType: "rep",
+          actorId: "rep-fixture-1",
+          configVersion: document.body.dataset.configVersion ?? "score-v0.1",
+          occurredAt: new Date().toISOString(),
+          idempotencySeed: `dashboard:${packet.evaluation_id}:${String(disposition)}:${actionType ?? "none"}`
+        });
+        emit(events);
+        const list = activeDetail()?.querySelector<HTMLOListElement>("[data-session-events]");
+        if (list) {
+          list.replaceChildren(...events.map((pilotEvent) => {
+            const item = document.createElement("li");
+            item.textContent = `${pilotEvent.name}: ${pilotEvent.name === "recommendation.disposition" ? pilotEvent.data.disposition : pilotEvent.data.actionType}`;
+            return item;
+          }));
+        }
+        if (output) output.textContent = `${events.length} valid event${events.length === 1 ? "" : "s"} emitted. No external action was executed.`;
+        announce(output?.textContent ?? "Outcome events emitted.");
+      } catch (error) {
+        if (output) output.textContent = `Event emission failed: ${error instanceof Error ? error.message : String(error)}`;
+        if (button) button.disabled = false;
+      }
+    });
+  });
+
+  document.querySelector<HTMLButtonElement>("[data-refresh-queue]")?.addEventListener("click", (event) => {
+    const button = event.currentTarget as HTMLButtonElement;
+    const loading = document.querySelector<HTMLElement>("[data-loading-ledger]");
+    const table = document.querySelector<HTMLElement>("[data-queue-table]");
+    const list = document.querySelector<HTMLElement>("[data-mobile-list]");
+    button.disabled = true;
+    shell?.classList.add("is-loading");
+    queuePane?.setAttribute("aria-busy", "true");
+    if (loading) loading.hidden = false;
+    if (table) table.hidden = true;
+    if (list) list.hidden = true;
+    setTimeout(() => {
+      if (loading) loading.hidden = true;
+      if (table) table.hidden = false;
+      if (list) list.hidden = false;
+      queuePane?.setAttribute("aria-busy", "false");
+      shell?.classList.remove("is-loading");
+      button.disabled = false;
+      applyFilters();
+      announce("Morning queue refreshed from fixture data.");
+    }, 650);
+  });
+
+  const hash = new URLSearchParams(location.hash.slice(1));
+  const hashLead = hash.get("lead");
+  const hashTab = hash.get("tab") ?? "decision";
+  if (hashLead && packets[hashLead]) selectLead(hashLead, hashTab, mobile.matches, false);
+  else if (selectedId && !mobile.matches) emitView(selectedId);
+  mobile.addEventListener("change", ({ matches }) => {
+    if (!matches) { shell?.classList.remove("mobile-detail"); if (selectedId) emitView(selectedId); }
+  });
+</script>
+
 <style>
   :global(*) { box-sizing: border-box; }
-  body {
+  :global([hidden]) { display: none !important; }
+  :global(html) { background: #f5f7f6; }
+  :global(body) {
+    --bg: #f5f7f6;
+    --surface: #ffffff;
+    --surface-alt: #eef2f0;
+    --surface-strong: #e2eae6;
+    --ink: #18231f;
+    --muted: #5e6c67;
+    --faint: #7a8782;
+    --line: #d7dedb;
+    --accent: #167052;
+    --accent-dark: #0f5c43;
+    --accent-soft: #e7f4ef;
+    --nav: #15382e;
+    --nav-active: #215443;
+    --warning: #825400;
+    --warning-soft: #fff6df;
+    --danger: #9f3434;
+    --danger-soft: #fff0ef;
     margin: 0;
-    color: #172033;
-    background: #f6f8fb;
-    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    min-width: 320px;
+    color: var(--ink);
+    background: var(--bg);
+    font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 14px;
+    line-height: 1.45;
   }
-  main {
-    width: min(1440px, calc(100% - 32px));
-    margin: 0 auto;
-    padding: 28px 0 48px;
+  :global(button), :global(input), :global(select) { font: inherit; }
+  :global(button), :global(select) { cursor: pointer; }
+  :global(button:focus-visible), :global(a:focus-visible), :global(input:focus-visible), :global(select:focus-visible), :global(summary:focus-visible) { outline: 3px solid var(--accent); outline-offset: 2px; }
+  :global(button:disabled), :global(select:disabled), :global(input:disabled) { cursor: not-allowed; opacity: .48; }
+  :global(h1), :global(h2), :global(h3), :global(p), :global(dl), :global(dd), :global(ol), :global(ul), :global(fieldset) { margin: 0; }
+  :global(button) { min-height: 40px; }
+  :global(a) { color: inherit; }
+  :global(strong), .mono, .score, .detail-score, .score-ledger { font-variant-numeric: tabular-nums; }
+  :global(h1), :global(h2), :global(h3) { text-wrap: balance; }
+  :global(p) { text-wrap: pretty; }
+  .visually-hidden, .sr-status { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+  .skip-link { position: fixed; z-index: 40; top: 8px; left: 8px; padding: 10px 12px; color: white; background: var(--accent-dark); transform: translateY(-150%); }
+  .skip-link:focus { transform: translateY(0); }
+  .app-shell { min-height: 100dvh; display: grid; grid-template-columns: 180px minmax(560px, 1fr) minmax(390px, 440px); background: var(--bg); }
+  .app-nav { position: sticky; top: 0; height: 100dvh; display: flex; flex-direction: column; padding: 16px 10px; color: #e0eee8; background: var(--nav); }
+  .brand { min-height: 46px; display: flex; align-items: center; gap: 9px; padding: 0 8px 16px; color: inherit; text-decoration: none; }
+  .brand > span, .nav-account > span { display: grid; place-items: center; border-radius: 50%; color: var(--nav); background: #dcece5; font-weight: 900; }
+  .brand > span { width: 29px; height: 29px; }
+  .app-nav nav { display: grid; gap: 3px; }
+  .nav-item { width: 100%; min-height: 40px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; border: 0; border-radius: 5px; color: #b7cbc3; background: transparent; font-weight: 650; text-align: left; }
+  .nav-item:hover { color: white; background: #1b493a; }
+  .nav-item.active { color: white; background: var(--nav-active); }
+  .nav-item strong { color: #d7e9e1; }
+  .nav-account { margin-top: auto; display: flex; align-items: center; gap: 8px; padding: 12px 7px 3px; border-top: 1px solid #376052; }
+  .nav-account > span { width: 30px; height: 30px; font-size: 11px; }
+  .nav-account p { display: grid; }
+  .nav-account small { color: #a6bfb5; font-size: 10px; }
+  .queue-pane { min-width: 0; padding: 0 20px 24px; border-right: 1px solid var(--line); }
+  .queue-toolbar { min-height: 78px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .queue-toolbar h1 { font-size: 20px; letter-spacing: -.015em; }
+  .queue-toolbar p { color: var(--muted); font-size: 12px; }
+  .toolbar-controls { display: flex; align-items: end; gap: 8px; }
+  .search-control, .filter-control { display: grid; gap: 3px; color: var(--muted); font-size: 10px; font-weight: 700; }
+  .search-control input, .filter-control select { height: 40px; border: 1px solid var(--line); border-radius: 5px; color: var(--ink); background: var(--surface); }
+  .search-control input { width: 180px; padding: 0 10px; }
+  .search-control input::placeholder { color: #68756f; }
+  .filter-control select { width: 118px; padding: 0 28px 0 9px; }
+  .quiet-button { padding: 0 11px; border: 1px solid var(--line); border-radius: 5px; color: var(--ink); background: var(--surface); font-weight: 700; }
+  .quiet-button:hover { border-color: var(--accent); color: var(--accent); }
+  .run-summary { display: grid; grid-template-columns: repeat(3, minmax(90px, 1fr)) minmax(170px, 1.4fr); margin-bottom: 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); overflow: hidden; }
+  .run-summary p { min-height: 59px; display: flex; flex-direction: column; justify-content: center; padding: 8px 14px; border-right: 1px solid var(--line); }
+  .run-summary p:last-child { border-right: 0; }
+  .run-summary strong { font-size: 19px; }
+  .run-summary span { color: var(--muted); font-size: 11px; }
+  .run-summary .run-complete { background: var(--accent-soft); }
+  .run-summary .run-complete strong { color: var(--accent-dark); font-size: 13px; }
+  .queue-status { min-height: 33px; display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 11px; }
+  .queue-status button { min-height: 30px; padding: 0; border: 0; color: var(--accent); background: transparent; font-weight: 750; }
+  .queue-table-wrap { overflow: hidden; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+  .lead-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  .lead-table th { height: 35px; padding: 7px 12px; color: var(--muted); background: var(--surface-alt); font-size: 10px; text-align: left; }
+  .lead-table th:first-child { width: 92px; }.lead-table th:nth-child(2) { width: 27%; }.lead-table th:nth-child(3) { width: 23%; }.lead-table th:nth-child(4) { width: 17%; }.lead-table th:last-child { width: 22%; }
+  .lead-table td { height: 72px; padding: 9px 12px; border-top: 1px solid var(--line); vertical-align: middle; }
+  .lead-table tbody tr { cursor: pointer; }
+  .lead-table tbody tr:hover { background: #f7faf8; }
+  .lead-table tbody tr.selected { background: var(--accent-soft); box-shadow: inset 3px 0 var(--accent); }
+  .lead-table tbody tr.review-row:not(.selected) { background: var(--warning-soft); }
+  .lead-table td > strong, .lead-table td > span, .lead-table td > small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lead-table td > span, .lead-table td > small { color: var(--muted); font-size: 10px; }
+  .lead-table td:last-child strong { white-space: normal; }
+  .lead-select { width: 100%; min-height: 52px; display: grid; align-content: center; gap: 1px; padding: 0; border: 0; color: var(--ink); background: transparent; text-align: left; }
+  .lead-select span { color: var(--muted); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .score { font-size: 15px; }
+  .score-hot { color: var(--accent-dark); }.score-warm { color: var(--warning); }.score-cold { color: var(--ink); }.score-needs-manual-review { color: var(--warning); }
+  .mobile-lead-list { display: none; padding: 0; list-style: none; }
+  .empty-state { padding: 64px 24px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); text-align: center; }
+  .empty-state h2 { font-size: 18px; }.empty-state p { max-width: 48ch; margin: 6px auto 16px; color: var(--muted); }
+  .primary-button { padding: 0 13px; border: 1px solid var(--accent); border-radius: 5px; color: white; background: var(--accent); font-weight: 750; }
+  .primary-button:hover { background: var(--accent-dark); }
+  .loading-ledger { border: 1px solid var(--line); border-radius: 6px; background: var(--surface); overflow: hidden; }
+  .loading-ledger span { display: block; height: 70px; border-bottom: 1px solid var(--line); background: linear-gradient(90deg, var(--surface-alt), #f8faf9, var(--surface-alt)); background-size: 200% 100%; animation: loading 1.2s ease-in-out infinite; }
+  .loading-ledger span:last-child { border-bottom: 0; }
+  .detail-pane { min-width: 0; height: 100dvh; position: sticky; top: 0; background: var(--surface); }
+  .no-selection { padding: 72px 24px; text-align: center; }.no-selection p { margin-top: 6px; color: var(--muted); }
+  .lead-detail { height: 100%; display: flex; flex-direction: column; }
+  .detail-header { min-height: 112px; display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 16px; padding: 17px 20px 14px; }
+  .detail-header > div:first-of-type > span { color: var(--muted); font-size: 10px; }
+  .detail-header h2 { margin-top: 2px; font-size: 22px; letter-spacing: -.015em; }
+  .detail-header p { color: var(--muted); font-size: 12px; }
+  .back-button { display: none; }
+  .detail-score { text-align: right; }
+  .detail-score strong, .detail-score span, .detail-score small { display: block; }
+  .detail-score strong { font-size: 25px; }.detail-score span { color: var(--accent-dark); font-size: 12px; font-weight: 800; }.detail-score small { color: var(--muted); font-size: 10px; }
+  .detail-tabs { display: flex; padding: 0 13px; border-block: 1px solid var(--line); overflow-x: auto; scrollbar-width: thin; }
+  .detail-tabs button { flex: 0 0 auto; min-height: 42px; padding: 0 8px; border: 0; color: var(--muted); background: transparent; font-size: 10px; font-weight: 750; }
+  .detail-tabs button[aria-selected="true"] { color: var(--accent-dark); box-shadow: inset 0 -2px var(--accent); }
+  .detail-scroll { min-height: 0; overflow-y: auto; padding: 0 20px 24px; }
+  .tab-panel { padding-top: 4px; }
+  .decision-copy { padding: 16px 0; border-bottom: 1px solid var(--line); }
+  .decision-copy h3, .data-health h3, .outcome-form h3, .enrichment-summary h3, .session-events h3 { margin-bottom: 6px; font-size: 12px; }
+  .decision-copy p { max-width: 70ch; color: #2d3934; }
+  .decision-copy small { display: block; margin-top: 7px; color: var(--muted); }
+  .hook-copy > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .hook-copy > div button { min-height: 30px; padding: 0 8px; border: 1px solid var(--accent); border-radius: 4px; color: var(--accent-dark); background: transparent; font-size: 10px; font-weight: 750; }
+  .hook-copy.unavailable { background: #fafbf9; }.hook-copy.unavailable p { color: var(--muted); }
+  .review-notice, .weak-warning { margin: 14px 0 0; padding: 11px 12px; border-radius: 5px; color: #5f4207; background: var(--warning-soft); }
+  .review-notice p, .weak-warning p { margin-top: 3px; font-size: 12px; }
+  .data-health { display: grid; grid-template-columns: 1fr 1fr; gap: 9px 16px; padding: 16px 0; border-bottom: 1px solid var(--line); }
+  .data-health h3, .data-health .healthy-state { grid-column: 1 / -1; }
+  .data-health > div { padding: 9px 10px; border: 1px solid var(--line); border-radius: 4px; }
+  .data-health > div strong { font-size: 11px; }.data-health > div p, .healthy-state { color: var(--muted); font-size: 11px; }
+  .healthy-state { padding: 10px; background: var(--accent-soft); }
+  .outcome-form { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; padding: 16px 0; border-bottom: 1px solid var(--line); }
+  .form-heading { grid-column: 1 / -1; display: flex; justify-content: space-between; gap: 12px; }
+  .form-heading p { color: var(--muted); font-size: 11px; }.form-heading > span { color: var(--muted); font-size: 10px; white-space: nowrap; }
+  .outcome-form fieldset { min-width: 0; padding: 0; border: 0; }.outcome-form legend, .action-select > span { margin-bottom: 4px; color: var(--muted); font-size: 10px; font-weight: 750; }
+  .segmented-control { display: grid; grid-template-columns: repeat(3, 1fr); }
+  .segmented-control label { position: relative; }.segmented-control input { position: absolute; opacity: 0; pointer-events: none; }
+  .segmented-control span { min-height: 40px; display: grid; place-items: center; border: 1px solid var(--line); color: var(--ink); background: var(--surface); font-size: 11px; font-weight: 750; cursor: pointer; }
+  .segmented-control label + label span { border-left: 0; }.segmented-control label:first-child span { border-radius: 4px 0 0 4px; }.segmented-control label:last-child span { border-radius: 0 4px 4px 0; }
+  .segmented-control input:checked + span { color: white; border-color: var(--accent); background: var(--accent); }.segmented-control input:focus-visible + span { outline: 3px solid var(--accent); outline-offset: 2px; }.segmented-control label.disabled span { cursor: not-allowed; opacity: .45; }
+  .action-select { display: grid; }.action-select select { width: 100%; height: 40px; padding: 0 30px 0 9px; border: 1px solid var(--line); border-radius: 4px; color: var(--ink); background: var(--surface); }
+  .outcome-form > .primary-button { justify-self: start; }.outcome-form output { align-self: center; color: var(--muted); font-size: 11px; }
+  .writeback-pair { display: grid; grid-template-columns: 1fr 1fr; margin-top: 16px; border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }
+  .writeback-pair > div { padding: 11px; }.writeback-pair > div + div { border-left: 1px solid var(--line); background: #fafcfb; }
+  .writeback-pair span, .writeback-pair p { display: block; color: var(--muted); font-size: 10px; }.writeback-pair strong { display: block; margin: 2px 0; font-size: 13px; }
+  .panel-heading { min-height: 66px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--line); }
+  .panel-heading h3 { font-size: 15px; }.panel-heading p { color: var(--muted); font-size: 11px; }.panel-heading > strong { color: var(--accent-dark); }
+  .source-summary { display: flex; min-height: 54px; border-bottom: 1px solid var(--line); }
+  .source-summary > div { min-width: 84px; display: grid; align-content: center; padding: 7px 11px; border-right: 1px solid var(--line); }
+  .source-summary dt { color: var(--muted); font-size: 9px; }.source-summary dd { font-weight: 800; }
+  .claim-ledger { margin-top: 14px; border: 1px solid var(--line); }
+  .claim-ledger article { display: grid; grid-template-columns: 35px 1fr; gap: 10px; padding: 12px; border-bottom: 1px solid var(--line); }
+  .claim-ledger article:last-child { border-bottom: 0; }
+  .claim-number { width: 28px; height: 28px; display: grid; place-items: center; border: 1px solid var(--accent); color: var(--accent-dark); font-family: ui-monospace, monospace; font-size: 10px; font-weight: 800; }
+  .claim-copy p { margin-top: 2px; color: var(--muted); font-family: ui-monospace, monospace; font-size: 9px; overflow-wrap: anywhere; }
+  .claim-ledger article > dl { grid-column: 2; display: grid; grid-template-columns: 1.2fr 1fr 1fr .8fr; margin-top: 4px; }
+  .claim-ledger article > dl div { padding-left: 8px; border-left: 1px solid var(--line); }.claim-ledger dt { color: var(--muted); font-size: 8px; text-transform: uppercase; }.claim-ledger dd { font-size: 10px; font-weight: 700; overflow-wrap: anywhere; }
+  .claim-ledger details { grid-column: 2; margin-top: 6px; }.claim-ledger summary { color: var(--accent-dark); font-size: 10px; font-weight: 750; cursor: pointer; }.claim-ledger details ul { padding: 7px 0 0; list-style: none; }.claim-ledger details li { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-top: 1px solid var(--line); }.claim-ledger details li div { display: grid; }.claim-ledger details li span, .claim-ledger details li a { color: var(--muted); font-size: 9px; }.claim-ledger details li a { color: var(--accent-dark); font-weight: 750; }
+  .definition-grid, .version-grid, .identifier-grid { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--line); border-radius: 5px; overflow: hidden; margin-top: 14px; }
+  .definition-grid > div, .version-grid > div, .identifier-grid > div { min-height: 56px; padding: 9px 11px; border-bottom: 1px solid var(--line); }.definition-grid > div:nth-child(odd), .version-grid > div:nth-child(odd), .identifier-grid > div:nth-child(odd) { border-right: 1px solid var(--line); }.definition-grid dt, .version-grid dt, .identifier-grid dt { color: var(--muted); font-size: 9px; }.definition-grid dd, .version-grid dd, .identifier-grid dd { margin-top: 3px; font-weight: 750; overflow-wrap: anywhere; }
+  .enrichment-summary { margin-top: 16px; }.enrichment-summary dl { display: grid; grid-template-columns: 1fr 1fr; }.enrichment-summary dl div { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); }.enrichment-summary dt { color: var(--muted); }.enrichment-summary dd { text-align: right; font-weight: 700; }
+  .score-ledger { margin-top: 14px; }.score-ledger > div { display: grid; grid-template-columns: 132px 1fr 56px; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); }.score-ledger span { color: var(--muted); font-size: 11px; }.score-ledger strong { text-align: right; font-size: 11px; }.score-ledger meter { width: 100%; height: 8px; accent-color: var(--accent); }
+  .tool-ledger { margin-top: 14px; padding: 0; list-style: none; border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }.tool-ledger li { display: grid; grid-template-columns: 1fr auto; gap: 3px 12px; padding: 10px 11px; border-bottom: 1px solid var(--line); }.tool-ledger li:last-child { border-bottom: 0; }.tool-ledger li > span { font-weight: 750; }.tool-ledger li > strong { font-size: 10px; }.tool-ledger time { color: var(--muted); font-size: 9px; }.tool-ledger p { grid-column: 1 / -1; color: var(--muted); font-size: 10px; }
+  .status-success { color: var(--accent-dark); }.status-no_result { color: var(--muted); }.status-unavailable, .status-timeout, .status-rate_limited, .status-invalid_result { color: var(--danger); }.status-skipped { color: var(--warning); }
+  .session-events { margin-top: 16px; padding: 12px; background: var(--surface-alt); }.session-events p { color: var(--muted); font-size: 11px; }.session-events ol { margin-top: 8px; padding-left: 18px; }.session-events li { margin: 4px 0; font-family: ui-monospace, monospace; font-size: 10px; }
+  .is-loading .outcome-form :is(input, select, button) { pointer-events: none; opacity: .48; }
+  @keyframes loading { to { background-position: -200% 0; } }
+
+  @media (max-width: 1120px) {
+    .app-shell { grid-template-columns: 160px minmax(560px, 1fr); }
+    .detail-pane { grid-column: 2; height: auto; position: static; border-top: 1px solid var(--line); }
+    .lead-detail { height: auto; }.detail-scroll { overflow: visible; }
   }
-  .hero {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 300px;
-    gap: 24px;
-    align-items: end;
-    margin-bottom: 24px;
+  @media (max-width: 820px) {
+    :global(body) { font-size: 16px; }
+    :global(button), :global(input), :global(select), .detail-tabs button { min-height: 44px; }
+    .app-shell { display: block; }
+    .app-nav { width: 100%; height: auto; position: static; padding: 8px 10px; }
+    .brand { min-height: 44px; padding-bottom: 8px; }
+    .app-nav nav { display: flex; gap: 4px; overflow-x: auto; scrollbar-width: thin; }
+    .nav-item { flex: 0 0 auto; width: auto; min-width: max-content; }
+    .nav-account { display: none; }
+    .queue-pane { padding: 0 12px 20px; border-right: 0; }
+    .queue-toolbar { align-items: flex-start; flex-direction: column; padding: 14px 0; }
+    .queue-toolbar p { font-size: 12px; }
+    .toolbar-controls { width: 100%; align-items: end; }
+    .search-control { flex: 1; }.search-control input { width: 100%; }
+    .filter-control select { width: 112px; }
+    .run-summary { grid-template-columns: 1fr 1fr; }
+    .run-summary p:nth-child(2) { border-right: 0; }.run-summary p:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+    .queue-table-wrap { display: none; }
+    .mobile-lead-list { display: block; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); overflow: hidden; }
+    .mobile-lead-list li { border-bottom: 1px solid var(--line); }.mobile-lead-list li:last-child { border-bottom: 0; }
+    .mobile-lead-list li[data-band="Needs Manual Review"] { background: var(--warning-soft); }
+    .mobile-lead-list button { width: 100%; min-height: 84px; display: grid; grid-template-columns: 72px 1fr 86px; align-items: center; gap: 8px; padding: 10px 12px; border: 0; color: var(--ink); background: transparent; text-align: left; }
+    .mobile-lead-list button[aria-pressed="true"] { background: var(--accent-soft); box-shadow: inset 3px 0 var(--accent); }
+    .mobile-score, .mobile-identity, .mobile-outcome { display: grid; min-width: 0; }.mobile-score strong { font-size: 16px; }.mobile-score small, .mobile-identity small, .mobile-outcome small { color: var(--muted); font-size: 11px; }.mobile-identity strong, .mobile-identity small, .mobile-identity em { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.mobile-identity em { margin-top: 3px; color: var(--accent-dark); font-size: 11px; font-style: normal; font-weight: 750; }.mobile-outcome { text-align: right; }.mobile-outcome strong { font-size: 11px; }
+    .detail-pane { display: none; width: 100%; border-top: 0; }
+    .app-shell.mobile-detail .queue-pane { display: none; }.app-shell.mobile-detail .detail-pane { display: block; }
+    .app-shell.mobile-detail .app-nav { padding-bottom: 0; }
+    .app-shell.mobile-detail .app-nav nav { display: none; }
+    .app-shell.mobile-detail .brand { padding-bottom: 0; }
+    .detail-header { min-height: 128px; grid-template-columns: 1fr auto; padding: 12px; }
+    .back-button { grid-column: 1 / -1; display: inline-flex; justify-self: start; align-items: center; min-height: 44px; padding: 0; border: 0; color: var(--accent-dark); background: transparent; font-weight: 750; }
+    .detail-header h2 { font-size: 25px; }.detail-score strong { font-size: 25px; }
+    .detail-tabs { padding-inline: 12px; }.detail-tabs button { font-size: 12px; }
+    .detail-scroll { padding: 0 12px 20px; overflow: visible; }
+    .decision-copy p { font-size: 16px; }.decision-copy small, .form-heading p, .data-health > div p, .outcome-form output { font-size: 12px; }
+    .data-health, .outcome-form, .writeback-pair, .definition-grid, .version-grid, .identifier-grid { grid-template-columns: 1fr; }
+    .data-health > div { grid-column: 1; }.writeback-pair > div + div { border-top: 1px solid var(--line); border-left: 0; }
+    .definition-grid > div:nth-child(odd), .version-grid > div:nth-child(odd), .identifier-grid > div:nth-child(odd) { border-right: 0; }
+    .form-heading { align-items: flex-start; flex-direction: column; }.outcome-form > .primary-button { width: 100%; }.outcome-form output { min-height: 24px; }
+    .source-summary { overflow-x: auto; }.source-summary > div { flex: 0 0 100px; }
+    .claim-ledger article > dl { grid-template-columns: 1fr 1fr; gap: 8px; }.claim-ledger article > dl div { min-height: 42px; }.claim-ledger details li { align-items: flex-start; flex-direction: column; }
+    .score-ledger > div { grid-template-columns: 112px 1fr 54px; }
   }
-  h1, h2, h3, p { margin: 0; }
-  h1 { max-width: 760px; font-size: clamp(2rem, 4vw, 4rem); line-height: 1; letter-spacing: 0; }
-  h2 { font-size: 1.3rem; }
-  h3 { font-size: 1rem; }
-  .hero p:last-child { max-width: 760px; margin-top: 14px; color: #536079; font-size: 1.05rem; }
-  .eyebrow {
-    margin-bottom: 8px;
-    color: #3559d6;
-    font-size: .76rem;
-    font-weight: 800;
-    letter-spacing: .08em;
-    text-transform: uppercase;
+  @media (max-width: 460px) {
+    .toolbar-controls { display: grid; grid-template-columns: 1fr auto; }.quiet-button { grid-column: 1 / -1; width: 100%; }
+    .mobile-lead-list button { grid-template-columns: 65px 1fr; }.mobile-outcome { grid-column: 2; text-align: left; }
   }
-  .run-card, .metrics article, .lead, .audit, .lower article {
-    border: 1px solid #dfe5f0;
-    border-radius: 8px;
-    background: #fff;
-    box-shadow: 0 8px 24px rgba(31, 45, 71, .06);
+  @media (prefers-reduced-motion: no-preference) {
+    :global(button), :global(a), :global(input), :global(select), .lead-table tbody tr { transition: color 160ms ease-out, background-color 160ms ease-out, border-color 160ms ease-out; }
   }
-  .run-card { padding: 18px; }
-  .run-card span, .run-card small, .metrics span, dt, .tags span, .writeback span { color: #68758b; font-size: .82rem; }
-  .run-card strong { display: block; margin: 6px 0; font-size: 1.3rem; }
-  .metrics {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 14px;
-    margin-bottom: 20px;
-  }
-  .metrics article { padding: 16px; }
-  .metrics strong { display: block; margin-top: 6px; font-size: 2rem; }
-  .split {
-    display: grid;
-    grid-template-columns: minmax(0, 1.45fr) minmax(340px, .75fr);
-    gap: 20px;
-    align-items: start;
-  }
-  .section-heading {
-    display: flex;
-    justify-content: space-between;
-    gap: 16px;
-    align-items: center;
-    margin-bottom: 12px;
-  }
-  button {
-    border: 1px solid #cfd7e6;
-    border-radius: 8px;
-    background: #fff;
-    padding: 10px 14px;
-    color: #172033;
-    font-weight: 700;
-  }
-  .lead-list { display: grid; gap: 12px; }
-  .lead { padding: 16px; }
-  .lead.active { border-color: #3559d6; }
-  .lead-top {
-    display: flex;
-    justify-content: space-between;
-    gap: 16px;
-  }
-  .lead-top p, .reason, .hook { color: #536079; }
-  .reason { margin-top: 12px; }
-  .hook { margin-top: 8px; font-weight: 700; }
-  .score { text-align: right; white-space: nowrap; }
-  .score strong { display: block; font-size: 1.2rem; }
-  .score span {
-    color: #3559d6;
-    font-size: .82rem;
-    font-weight: 800;
-  }
-  .tags {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    margin-top: 12px;
-  }
-  .tags span {
-    border-radius: 999px;
-    background: #eef2f8;
-    padding: 5px 9px;
-  }
-  .tags .warn { background: #fff4dc; color: #7c5600; }
-  .audit {
-    position: sticky;
-    top: 16px;
-    padding: 20px;
-  }
-  dl {
-    display: grid;
-    gap: 10px;
-    margin: 18px 0;
-  }
-  dl div {
-    display: flex;
-    justify-content: space-between;
-    gap: 14px;
-    border-bottom: 1px solid #edf1f7;
-    padding-bottom: 10px;
-  }
-  dd { margin: 0; font-weight: 800; text-align: right; }
-  .bars, .sources { margin: 12px 0 22px; }
-  .bars div {
-    display: grid;
-    grid-template-columns: 92px 1fr 34px;
-    gap: 10px;
-    align-items: center;
-    margin-bottom: 10px;
-    color: #536079;
-    font-size: .9rem;
-  }
-  progress { width: 100%; accent-color: #3559d6; }
-  .sources, .checks { padding-left: 18px; color: #536079; }
-  .sources li, .checks li { margin: 8px 0; }
-  .writeback {
-    border-radius: 8px;
-    padding: 14px;
-  }
-  .writeback.ok { background: #eaf7ef; }
-  .writeback.hold { background: #fff4dc; }
-  .writeback strong { display: block; margin: 4px 0; }
-  .lower {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 20px;
-    margin-top: 20px;
-  }
-  .lower article { padding: 20px; }
-  .timeline {
-    display: grid;
-    grid-template-columns: repeat(7, minmax(0, 1fr));
-    gap: 8px;
-    margin: 16px 0 0;
-    padding: 0;
-    list-style-position: inside;
-  }
-  .timeline li {
-    border-radius: 8px;
-    background: #eef2f8;
-    padding: 10px;
-    overflow-wrap: anywhere;
-    font-size: .82rem;
-    font-weight: 700;
-  }
-  @media (max-width: 980px) {
-    .hero, .split, .lower { grid-template-columns: 1fr; }
-    .audit { position: static; }
-    .timeline { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  }
-  @media (max-width: 640px) {
-    main { width: min(100% - 20px, 1440px); padding-top: 18px; }
-    .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .lead-top, .section-heading { align-items: flex-start; }
-    .lead-top { flex-direction: column; }
-    .score { text-align: left; }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
   }
 </style>
