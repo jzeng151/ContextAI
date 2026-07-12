@@ -169,8 +169,11 @@ const writebackEligible = (sourceType: SourceType, confidence: Confidence, field
   return false;
 };
 
-const fetchJson = async (url: string, timeoutMs: number): Promise<unknown> => {
-  const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+const fetchJson = async (url: string, timeoutMs: number, accessToken?: string): Promise<unknown> => {
+  const response = await fetch(url, {
+    headers: accessToken ? { "Authorization": `Bearer ${accessToken}` } : undefined,
+    signal: AbortSignal.timeout(timeoutMs),
+  });
   const text = await response.text();
   let body: unknown = {};
 
@@ -218,14 +221,15 @@ const fetchWithRetries = async (
   key: string,
   param: string,
   timeoutMs: number,
-  maxRetries: number
+  maxRetries: number,
+  accessToken?: string,
 ): Promise<unknown> => {
   let attempt = 0;
   while (true) {
     try {
       const url = new URL(apiBase);
       url.searchParams.set(param, key);
-      return await fetchJson(url.toString(), timeoutMs);
+      return await fetchJson(url.toString(), timeoutMs, accessToken);
     } catch (error) {
       const status = classifyFetchError(error);
       if (!isRetryable(status) || attempt >= maxRetries) {
@@ -726,7 +730,7 @@ export const enrichProfile = async (
   const apiBase = env.ENRICHMENT_API_URL?.trim();
   if (apiBase) {
     try {
-      const payload = await fetchWithRetries(apiBase, key, "domain", timeoutMs, maxRetries);
+      const payload = await fetchWithRetries(apiBase, key, "domain", timeoutMs, maxRetries, env.ENRICHMENT_API_KEY);
       const parsed = parseEnrichmentResult(payload, evaluatedAt);
       return parsed ?? invalidResult({
         tech_stack: [],
@@ -808,7 +812,7 @@ export const fetchIntentTriggers = async (
   const apiBase = env.INTENT_API_URL?.trim();
   if (apiBase) {
     try {
-      const payload = await fetchWithRetries(apiBase, key, "email", timeoutMs, maxRetries);
+      const payload = await fetchWithRetries(apiBase, key, "email", timeoutMs, maxRetries, env.INTENT_API_KEY);
       const parsed = parseIntentPayload(payload, evaluatedAt);
       return parsed ?? invalidResult({
         opens: 0,
@@ -886,7 +890,7 @@ export const fetchPublicSignals = async (
   const apiBase = env.PUBLIC_SIGNALS_API_URL?.trim();
   if (apiBase) {
     try {
-      const payload = await fetchWithRetries(apiBase, companyName.trim(), "company", timeoutMs, maxRetries);
+      const payload = await fetchWithRetries(apiBase, companyName.trim(), "company", timeoutMs, maxRetries, env.PUBLIC_SIGNALS_API_KEY);
       return parsePublicResult(payload, evaluatedAt);
     } catch (error) {
       return applyFetchFailure(classifyFetchError(error), {

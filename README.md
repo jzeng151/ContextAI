@@ -125,16 +125,20 @@ scripts/
 tests/
   contextai.test.ts       Contract, fixture, grounding, and helper tests
   grounding.test.ts       Grounded-output validation and safety evals
+  security.test.ts        Authentication, encryption, tenant, and role controls
 PRD.md                     Product and safety requirements
+SECURITY.md                Threat model and pilot operations runbook
 CONTRIBUTING.md            Local setup and collaboration workflow
 ROADMAP.md                 Product delivery plan and implementation status
 ```
 
 ## Runtime and Persistence
 
-v0 uses the existing Node 22 runtime and Node's built-in SQLite module, so persistence adds no ORM or database package. `RuntimeStore` is the only storage side-effect boundary; deterministic contracts, configuration, scoring, and policy remain plain TypeScript. Two transactional migrations create tenant/integration, versioned configuration, evaluation/step, normalized evidence/claim, writeback/audit/rollback, review, and append-only event records.
+v0 uses the existing Node 22 runtime and Node's built-in SQLite module, so persistence adds no ORM or database package. `RuntimeStore` is the only storage side-effect boundary; deterministic contracts, configuration, scoring, and policy remain plain TypeScript. Transactional migrations create tenant/integration, versioned configuration, evaluation/step, normalized evidence/claim, writeback/audit/rollback, review, append-only event, request-audit, encrypted credential, and retention records.
 
-SQLite is the smallest deployable single-process store for the pilot. `DATABASE_PATH` is the deployment-owned durable volume. Audit and event tables reject updates and deletes. Evaluation rows expose a retention date and query hook, while production retention policy and deletion enforcement remain owned by the security workstream (#14).
+SQLite is the smallest deployable single-process store for the pilot. `DATABASE_PATH` is the deployment-owned durable volume. Audit records reject updates and deletes. Evaluations default to 365-day retention through `EVALUATION_RETENTION_DAYS`; `npm run db:purge -- <tenant-id> [ISO-cutoff]` deletes expired non-audit data while retaining required audits.
+
+Production security responsibilities, OAuth operations, disconnect/status commands, encryption requirements, and incident procedures are documented in [SECURITY.md](SECURITY.md).
 
 Telemetry producers use the recorder in `instrumentation.ts`; they do not import metric aggregation or reporting. Event names, required linkage, PII exclusions, retention classes, and metric inputs are documented in [TELEMETRY.md](TELEMETRY.md).
 

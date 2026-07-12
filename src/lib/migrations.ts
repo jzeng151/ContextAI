@@ -246,6 +246,63 @@ export const migrations: readonly Migration[] = [
       WHEN EXISTS (SELECT 1 FROM grounding_audit_records WHERE grounding_audit_id = NEW.grounding_audit_id)
       BEGIN SELECT RAISE(ABORT, 'grounding audit records are append-only'); END;
     `
+  },
+  {
+    version: 5,
+    name: "request identity and pilot access controls",
+    sql: `
+      ALTER TABLE evaluation_runs ADD COLUMN assigned_rep_id TEXT;
+      ALTER TABLE writeback_audit_records ADD COLUMN actor_id TEXT;
+      ALTER TABLE writeback_audit_records ADD COLUMN access_request_id TEXT;
+
+      CREATE TABLE access_audit_records (
+        access_audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tenant_id TEXT NOT NULL REFERENCES tenants(tenant_id),
+        request_id TEXT NOT NULL,
+        actor_id TEXT NOT NULL,
+        actor_role TEXT NOT NULL CHECK (actor_role IN ('revops_admin', 'rep', 'system', 'integration')),
+        action TEXT NOT NULL,
+        resource_type TEXT NOT NULL,
+        resource_id TEXT NOT NULL,
+        outcome TEXT NOT NULL CHECK (outcome IN ('allowed', 'denied')),
+        recorded_at TEXT NOT NULL
+      );
+
+      CREATE INDEX access_audits_tenant_recorded ON access_audit_records (tenant_id, recorded_at);
+      CREATE TRIGGER access_audit_records_no_update
+      BEFORE UPDATE ON access_audit_records BEGIN SELECT RAISE(ABORT, 'access audit records are append-only'); END;
+      CREATE TRIGGER access_audit_records_no_delete
+      BEFORE DELETE ON access_audit_records BEGIN SELECT RAISE(ABORT, 'access audit records are append-only'); END;
+    `
+  },
+  {
+    version: 6,
+    name: "encrypted integration credentials and operations",
+    sql: `
+      ALTER TABLE integrations ADD COLUMN access_token_ciphertext TEXT;
+      ALTER TABLE integrations ADD COLUMN refresh_token_ciphertext TEXT;
+      ALTER TABLE integrations ADD COLUMN scopes_json TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE integrations ADD COLUMN token_expires_at TEXT;
+      ALTER TABLE integrations ADD COLUMN last_health_at TEXT;
+      ALTER TABLE integrations ADD COLUMN last_error TEXT;
+      ALTER TABLE integrations ADD COLUMN rate_limited_until TEXT;
+      ALTER TABLE integrations ADD COLUMN revoked_at TEXT;
+    `
+  },
+  {
+    version: 7,
+    name: "retention purge controls",
+    sql: `
+      ALTER TABLE evaluation_runs ADD COLUMN purged_at TEXT;
+      CREATE TABLE retention_job_guard (active INTEGER PRIMARY KEY CHECK (active = 1));
+
+      DROP TRIGGER events_no_delete;
+      CREATE TRIGGER events_no_delete
+      BEFORE DELETE ON events
+      WHEN OLD.retention_class = 'writeback_audit_24_months'
+        OR NOT EXISTS (SELECT 1 FROM retention_job_guard WHERE active = 1)
+      BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
+    `
   }
 ];
 

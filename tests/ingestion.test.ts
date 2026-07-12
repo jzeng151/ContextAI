@@ -277,6 +277,33 @@ test("live provider payload validation maps malformed responses to invalid_resul
   }
 });
 
+test("source credentials stay in authorization headers", async () => {
+  const originalFetch = globalThis.fetch;
+  let requestedUrl = "";
+  let authorization = "";
+  globalThis.fetch = async (input, init) => {
+    requestedUrl = String(input);
+    authorization = new Headers(init?.headers).get("authorization") ?? "";
+    return new Response(JSON.stringify({
+      source_name: "Provider",
+      employees: 10,
+      tech_stack: [],
+      last_updated: evaluatedAt,
+      confidence: "High",
+    }), { status: 200 });
+  };
+  try {
+    assert.equal((await enrichProfile("example.com", {
+      evaluatedAt,
+      env: { ENRICHMENT_API_URL: "https://enrich.example/v1/profile", ENRICHMENT_API_KEY: "source-secret" },
+    })).status, "success");
+    assert.equal(authorization, "Bearer source-secret");
+    assert.doesNotMatch(requestedUrl, /source-secret/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("ingestion rejects control characters from lookup keys and provider text", async () => {
   const originalFetch = globalThis.fetch;
   let called = false;

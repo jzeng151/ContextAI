@@ -501,12 +501,12 @@ Pilot deliverables:
 
 Data access principles:
 
-- [ ] Access only fields required for scoring and explanation
+- [x] Access only fields required for scoring and explanation
 - [ ] Do not ingest full email inboxes or full email bodies in v0
 - [ ] Do not ingest prospect-sensitive content unless approved
 - [ ] Do not expose private engagement behavior unless approved for rep-facing workflow
-- [ ] Do not use customer CRM data to train shared models
-- [ ] Avoid storing raw source payloads by default
+- [x] Do not use customer CRM data to train shared models
+- [x] Avoid storing raw source payloads by default
 
 Permissions:
 
@@ -527,8 +527,8 @@ Field-level controls:
 
 Data retention defaults:
 
-- [ ] Normalized lead evaluation records retained for 12 months unless configured otherwise
-- [ ] Raw source responses avoided by default
+- [x] Normalized lead evaluation records retained for 12 months unless configured otherwise
+- [x] Raw source responses avoided by default
 - [ ] Writeback audit logs retained for at least 24 months or customer policy
 - [ ] Prompt/response logs retained only when needed and scrubbed of unnecessary sensitive data
 
