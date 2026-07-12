@@ -79,13 +79,22 @@ test("new evaluations use the tenant's published active configuration", async ()
     author: "admin-15",
     createdAt: "2026-07-12T08:00:00.000Z",
     changeSummary: "Publish pilot scoring policy.",
-    adminNotes: "Verified before the morning run."
+    adminNotes: "Verified before the morning run.",
+    config: {
+      ...defaultConfigVersion.config,
+      writeback: {
+        ...defaultConfigVersion.config.writeback,
+        manualApprovalFields: { contact: [], company: ["company_size_band"] }
+      }
+    }
   });
   store.saveConfigVersion(identity, draft);
   store.publishConfigDraft(identity, draft.id);
 
   const result = await evaluateLead({ identity, idempotencyKey: "active-config-15", contactId: record.id, store, dependencies: dependencies(), evaluatedAt: at });
   assert.equal(result.packet.score_version, draft.id);
+  assert.equal(result.packet.writeback_plan?.decision, "Review");
+  assert.ok(store.listReviewItems(identity).some((item) => item.reason === "candidate_writeback_flagged"));
   assert.equal(store.getGovernanceAudit(identity, result.packet.evaluation_id)?.configVersion?.id, draft.id);
   store.close();
 });

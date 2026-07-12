@@ -4,7 +4,7 @@ import { createScoringRunContext, defaultConfigVersion } from "../src/lib/config
 import { leads } from "../src/data/leads.ts";
 import { RuntimeStore } from "../src/lib/persistence.ts";
 import { applyDeterministicScore } from "../src/lib/scoring.ts";
-import { executeWriteback, hubSpotWritebackPolicy, planWriteback, rollbackLeadWriteback, rollbackWriteback } from "../src/lib/writeback.ts";
+import { executeWriteback, hubSpotWritebackPolicy, hubSpotWritebackPolicyFor, planWriteback, rollbackLeadWriteback, rollbackWriteback } from "../src/lib/writeback.ts";
 
 const packet = () => structuredClone(leads.find(({ lead_id }) => lead_id === "golden-normal")!);
 const packetById = (leadId: string) => structuredClone(leads.find(({ lead_id }) => lead_id === leadId)!);
@@ -31,9 +31,24 @@ test("planning maps canonical evidence to CRM fields independently per field", (
   assert.equal(blocked.fields.find(({ canonicalField }) => canonicalField === "employees")?.outcome, "Blocked");
   const sideEffect = planWriteback(lead, { ...hubSpotWritebackPolicy, fields: { ...hubSpotWritebackPolicy.fields, employees: { ...hubSpotWritebackPolicy.fields.employees!, sideEffects: true } } });
   assert.equal(sideEffect.fields.find(({ canonicalField }) => canonicalField === "employees")?.outcome, "Blocked");
-  const manualApproval = planWriteback(lead, { ...hubSpotWritebackPolicy, manualApprovalFields: ["technology_tags"] });
+  const manualApproval = planWriteback(lead, { ...hubSpotWritebackPolicy, manualApprovalFields: { contact: [], company: ["technology_tags"] } });
   assert.equal(manualApproval.fields.find(({ canonicalField }) => canonicalField === "tech_stack")?.outcome, "Flagged for Review");
   assert.equal(manualApproval.fields.find(({ canonicalField }) => canonicalField === "employees")?.outcome, "Eligible");
+  assert.equal(manualApproval.outcome, "Flagged for Review");
+
+  const withoutTechnology = hubSpotWritebackPolicyFor({
+    ...defaultConfigVersion.config,
+    writeback: {
+      ...defaultConfigVersion.config.writeback,
+      allowlist: { ...defaultConfigVersion.config.writeback.allowlist, company: defaultConfigVersion.config.writeback.allowlist.company.filter((field) => field !== "technology_tags") }
+    }
+  }, "score-no-technology");
+  assert.equal(planWriteback(lead, withoutTechnology).fields.some(({ canonicalField }) => canonicalField === "tech_stack"), false);
+
+  const objectScoped = { ...hubSpotWritebackPolicy, manualApprovalFields: { contact: ["last_enrichment_verified_at"], company: ["last_enrichment_verified_at"] } };
+  assert.doesNotThrow(() => planWriteback(lead, objectScoped));
+  const configured = planWriteback(lead, hubSpotWritebackPolicyFor(defaultConfigVersion.config, defaultConfigVersion.id));
+  assert.equal(configured.fields.some(({ canonicalField }) => canonicalField === "label"), false);
 });
 
 test("planning handles empty, invalid, stale, low-confidence, and conflicting fields", () => {

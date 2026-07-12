@@ -1,7 +1,6 @@
 ---
 import { leads } from "../data/leads";
 import { compareConfigs, defaultConfigVersion, type ConfigSection } from "../lib/config";
-import { governanceReviewReasons } from "../lib/governance";
 
 const draft = {
   ...defaultConfigVersion,
@@ -18,7 +17,6 @@ const draft = {
   }
 };
 const changed = compareConfigs(defaultConfigVersion.config, draft.config);
-const reviewItems = leads.flatMap((lead) => governanceReviewReasons(lead).map((reason) => ({ lead, reason })));
 const audits = leads.map((lead) => ({
   lead,
   evidence: lead.allowed_claims.flatMap(({ evidence_ids }) => evidence_ids).length,
@@ -71,7 +69,7 @@ const date = (value: string) => new Intl.DateTimeFormat("en-US", { month: "short
 
         <section class="summary" aria-label="Governance status">
           <div><strong>{changed.length}</strong><span>draft sections changed</span></div>
-          <div><strong>{reviewItems.length}</strong><span>open review reasons</span></div>
+          <div><strong data-review-count>—</strong><span>open review reasons</span></div>
           <div><strong>{audits.length}</strong><span>evaluation traces</span></div>
           <div class="healthy"><strong>Protected</strong><span>admin role + immutable history</span></div>
         </section>
@@ -132,6 +130,7 @@ const date = (value: string) => new Intl.DateTimeFormat("en-US", { month: "short
 
             <aside class="publish-panel" aria-labelledby="compare-title">
               <div><span>Compare with active</span><h3 id="compare-title">{draft.id}</h3><p>{draft.changeSummary}</p></div>
+              <input type="hidden" name="changeSummary" value={draft.changeSummary} />
               <ul data-change-list>{changed.map((section) => <li data-change={section}><strong>{sections[section]}</strong><span>Changed</span></li>)}</ul>
               <label><span>Admin notes</span><textarea name="adminNotes" rows="4" required>{draft.adminNotes}</textarea></label>
               <div class="error" data-config-error role="alert" hidden></div>
@@ -150,20 +149,14 @@ const date = (value: string) => new Intl.DateTimeFormat("en-US", { month: "short
         </section>
 
         <section id="review" aria-labelledby="review-title">
-          <div class="section-heading"><div><h2 id="review-title">Manual-review queue</h2><p>Resolve or dismiss one reason at a time. Every decision records the actor, note, and timestamp.</p></div><span class="status warning">{reviewItems.length} open</span></div>
-          <div class="review-list" data-review-list>
-            {reviewItems.map(({ lead, reason }) => <article data-review-item data-review-id={`${lead.evaluation_id}:${reason}`}>
-              <div><strong>{lead.lead_identity.company}</strong><span>{lead.lead_identity.name} · {lead.lead_id}</span></div>
-              <div><strong>{label(reason)}</strong><span>{lead.source_conflicts[0] || lead.missing_fields.map(label).join(", ") || lead.writeback_plan?.reason || "Policy review required"}</span></div>
-              <form data-review-form><label><span>Decision note</span><input name="note" required placeholder="What was verified or corrected?" /></label><button name="decision" value="resolved">Resolve</button><button class="secondary" name="decision" value="dismissed">Dismiss</button><output data-review-status aria-live="polite"></output></form>
-            </article>)}
-            {reviewItems.length === 0 && <div class="empty"><strong>No open review items</strong><p>New manual-review evaluations will appear here with their reason codes.</p></div>}
-          </div>
+          <div class="section-heading"><div><h2 id="review-title">Manual-review queue</h2><p>Resolve or dismiss one reason at a time. Every decision records the actor, note, and timestamp.</p></div><span class="status warning"><span data-review-count>—</span>&nbsp;open</span></div>
+          <div class="review-list" data-review-list><div class="empty"><strong>Loading review queue</strong><p>Reading persisted review items.</p></div></div>
+          <template id="review-item-template"><article data-review-item><div><strong data-review-company></strong><span data-review-lead></span></div><div><strong data-review-reason></strong><span data-review-detail></span></div><form data-review-form><label><span>Decision note</span><input name="note" required placeholder="What was verified or corrected?" /></label><button name="decision" value="resolved">Resolve</button><button class="secondary" name="decision" value="dismissed">Dismiss</button><output data-review-status aria-live="polite"></output></form></article></template>
         </section>
 
         <section id="audit" aria-labelledby="audit-title">
           <div class="section-heading"><div><h2 id="audit-title">Decision and writeback audit</h2><p>Trace version, evidence, claim, policy, actor, and outcome for every evaluated lead.</p></div></div>
-          <div class="table-wrap"><table><thead><tr><th>Evaluation</th><th>Version</th><th>Evidence / claims</th><th>Writeback policy</th><th>Outcome</th><th>Rollback</th></tr></thead><tbody>
+          <div class="table-wrap"><table><thead><tr><th>Evaluation</th><th>Version</th><th>Evidence / claims</th><th>Writeback policy</th><th>Outcome</th><th>Rollback</th></tr></thead><tbody data-audit-body>
             {audits.map(({ lead, evidence, claims, policy, outcome }) => <tr><td><strong>{lead.lead_identity.company}</strong><span>{lead.evaluation_id}</span></td><td>{lead.score_version}</td><td>{evidence} / {claims}</td><td>{policy}</td><td>{outcome}</td><td><div class="row-actions"><button type="button" class="secondary" data-rollback-field disabled={outcome !== "Written"}>Field</button><button type="button" class="secondary" data-rollback-lead disabled={outcome !== "Written"}>Lead</button></div></td></tr>)}
           </tbody></table></div>
         </section>
@@ -176,64 +169,159 @@ const date = (value: string) => new Intl.DateTimeFormat("en-US", { month: "short
     </div>
 
     <script>
-      const configForm = document.querySelector<HTMLFormElement>("#config-form");
+      type Version = { id: string; author: string; createdAt: string; status: "draft" | "active" | "inactive"; changeSummary: string; adminNotes: string; config: Record<string, any> };
+      type Review = { review_id: string; evaluation_id: string; reason: string; payload: Record<string, any> };
+      const configForm = document.querySelector<HTMLFormElement>("#config-form")!;
       const total = document.querySelector<HTMLOutputElement>("[data-weight-total]");
       const error = document.querySelector<HTMLElement>("[data-config-error]");
       const status = document.querySelector<HTMLOutputElement>("[data-publish-status]");
+      const reviewList = document.querySelector<HTMLElement>("[data-review-list]")!;
+      const reviewCounts = document.querySelectorAll<HTMLElement>("[data-review-count]");
+      const auditBody = document.querySelector<HTMLTableSectionElement>("[data-audit-body]")!;
+      const token = () => sessionStorage.getItem("contextai.session-token");
+      const api = async <T,>(path: string, init: RequestInit = {}) => {
+        const sessionToken = token();
+        if (!sessionToken) throw new Error("Sign in again to use governance controls.");
+        const response = await fetch(path, { ...init, headers: { "Authorization": `Bearer ${sessionToken}`, ...(init.body ? { "Content-Type": "application/json" } : {}), ...(init.headers ?? {}) } });
+        const result = await response.json() as T & { error?: string };
+        if (!response.ok) throw new Error(result.error || "Governance request failed.");
+        return result;
+      };
+      let activeConfig = JSON.parse(configForm.dataset.activeConfig || "{}") as Record<string, any>;
       const changedSections = new Set(Array.from(document.querySelectorAll<HTMLElement>("[data-change]")).map((item) => item.dataset.change));
       const refreshWeights = () => {
-        const weights = Array.from(configForm?.querySelectorAll<HTMLInputElement>('[name^="categoryWeights."]') ?? []);
+        const weights = Array.from(configForm.querySelectorAll<HTMLInputElement>('[name^="categoryWeights."]'));
         const sum = weights.reduce((value, input) => value + Number(input.value), 0);
         if (total) { total.value = `${sum} / 100`; total.classList.toggle("invalid", sum !== 100); }
         return sum;
       };
-      configForm?.addEventListener("input", (event) => {
+      const setValue = (name: string, value: unknown) => { const input = configForm.elements.namedItem(name) as HTMLInputElement | HTMLTextAreaElement | null; if (input) input.value = String(value); };
+      const applyConfig = (version: Version) => {
+        activeConfig = structuredClone(version.config);
+        configForm.dataset.activeConfig = JSON.stringify(activeConfig);
+        Object.entries(activeConfig.categoryWeights).forEach(([name, value]) => setValue(`categoryWeights.${name}`, value));
+        Object.entries(activeConfig.bandThresholds).forEach(([name, value]) => setValue(`bandThresholds.${name}`, value));
+        for (const name of ["intent", "engagement", "publicSignal"]) setValue(`freshness.${name}.freshThroughDays`, activeConfig.freshness[name].freshThroughDays);
+        setValue("freshness.firmographic.freshThroughDays", activeConfig.freshness.firmographic.freshThroughDays);
+        setValue("freshness.firmographic.staleAfterDays", activeConfig.freshness.firmographic.staleAfterDays);
+        setValue("freshness.contact.manualReviewAfterDays", activeConfig.freshness.contact.manualReviewAfterDays);
+        configForm.querySelectorAll<HTMLInputElement>('[name="approvedSources"]').forEach((input) => input.checked = activeConfig.sourcePolicy.approvedSourceTypes.includes(input.value));
+        for (const object of ["contact", "company"]) {
+          setValue(`writeback.allowlist.${object}`, activeConfig.writeback.allowlist[object].join("\n"));
+          setValue(`writeback.manualApprovalFields.${object}`, activeConfig.writeback.manualApprovalFields[object].join("\n"));
+        }
+        const active = document.querySelector<HTMLElement>(".active-version");
+        if (active) { active.querySelector("strong")!.textContent = version.id; active.querySelector("small")!.textContent = `Published ${new Date(version.createdAt).toLocaleString()}`; }
+        refreshWeights();
+      };
+      const configFromForm = (values: FormData) => {
+        const config = structuredClone(activeConfig);
+        for (const input of configForm.querySelectorAll<HTMLInputElement>('[name^="categoryWeights."], [name^="bandThresholds."], [name^="freshness."]')) {
+          const path = input.name.split(".");
+          let target = config;
+          while (path.length > 1) target = target[path.shift()!];
+          target[path[0]!] = Number(input.value);
+        }
+        config.sourcePolicy.approvedSourceTypes = values.getAll("approvedSources").map(String);
+        const lines = (name: string) => String(values.get(name) ?? "").split("\n").map((value) => value.trim()).filter(Boolean);
+        for (const object of ["contact", "company"]) {
+          config.writeback.allowlist[object] = lines(`writeback.allowlist.${object}`);
+          config.writeback.manualApprovalFields[object] = lines(`writeback.manualApprovalFields.${object}`);
+        }
+        return config;
+      };
+      configForm.addEventListener("input", (event) => {
         const fieldset = (event.target as HTMLElement).closest<HTMLElement>("[data-config-section]");
         if (fieldset?.dataset.configSection) changedSections.add(fieldset.dataset.configSection);
         refreshWeights();
       });
-      configForm?.addEventListener("submit", (event) => {
+      configForm.addEventListener("submit", async (event) => {
         event.preventDefault();
-        const form = event.currentTarget as HTMLFormElement;
-        const values = new FormData(form);
+        const values = new FormData(configForm);
         const cold = Number(values.get("bandThresholds.Cold"));
         const warm = Number(values.get("bandThresholds.Warm"));
         const hot = Number(values.get("bandThresholds.Hot"));
         const message = refreshWeights() !== 100 ? "Score weights must total 100." : !(cold < warm && warm < hot) ? "Bands must remain in Cold, Warm, Hot order." : !String(values.get("adminNotes") ?? "").trim() ? "Admin notes are required." : "";
         if (error) { error.hidden = !message; error.textContent = message; }
         if (message) return;
-        if (status) status.value = "Validated. Publish through the authenticated governance service to make this version active.";
+        const submit = configForm.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+        submit.disabled = true;
+        try {
+          const key = "contextai.config-draft-id";
+          const draftId = sessionStorage.getItem(key) || `score-${crypto.randomUUID()}`;
+          sessionStorage.setItem(key, draftId);
+          const result = await api<{ version: Version }>("/admin/config/publish", { method: "POST", body: JSON.stringify({ draftId, changeSummary: values.get("changeSummary"), adminNotes: values.get("adminNotes"), config: configFromForm(values) }) });
+          sessionStorage.removeItem(key);
+          applyConfig(result.version);
+          if (status) status.value = `${result.version.id} is active and will be used for new evaluations.`;
+        } catch (publishError) {
+          if (error) { error.hidden = false; error.textContent = publishError instanceof Error ? publishError.message : "Publish failed."; }
+        } finally { submit.disabled = false; }
       });
-      document.querySelectorAll<HTMLFormElement>("[data-review-form]").forEach((form) => form.addEventListener("submit", async (event) => {
+      const bindReview = (form: HTMLFormElement) => form.addEventListener("submit", async (event) => {
         event.preventDefault();
         if (!form.reportValidity()) return;
-        const item = form.closest<HTMLElement>("[data-review-item]");
-        const reviewId = item?.dataset.reviewId;
+        const item = form.closest<HTMLElement>("[data-review-item]")!;
         const decision = ((event as SubmitEvent).submitter as HTMLButtonElement | null)?.value;
         const note = String(new FormData(form).get("note") ?? "").trim();
-        const reviewStatus = form.querySelector<HTMLOutputElement>("[data-review-status]");
-        const token = sessionStorage.getItem("contextai.session-token");
-        if (!reviewId || !decision || !token) {
-          if (reviewStatus) reviewStatus.value = token ? "Review item is unavailable." : "Sign in again to record this decision.";
-          return;
-        }
+        const output = form.querySelector<HTMLOutputElement>("[data-review-status]");
         const controls = form.querySelectorAll<HTMLInputElement | HTMLButtonElement>("input, button");
         controls.forEach((control) => control.disabled = true);
         try {
-          const response = await fetch(`/admin/reviews/${encodeURIComponent(reviewId)}/decision`, {
-            method: "POST",
-            headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
-            body: JSON.stringify({ decision, note })
-          });
-          const result = await response.json() as { error?: string };
-          if (!response.ok) throw new Error(result.error || "Review decision failed.");
+          await api(`/admin/reviews/${encodeURIComponent(item.dataset.reviewId!)}/decision`, { method: "POST", body: JSON.stringify({ decision, note }) });
           item.setAttribute("data-closed", "true");
-          if (reviewStatus) reviewStatus.value = decision === "resolved" ? "Resolved and audited." : "Dismissed and audited.";
-        } catch (error) {
+          if (output) output.value = decision === "resolved" ? "Resolved and audited." : "Dismissed and audited.";
+          await loadReviews();
+        } catch (reviewError) {
           controls.forEach((control) => control.disabled = false);
-          if (reviewStatus) reviewStatus.value = error instanceof Error ? error.message : "Review decision failed.";
+          if (output) output.value = reviewError instanceof Error ? reviewError.message : "Review decision failed.";
         }
-      }));
+      });
+      const loadReviews = async () => {
+        try {
+          const { reviews } = await api<{ reviews: Review[] }>("/admin/reviews");
+          reviewList.replaceChildren();
+          reviewCounts.forEach((count) => count.textContent = String(reviews.length));
+          for (const review of reviews) {
+            const item = (document.querySelector<HTMLTemplateElement>("#review-item-template")!.content.firstElementChild!.cloneNode(true) as HTMLElement);
+            item.dataset.reviewId = review.review_id;
+            item.querySelector<HTMLElement>("[data-review-company]")!.textContent = review.payload.company || review.payload.accountId || "Unknown account";
+            item.querySelector<HTMLElement>("[data-review-lead]")!.textContent = `${review.payload.leadName || "Unknown lead"} · ${review.payload.leadId || review.evaluation_id}`;
+            item.querySelector<HTMLElement>("[data-review-reason]")!.textContent = review.reason.replaceAll("_", " ");
+            item.querySelector<HTMLElement>("[data-review-detail]")!.textContent = review.payload.sourceConflicts?.[0] || review.payload.missingFields?.join(", ") || "Policy review required";
+            bindReview(item.querySelector<HTMLFormElement>("[data-review-form]")!);
+            reviewList.append(item);
+          }
+          if (!reviews.length) { const empty = document.createElement("div"); empty.className = "empty"; empty.textContent = "No open review items."; reviewList.append(empty); }
+        } catch (reviewError) { reviewList.innerHTML = ""; const empty = document.createElement("div"); empty.className = "empty"; empty.textContent = reviewError instanceof Error ? reviewError.message : "Review queue unavailable."; reviewList.append(empty); }
+      };
+      const loadAudits = async () => {
+        try {
+          const { audits } = await api<{ audits: Array<Record<string, any>> }>("/admin/audits");
+          if (!audits.length) return;
+          auditBody.replaceChildren(...audits.map((audit) => {
+            const row = document.createElement("tr");
+            for (const value of [audit.lead_id, audit.score_version, audit.field_name, audit.policy_version, audit.rollback_id ? "Rolled back" : audit.outcome]) { const cell = document.createElement("td"); cell.textContent = String(value); row.append(cell); }
+            const actions = document.createElement("td"); actions.className = "row-actions";
+            for (const [kind, text] of [["field", "Field"], ["lead", "Lead"]] as const) { const button = document.createElement("button"); button.type = "button"; button.className = "secondary"; button.dataset.rollback = kind; button.dataset.auditId = audit.audit_id; button.dataset.evaluationId = audit.evaluation_id; button.textContent = text; button.disabled = Boolean(audit.rollback_id); actions.append(button); }
+            row.append(actions); return row;
+          }));
+        } catch { /* Fixture audit remains visible when the runtime API is unavailable. */ }
+      };
+      auditBody.addEventListener("click", async (event) => {
+        const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-rollback]");
+        if (!button || !confirm(`Roll back this ${button.dataset.rollback} write?`)) return;
+        button.disabled = true;
+        try {
+          const path = button.dataset.rollback === "field" ? `/admin/writebacks/${encodeURIComponent(button.dataset.auditId!)}/rollback` : `/admin/evaluations/${encodeURIComponent(button.dataset.evaluationId!)}/rollback`;
+          await api(path, { method: "POST" });
+          await loadAudits();
+        } catch (rollbackError) { button.disabled = false; alert(rollbackError instanceof Error ? rollbackError.message : "Rollback failed."); }
+      });
+      const loadConfig = async () => {
+        try { const { versions } = await api<{ versions: Version[] }>("/admin/config"); const active = versions.find((version) => version.status === "active"); if (active) applyConfig(active); } catch { /* Static defaults remain visible until authentication is available. */ }
+      };
+      void Promise.all([loadConfig(), loadReviews(), loadAudits()]);
     </script>
   </body>
 </html>

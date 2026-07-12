@@ -15,7 +15,7 @@ export type WritebackPolicy = Readonly<{
   allowedSourceTypes: readonly Evidence["source_type"][];
   sourcePrecedence: readonly Evidence["source_type"][];
   blockedFields: readonly string[];
-  manualApprovalFields: readonly string[];
+  manualApprovalFields: Readonly<Record<"contact" | "company", readonly string[]>>;
   fields: Readonly<Record<string, Readonly<{
     object: "contact" | "company";
     crmField: string;
@@ -54,7 +54,7 @@ export const hubSpotWritebackPolicy: WritebackPolicy = Object.freeze({
   allowedSourceTypes: Object.freeze(["enrichment"] as const),
   sourcePrecedence: Object.freeze([...defaultScoringConfig.sourcePolicy.precedence.firmographic]),
   blockedFields: Object.freeze([...defaultScoringConfig.writeback.blockedFields]),
-  manualApprovalFields: Object.freeze([...defaultScoringConfig.writeback.manualApprovalFields.contact, ...defaultScoringConfig.writeback.manualApprovalFields.company]),
+  manualApprovalFields: Object.freeze({ contact: Object.freeze([...defaultScoringConfig.writeback.manualApprovalFields.contact]), company: Object.freeze([...defaultScoringConfig.writeback.manualApprovalFields.company]) }),
   fields: Object.freeze({
     employees: Object.freeze({ object: "company", crmField: "numberofemployees", configField: "company_size_band", type: "number" }),
     revenue_band: Object.freeze({ object: "company", crmField: "revenue_band", configField: "revenue_band", type: "string" }),
@@ -70,7 +70,10 @@ export const hubSpotWritebackPolicyFor = (config: ScoringConfig, version: string
   allowedSourceTypes: [...config.writeback.approvedSourceTypes],
   sourcePrecedence: [...new Set([...config.sourcePolicy.precedence.firmographic, ...config.writeback.approvedSourceTypes])],
   blockedFields: [...config.writeback.blockedFields],
-  manualApprovalFields: [...config.writeback.manualApprovalFields.contact, ...config.writeback.manualApprovalFields.company]
+  manualApprovalFields: { contact: [...config.writeback.manualApprovalFields.contact], company: [...config.writeback.manualApprovalFields.company] },
+  fields: Object.fromEntries(Object.entries(hubSpotWritebackPolicy.fields).filter(([, rule]) =>
+    rule.configField && (config.writeback.allowlist[rule.object] as readonly string[]).includes(rule.configField)
+  ))
 });
 
 const allEvidence = (packet: LeadPacket) => [
@@ -105,7 +108,7 @@ const assertWritebackPolicy = (policy: WritebackPolicy) => {
     policy.allowedSourceTypes.length === 0 || new Set(policy.allowedSourceTypes).size !== policy.allowedSourceTypes.length ||
     new Set(policy.sourcePrecedence).size !== policy.sourcePrecedence.length ||
     policy.allowedSourceTypes.some((source) => !policy.sourcePrecedence.includes(source)) ||
-    new Set(policy.manualApprovalFields).size !== policy.manualApprovalFields.length ||
+    Object.values(policy.manualApprovalFields).some((fields) => new Set(fields).size !== fields.length) ||
     permanentlyBlockedWritebackFields.some((field) => !policy.blockedFields.includes(field))
   ) throw new Error("Invalid writeback policy");
   const crmFields = new Set<string>();
@@ -129,7 +132,9 @@ export const planWriteback = (packet: LeadPacket, policy: WritebackPolicy): Writ
   };
   const proposed = new Map<string, Evidence[]>();
   for (const item of evidence.filter(({ source_type }) => policy.allowedSourceTypes.includes(source_type))) {
-    for (const field of valuesFrom(item).keys()) proposed.set(field, [...(proposed.get(field) ?? []), item]);
+    for (const field of valuesFrom(item).keys()) {
+      if (policy.fields[field]) proposed.set(field, [...(proposed.get(field) ?? []), item]);
+    }
   }
 
   const fields: WritebackFieldPlan[] = [];
@@ -170,13 +175,13 @@ export const planWriteback = (packet: LeadPacket, policy: WritebackPolicy): Writ
     else if (!Number.isFinite(ageInDays(packet, candidate)) || ageInDays(packet, candidate) < 0 || ageInDays(packet, candidate) > policy.maxAgeDays) fields.push({ ...base, outcome: "Flagged for Review", reason: "Evidence is stale or future-dated." });
     else if (sourceConflict || authoritativeCrmConflict) fields.push({ ...base, outcome: "Flagged for Review", reason: "A higher-precedence or same-field source conflicts with the proposed value." });
     else if (previousValue !== undefined && sameValue(previousValue, newValue)) fields.push({ ...base, outcome: "Skipped", reason: "CRM already contains the proposed value." });
-    else if (rule.configField && policy.manualApprovalFields.includes(rule.configField)) fields.push({ ...base, outcome: "Flagged for Review", reason: "Field requires manual approval under the active configuration." });
+    else if (rule.configField && policy.manualApprovalFields[rule.object].includes(rule.configField)) fields.push({ ...base, outcome: "Flagged for Review", reason: "Field requires manual approval under the active configuration." });
     else fields.push({ ...base, outcome: "Eligible", reason: "Field passed schema, source, confidence, freshness, and conflict policy." });
   }
 
-  const outcome = fields.some((field) => field.outcome === "Eligible") ? "Eligible"
-    : fields.some((field) => field.outcome === "Blocked") ? "Blocked"
+  const outcome = fields.some((field) => field.outcome === "Blocked") ? "Blocked"
     : fields.some((field) => field.outcome === "Flagged for Review") ? "Flagged for Review"
+    : fields.some((field) => field.outcome === "Eligible") ? "Eligible"
     : "Skipped";
   return Object.freeze({
     planId: `${packet.evaluation_id}:${policy.version}`,

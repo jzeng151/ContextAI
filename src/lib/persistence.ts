@@ -470,7 +470,7 @@ export class RuntimeStore {
       for (const reason of governanceReviewReasons(packet)) {
         insertReview.run(
           `${packet.evaluation_id}:${reason}`, tenantId, packet.evaluation_id, reason,
-          json({ leadId: packet.lead_id, accountId: packet.account_id, missingFields: packet.missing_fields, staleFields: packet.stale_fields, sourceConflicts: packet.source_conflicts }),
+          json({ leadId: packet.lead_id, accountId: packet.account_id, leadName: packet.lead_identity.name, company: packet.lead_identity.company, missingFields: packet.missing_fields, staleFields: packet.stale_fields, sourceConflicts: packet.source_conflicts }),
           packet.evaluation_timestamp
         );
       }
@@ -612,6 +612,21 @@ export class RuntimeStore {
     `).all(identity.tenantId, evaluationId);
     this.recordAccess(identity, "audit.read", "evaluation", evaluationId, "allowed");
     return { evaluation, configVersion, evidence, claims, claimEvidence, grounding, writeback, rollbacks } as const;
+  }
+
+  listRollbackCandidates(identity: RequestIdentity) {
+    this.requireAdmin(identity, "audit.read", "tenant", identity.tenantId);
+    const records = this.database.prepare(`
+      SELECT audit.*, run.lead_id, link.rollback_id
+      FROM writeback_audit_records audit
+      JOIN evaluation_runs run ON run.tenant_id = audit.tenant_id AND run.evaluation_id = audit.evaluation_id
+      LEFT JOIN rollback_links link ON link.original_audit_id = audit.audit_id
+      WHERE audit.tenant_id = ? AND audit.outcome = 'Written'
+        AND audit.audit_id NOT LIKE 'rollback:%' AND audit.audit_id NOT LIKE 'pending:%'
+      ORDER BY audit.recorded_at DESC, audit.audit_id
+    `).all(identity.tenantId);
+    this.recordAccess(identity, "audit.read", "tenant", identity.tenantId, "allowed");
+    return records;
   }
 
   appendAuditRecord(identity: RequestIdentity, input: AuditRecord) {

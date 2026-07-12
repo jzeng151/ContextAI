@@ -1,9 +1,11 @@
 import { createServer } from "node:http";
-import { getHubSpotLeadRecord, listAssignedOpenHubSpotLeads } from "./lib/integrations.ts";
+import { createConfigDraft, type ScoringConfig } from "./lib/config.ts";
+import { getHubSpotLeadRecord, listAssignedOpenHubSpotLeads, writeHubSpotProperties } from "./lib/integrations.ts";
 import { handleAssignmentEvent, parseHubSpotAssignmentEvents, runMorningEvaluation, verifyAssignmentSignature } from "./lib/orchestration.ts";
 import { RuntimeStore } from "./lib/persistence.ts";
 import { authenticateBearer, type RequestIdentity } from "./lib/security.ts";
 import { secretKeyFromEnv } from "./lib/secrets.ts";
+import { hubSpotWritebackPolicy, hubSpotWritebackPolicyFor, rollbackLeadWriteback, rollbackWriteback } from "./lib/writeback.ts";
 
 const store = new RuntimeStore();
 const host = process.env.HOST ?? "127.0.0.1";
@@ -25,13 +27,29 @@ const body = async (request: Parameters<Parameters<typeof createServer>[0]>[0]) 
   return Buffer.concat(chunks).toString("utf8");
 };
 const tenantId = process.env.CONTEXTAI_TENANT_ID ?? "local";
-const hubSpotDependencies = (identity: RequestIdentity) => {
+const adminIdentity = (request: Parameters<Parameters<typeof createServer>[0]>[0], response: Parameters<Parameters<typeof createServer>[0]>[1]) => {
+  let identity: RequestIdentity;
+  try {
+    identity = authenticateBearer(request.headers.authorization);
+  } catch {
+    json(response, 401, { error: "Authentication required" });
+    return null;
+  }
+  if (identity.tenantId !== tenantId || identity.role !== "revops_admin") {
+    json(response, 403, { error: "RevOps Admin access required" });
+    return null;
+  }
+  return identity;
+};
+const hubSpotConfigFor = async (identity: RequestIdentity) => {
   const integrationId = process.env.HUBSPOT_INTEGRATION_ID;
   if (!integrationId) throw new Error("HUBSPOT_INTEGRATION_ID is required");
-  const config = async () => ({ accessToken: await store.getHubSpotAccessToken(identity, integrationId, secretKeyFromEnv()) });
+  return { accessToken: await store.getHubSpotAccessToken(identity, integrationId, secretKeyFromEnv()) };
+};
+const hubSpotDependencies = (identity: RequestIdentity) => {
   return {
-    getCrmLead: async (contactId: string) => getHubSpotLeadRecord(contactId, await config()),
-    listAssignedOpen: async (ownerId: string) => listAssignedOpenHubSpotLeads(ownerId, await config()),
+    getCrmLead: async (contactId: string) => getHubSpotLeadRecord(contactId, await hubSpotConfigFor(identity)),
+    listAssignedOpen: async (ownerId: string) => listAssignedOpenHubSpotLeads(ownerId, await hubSpotConfigFor(identity)),
   };
 };
 
@@ -42,18 +60,70 @@ const server = createServer(async (request, response) => {
     return;
   }
   try {
-    const reviewDecision = request.method === "POST" && path.match(/^\/admin\/reviews\/([^/]+)\/decision$/);
-    if (reviewDecision) {
-      let identity: RequestIdentity;
-      try {
-        identity = authenticateBearer(request.headers.authorization);
-      } catch {
-        return json(response, 401, { error: "Authentication required" });
+    if (request.method === "GET" && path === "/admin/config") {
+      const identity = adminIdentity(request, response);
+      if (!identity) return;
+      return json(response, 200, { versions: store.listConfigVersions(identity) });
+    }
+    if (request.method === "POST" && path === "/admin/config/publish") {
+      const identity = adminIdentity(request, response);
+      if (!identity) return;
+      const input = JSON.parse(await body(request)) as { draftId?: string; changeSummary?: string; adminNotes?: string; config?: ScoringConfig };
+      if (!input.draftId?.trim() || !input.changeSummary?.trim() || !input.adminNotes?.trim() || !input.config) return json(response, 400, { error: "draftId, changeSummary, adminNotes, and config are required" });
+      const existing = store.listConfigVersions(identity).find(({ id }) => id === input.draftId);
+      if (existing) {
+        if (existing.author !== identity.actorId || existing.changeSummary !== input.changeSummary || existing.adminNotes !== input.adminNotes || JSON.stringify(existing.config) !== JSON.stringify(input.config)) {
+          throw new Error("Config draft ID already belongs to different content");
+        }
+      } else {
+        store.saveConfigVersion(identity, createConfigDraft({ id: input.draftId, author: identity.actorId, createdAt: new Date().toISOString(), changeSummary: input.changeSummary, adminNotes: input.adminNotes, config: input.config }));
       }
-      if (identity.tenantId !== tenantId || identity.role !== "revops_admin") return json(response, 403, { error: "RevOps Admin access required" });
+      return json(response, 200, store.publishConfigDraft(identity, input.draftId));
+    }
+    if (request.method === "GET" && path === "/admin/reviews") {
+      const identity = adminIdentity(request, response);
+      if (!identity) return;
+      const reviews = store.listReviewItems(identity).map((row: unknown) => {
+        const item = row as Record<string, unknown> & { payload_json: string };
+        const { payload_json, ...review } = item;
+        const payload = JSON.parse(payload_json) as Record<string, any>;
+        return { ...review, payload: { ...payload, leadName: payload.leadName ?? payload.lead_identity?.name, company: payload.company ?? payload.lead_identity?.company, leadId: payload.leadId ?? payload.lead_id } };
+      });
+      return json(response, 200, { reviews });
+    }
+    if (request.method === "GET" && path === "/admin/audits") {
+      const identity = adminIdentity(request, response);
+      if (!identity) return;
+      return json(response, 200, { audits: store.listRollbackCandidates(identity) });
+    }
+    const reviewDecision = request.method === "POST" ? path.match(/^\/admin\/reviews\/([^/]+)\/decision$/) : null;
+    if (reviewDecision) {
+      const identity = adminIdentity(request, response);
+      if (!identity) return;
       const input = JSON.parse(await body(request)) as { decision?: string; note?: string };
       if ((input.decision !== "resolved" && input.decision !== "dismissed") || !input.note?.trim()) return json(response, 400, { error: "decision and note are required" });
       return json(response, 200, store.decideReviewItem(identity, decodeURIComponent(reviewDecision[1]!), input.decision, input.note));
+    }
+    const fieldRollback = request.method === "POST" ? path.match(/^\/admin\/writebacks\/([^/]+)\/rollback$/) : null;
+    const leadRollback = request.method === "POST" ? path.match(/^\/admin\/evaluations\/([^/]+)\/rollback$/) : null;
+    if (fieldRollback || leadRollback) {
+      const identity = adminIdentity(request, response);
+      if (!identity) return;
+      const audit = fieldRollback ? store.getAuditRecord(decodeURIComponent(fieldRollback[1]!)) : store.listWrittenAuditRecords(identity.tenantId, decodeURIComponent(leadRollback![1]!))[0];
+      if (!audit || audit.tenant_id !== identity.tenantId) return json(response, 404, { error: "Rollback target not found" });
+      const provenance = store.getGovernanceAudit(identity, audit.evaluation_id);
+      if (!provenance?.configVersion) throw new Error("Rollback configuration is unavailable");
+      const basePolicy = audit.policy_version === hubSpotWritebackPolicy.version
+        ? hubSpotWritebackPolicy
+        : hubSpotWritebackPolicyFor(provenance.configVersion.config, provenance.configVersion.id);
+      const policy = { ...basePolicy, liveWritesEnabled: true };
+      const worker = { ...identity, actorId: "admin-rollback-worker", role: "system" as const };
+      const config = await hubSpotConfigFor(worker);
+      const options = { store, tenantId: identity.tenantId, actorType: identity.role, actorId: identity.actorId, identity, policy, authorizedLiveWrite: true as const, write: (input: Parameters<typeof writeHubSpotProperties>[0]) => writeHubSpotProperties(input, config) };
+      const rolledBack = fieldRollback
+        ? await rollbackWriteback([audit.audit_id], options)
+        : await rollbackLeadWriteback(audit.evaluation_id, options);
+      return json(response, 200, { rollbacks: rolledBack });
     }
     if (request.method === "POST" && request.url === "/webhooks/hubspot/assignments") {
       const raw = await body(request);

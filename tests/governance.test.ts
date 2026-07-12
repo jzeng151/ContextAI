@@ -110,6 +110,7 @@ test("governance audit and integration health expose pilot provenance without se
     assert.ok(audit.claims.length > 0);
     assert.ok(audit.claimEvidence.length > 0);
     assert.equal((audit.writeback[0] as { actor_id: string }).actor_id, "admin-1");
+    assert.equal((store.listRollbackCandidates(identity())[0] as { audit_id: string }).audit_id, "audit-visible");
     const integration = store.listIntegrationStatuses(identity())[0] as Record<string, unknown>;
     assert.deepEqual({ provider: integration.provider, status: integration.status, accessToken: integration.access_token_ciphertext }, { provider: "hubspot", status: "disabled", accessToken: undefined });
   } finally {
@@ -126,8 +127,13 @@ test("admin UI exposes labeled config, review, audit, rollback, and integration 
   assert.match(page, /<label><span>Contact fields requiring approval<\/span>/);
   assert.match(page, /role="alert"/);
   assert.match(page, /aria-live="polite"/);
-  assert.match(page, /fetch\(`\/admin\/reviews\/\$\{encodeURIComponent\(reviewId\)\}\/decision`/);
+  assert.match(page, /api\(`\/admin\/reviews\/\$\{encodeURIComponent\(item\.dataset\.reviewId!\)\}\/decision`/);
   assert.match(page, /contextai\.session-token/);
+  assert.match(page, /api<\{ versions: Version\[\] \}>\("\/admin\/config"\)/);
+  assert.match(page, /api<\{ reviews: Review\[\] \}>\("\/admin\/reviews"\)/);
+  assert.match(page, /dataset\.rollback/);
   assert.match(server, /authenticateBearer\(request\.headers\.authorization\)/);
   assert.match(server, /store\.decideReviewItem/);
+  assert.match(server, /store\.publishConfigDraft/);
+  assert.match(server, /rollbackWriteback/);
 });
