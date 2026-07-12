@@ -10,7 +10,8 @@ Primary threats and controls:
 
 - Cross-tenant or unassigned-record access: every store read binds the authenticated tenant; rep reads also bind `assigned_rep_id`. Allowed and denied attempts are append-only request audits.
 - Credential theft: HubSpot access and refresh tokens use AES-256-GCM with `INTEGRATION_SECRET_KEY`; source credentials stay in authorization headers. Tokens and source payloads are never logged.
-- Excess CRM privilege: HubSpot OAuth requests only `oauth`, `crm.objects.contacts.read`, and `crm.objects.contacts.write`; existing field allowlists still constrain writes.
+- Excess CRM privilege: HubSpot OAuth requests only the contact read/write, company read, and owner read scopes required for CRM context and user-assignment enforcement; existing field allowlists still constrain writes.
+- Forged CRM-card context: the server validates HubSpot v3 signatures and five-minute timestamps, derives the tenant from the signed portal ID, maps the owner to HubSpot user ID, and applies assigned-record reads before returning cached data.
 - Revoked integration reuse: disconnect disables local access before remote refresh-token revocation, clears credentials after success, and leaves the integration non-active if remote revocation fails.
 - Provider abuse or injection: untrusted lookup keys and provider strings reject ASCII controls; provider payloads are normalized before persistence. Raw provider responses are not stored.
 - Customer-data training or retention: OpenRouter requests require `data_collection: deny` and zero-data-retention routing. Grounded claims, rather than the complete CRM packet, are sent.
@@ -30,7 +31,7 @@ Residual risks: SQLite is a single-process pilot store; deployment administrator
 
 ### Connect HubSpot
 
-1. Configure the HubSpot app callback and the exact scopes above.
+1. Configure the HubSpot app callback and the exact scopes in `hubSpotRequiredScopes`.
 2. Set `HUBSPOT_CLIENT_ID`, `HUBSPOT_CLIENT_SECRET`, `HUBSPOT_REDIRECT_URI`, `INTEGRATION_SECRET_KEY`, and `SESSION_SECRET` in the secret manager.
 3. Generate the authorization URL with `hubSpotAuthorizationUrl`, validate the signed OAuth `state` on callback, and exchange the single-use code with `exchangeHubSpotAuthorizationCode`.
 4. Create the disabled tenant integration, then call `activateHubSpotIntegration` with the returned portal ID, scopes, expiry, and tokens. Do not log callback parameters or token responses.

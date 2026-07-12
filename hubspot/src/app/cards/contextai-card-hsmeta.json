@@ -1,0 +1,11 @@
+{
+  "uid": "contextai-priority-card",
+  "type": "card",
+  "config": {
+    "name": "ContextAI Priority",
+    "description": "Grounded priority, evidence, data quality, and observed rep actions.",
+    "location": "crm.record.sidebar",
+    "entrypoint": "/app/cards/ContextAICard.tsx",
+    "objectTypes": ["contacts", "companies"]
+  }
+}

@@ -84,7 +84,7 @@ export const handleCrmExtensionRequest = (request: CrmRequest, store: RuntimeSto
   const timestamp = header(request.headers, "x-hubspot-request-timestamp");
   const baseUrl = env.CONTEXTAI_API_URL;
   const clientSecret = env.HUBSPOT_CLIENT_SECRET ?? "";
-  if (!baseUrl || !verifyHubSpotRequestSignature({ method: request.method, uri: new URL(request.url, baseUrl).toString(), body: request.body, signature: header(request.headers, "x-hubspot-signature-v3"), timestamp, clientSecret })) {
+  if (!baseUrl || !verifyHubSpotRequestSignature({ method: request.method, uri: `${new URL(baseUrl).origin}${request.url}`, body: request.body, signature: header(request.headers, "x-hubspot-signature-v3"), timestamp, clientSecret })) {
     return { status: 401, body: { error: "Invalid HubSpot request signature" } };
   }
   try {

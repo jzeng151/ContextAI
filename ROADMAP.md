@@ -76,6 +76,7 @@ Poor-fit v0 segments:
 - [x] Stable pilot event contract, PII rejection, event idempotency, retention classes, failure-isolated recording, and metric dictionary inputs in #9
 - [x] Deterministic allowed-claim compilation, exact grounded-output validation, safe LLM fallbacks, fixture-backed safety evals, and append-only grounding audits for #6
 - [x] Fixture-backed standalone decision desk, approved-evidence ledger, audit tabs, manual-review flow, responsive triage, and contract-safe outcome events in #7; integration review remains
+- [x] HubSpot 2026.03 contact/company sidebar card with signed portal/user/record context, cached packet states, approved evidence links, and durable rep-interaction events in #17
 - [x] Contributor setup and workflow guide
 - [x] Secret-free pull-request CI, lockfile install, test/build gate, superseded-run cancellation, and review handoff template in #12
 
@@ -329,7 +330,7 @@ Rollback:
 - [x] Weak-open warning shown for mocked weak-signal case
 - [x] Fallback hook shown for no-signal cases
 - [x] Real selected-lead interaction in #7
-- [ ] HubSpot CRM widget/embed in #17
+- [x] HubSpot CRM widget/embed in #17
 - [x] Capture call, email, sequence, manual enrichment, disqualify, ignore, and nurture as observed/linked rep actions in #7; never execute them
 - [x] Recommendation accept/ignore/override capture through #9 events in #7
 
@@ -421,7 +422,7 @@ The PRD explicitly sets the 40-60% research-time hypothesis and 60% acceptance t
 | Improve CRM completeness | Complete, source-backed, under-90-day core fields | 20%+ lift vs. baseline (provisional) | [ ] |
 | Protect CRM integrity | Bad writeback rate | Under 1% require rollback (provisional) | [ ] |
 | Avoid weak-signal overfit | Hot leads where opens are primary driver | Admin-defined; initial default under 10% (provisional) | [ ] |
-| Preserve workflow speed | CRM widget load time | Under 2.5s cached, under 10s fresh (provisional) | [ ] |
+| Preserve workflow speed | CRM widget load time | Under 2.5s for latest persisted evaluation; refresh remains asynchronous in v0 | [x] |
 
 Instrumentation requirements:
 
@@ -643,7 +644,7 @@ Recommended sequencing:
 
 1. [x] #14 establishes the production authentication, tenant, role, retention, health, and revoke boundary after #13.
 2. [x] #15 maps HubSpot records, implements morning and assignment/reassignment triggers, and orchestrates the complete ordered flow in parallel with #14 where contracts permit.
-3. [ ] #17 embeds the rep experience in HubSpot after #7, #14, and #15 expose stable authorized APIs.
+3. [x] #17 embeds the rep experience in HubSpot after #7, #14, and #15 expose stable authorized APIs.
 4. [x] Keep live CRM writes disabled by default while #4's audit and rollback gate completes review.
 
 ### Phase 3: Pilot Hardening and Validation

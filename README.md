@@ -27,6 +27,7 @@ The current implementation includes:
 - HubSpot contact list/read and guarded PATCH client foundations.
 - A native Node server boundary with SQLite migrations, fixture seeding, and durable evaluation/audit/event records.
 - Ordered HubSpot lead evaluation with bounded morning runs, authenticated assignment triggers, replay protection, manual-review routing, and dry-run writeback.
+- A HubSpot Developer Platform 2026.03 contact/company sidebar card backed by signed, tenant- and assignment-scoped APIs.
 - A typed, PII-rejecting pilot telemetry contract with idempotent append-only recording.
 - Secret-optional integration smoke checks and native Node tests.
 
@@ -82,6 +83,7 @@ Live integration credentials are optional for local UI development and automated
 | `OPENROUTER_API_KEY` | No | Enables OpenRouter key checks and optional live explanation calls. |
 | `OPENROUTER_MODEL` | No | Overrides the default model, `openai/gpt-4.1-mini`. |
 | `CONTEXTAI_APP_URL` | No | Sets the application URL sent with OpenRouter requests. |
+| `CONTEXTAI_API_URL` | Required for CRM card | Public HTTPS origin used to validate signed HubSpot card requests. |
 | `HUBSPOT_ACCESS_TOKEN` | No | Enables live HubSpot contact checks. |
 | `HUBSPOT_WEBHOOK_SECRET` | No | Authenticates `POST /webhooks/hubspot/assignments`. |
 | `HUBSPOT_INTEGRATION_ID` | No | Selects the encrypted HubSpot OAuth integration used by server-triggered evaluations. |
@@ -132,6 +134,7 @@ tests/
   contextai.test.ts       Contract, fixture, grounding, and helper tests
   grounding.test.ts       Grounded-output validation and safety evals
   security.test.ts        Authentication, encryption, tenant, and role controls
+hubspot/                   HubSpot 2026.03 CRM sidebar card project
 PRD.md                     Product and safety requirements
 SECURITY.md                Threat model and pilot operations runbook
 CONTRIBUTING.md            Local setup and collaboration workflow
@@ -147,6 +150,8 @@ SQLite is the smallest deployable single-process store for the pilot. `DATABASE_
 Production security responsibilities, OAuth operations, disconnect/status commands, encryption requirements, and incident procedures are documented in [SECURITY.md](SECURITY.md).
 
 Telemetry producers use the recorder in `instrumentation.ts`; they do not import metric aggregation or reporting. Event names, required linkage, PII exclusions, retention classes, and metric inputs are documented in [TELEMETRY.md](TELEMETRY.md).
+
+The HubSpot card project and deployment steps live in [hubspot/README.md](hubspot/README.md). It renders the latest cached evaluation and records views, score display, recommendation disposition, and observed rep actions without executing prospect-facing automation.
 
 ## Contributing
 

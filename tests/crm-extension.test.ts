@@ -43,8 +43,10 @@ test("CRM card enforces portal, assigned user, and contact or company context", 
   store.saveEvaluation({ tenantId: admin.tenantId, idempotencyKey: "card-golden", packet, assignedRepId: "rep-17" });
   const env = { CONTEXTAI_API_URL: baseUrl, HUBSPOT_CLIENT_SECRET: secret };
 
+  const startedAt = performance.now();
   const contact = handleCrmExtensionRequest(signed({ operation: "view", objectId: packet.lead_id, objectTypeId: "0-1" }), store, env);
   assert.equal(contact.status, 200);
+  assert.ok(performance.now() - startedAt < 2_500);
   assert.equal((contact.body as { score: number }).score, packet.priority_score);
   assert.doesNotMatch(JSON.stringify(contact.body), new RegExp(packet.lead_identity.email, "i"));
 
@@ -66,16 +68,21 @@ test("CRM card enforces portal, assigned user, and contact or company context", 
 test("CRM card keeps fallback, stale, manual-review, and action telemetry usable", () => {
   const store = setup();
   const packet = structuredClone(leads.find(({ lead_id }) => lead_id === "no-usable-data")!);
+  const stalePacket = structuredClone(leads.find(({ lead_id }) => lead_id === "stale-writeback")!);
   store.saveEvaluation({ tenantId: admin.tenantId, idempotencyKey: "card-fallback", packet, assignedRepId: "rep-17" });
+  store.saveEvaluation({ tenantId: admin.tenantId, idempotencyKey: "card-stale", packet: stalePacket, assignedRepId: "rep-17" });
   const env = { CONTEXTAI_API_URL: baseUrl, HUBSPOT_CLIENT_SECRET: secret };
   const view = handleCrmExtensionRequest(signed({ operation: "view", objectId: packet.lead_id, objectTypeId: "0-1" }), store, env);
   assert.equal(view.status, 200);
   assert.equal((view.body as ReturnType<typeof crmCardView>).band, "Needs Manual Review");
   assert.ok((view.body as ReturnType<typeof crmCardView>).dataQuality.failedSources.length > 0);
+  const staleView = handleCrmExtensionRequest(signed({ operation: "view", objectId: stalePacket.lead_id, objectTypeId: "0-1" }), store, env);
+  assert.equal(staleView.status, 200);
+  assert.ok((staleView.body as ReturnType<typeof crmCardView>).dataQuality.stale.length > 0);
 
   const outcome = handleCrmExtensionRequest(signed({ operation: "outcome", objectId: packet.lead_id, objectTypeId: "0-1", disposition: "overridden", actionType: "call" }), store, env);
   assert.equal(outcome.status, 202);
   const events = store.database.prepare("SELECT event_type FROM events ORDER BY event_type").all() as Array<{ event_type: string }>;
-  assert.deepEqual(events.map(({ event_type }) => event_type), ["action.first_meaningful", "lead.viewed", "recommendation.disposition", "score.shown"]);
+  assert.deepEqual(events.map(({ event_type }) => event_type), ["action.first_meaningful", "lead.viewed", "lead.viewed", "recommendation.disposition", "score.shown", "score.shown"]);
   store.close();
 });
