@@ -4,7 +4,7 @@ ContextAI is a RevOps-owned lead prioritization and data-quality layer for B2B G
 
 This document is the delivery and status view of the PRD. The source-of-truth order is: `PRD.md` for product and safety requirements; shared schemas and active configuration for runtime contracts; this roadmap for phase and status; and GitHub issues for executable scope, dependencies, and acceptance criteria.
 
-Implementation status below was reconciled against merged PR #25 and open PR #26 on July 11, 2026. A checked foundation item does not mean the corresponding production path is pilot-ready. PR #26's reviewed adapter-contract defects are addressed locally; #5 remains incomplete until validation and review pass.
+Implementation status below was reconciled against `main` plus the pending #7 dashboard work on July 11, 2026. Checked #7 items describe implemented behavior on its branch; issue completion still requires integration review under the Done gate below. PR #26's reviewed adapter-contract defects are addressed locally; #5 remains incomplete until validation and review pass.
 
 ## 1. Product Focus
 
@@ -74,6 +74,7 @@ Poor-fit v0 segments:
 - [x] Native Node/SQLite runtime foundation with transactional migrations, durable evaluation/config/evidence/writeback/review records, idempotency, fixture seeding, retention hooks, and append-only audit/events in #13
 - [x] Stable pilot event contract, PII rejection, event idempotency, retention classes, failure-isolated recording, and metric dictionary inputs in #9
 - [x] Deterministic allowed-claim compilation, exact grounded-output validation, safe LLM fallbacks, fixture-backed safety evals, and append-only grounding audits for #6
+- [x] Fixture-backed standalone decision desk, approved-evidence ledger, audit tabs, manual-review flow, responsive triage, and contract-safe outcome events in #7; integration review remains
 - [x] Contributor setup and workflow guide
 - [x] Secret-free pull-request CI, lockfile install, test/build gate, superseded-run cancellation, and review handoff template in #12
 
@@ -326,10 +327,10 @@ Rollback:
 - [x] Score, band, confidence, reason, hook, and owner visible
 - [x] Weak-open warning shown for mocked weak-signal case
 - [x] Fallback hook shown for no-signal cases
-- [ ] Real selected-lead interaction in #7
+- [x] Real selected-lead interaction in #7
 - [ ] HubSpot CRM widget/embed in #17
-- [ ] Capture call, email, sequence, manual enrichment, disqualify, ignore, and nurture as observed/linked rep actions in #7/#17; never execute them
-- [ ] Recommendation accept/ignore/override capture through #9 events
+- [x] Capture call, email, sequence, manual enrichment, disqualify, ignore, and nurture as observed/linked rep actions in #7; never execute them
+- [x] Recommendation accept/ignore/override capture through #9 events in #7
 
 ### RevOps Audit Dashboard
 
@@ -337,11 +338,11 @@ Rollback:
 - [x] Source/freshness summary visible for selected mock lead
 - [x] Writeback status visible for selected mock lead
 - [x] Safeguards panel visible
-- [ ] Source-level evidence drilldown
-- [ ] Score version display
-- [ ] Missing/stale/source-conflict details
-- [ ] Audit logs for score, explanation, hook, and writeback
-- [ ] Manual review queue
+- [x] Source-level approved-evidence drilldown in #7
+- [x] Score, config, and prompt version display in #7
+- [x] Missing/stale/source-conflict details in #7
+- [x] Fixture-backed audit views for score, explanation, hook evidence, emitted UI events, and authoritative writeback outcome in #7; durable recorder attachment remains an integration concern
+- [x] Manual review queue and navigation in #7
 
 ### Admin Capabilities
 
@@ -564,7 +565,7 @@ Governance questions ContextAI must answer:
 
 - [x] Why did this mocked lead score high?
 - [x] Which mocked sources contributed to the displayed score?
-- [x] Which scoring version was used in the scored packet; dashboard display remains in #7/#16
+- [x] Which scoring, config, and prompt versions were used and displayed in the #7 dashboard
 - [x] Which fields were missing or stale in current mock data?
 - [x] Which claims were used in the hook via `allowed_claims`?
 - [x] Which mocked fields were written/skipped/flagged?
@@ -664,7 +665,7 @@ Recommended sequencing:
 | #4 | Writeback plan, execution, audit, rollback | #8, #11, #13; #5 for live data |
 | #6 | Allowed-claim compiler, LLM validator, evals | #3, #11; #5 for real-source completion |
 | #9 | Event contract and append-only recording | #11; #13 for persistence |
-| #7 | Standalone rep/audit UX | #11 and #9 event contract |
+| #7 | Standalone rep/audit UX (implementation complete; integration review pending) | #11 and #9 event contract |
 | #15 | HubSpot mapping, triggers, orchestration | #3, #4, #5, #6, #11, #13 |
 | #14 | Production security and tenancy | #11, #13 |
 | #16 | RevOps admin/review controls | #4, #7, #8, #9, #13 |
