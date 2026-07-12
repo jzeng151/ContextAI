@@ -129,6 +129,33 @@ export class RuntimeStore {
     `).run(tenantId, version.id, version.status, version.author, version.createdAt, json(version));
   }
 
+  registerPilotParticipant(input: Readonly<{
+    tenantId: string;
+    repId: string;
+    cohort: "control" | "contextai";
+    teamId: string;
+    activeFrom: string;
+    activeTo?: string;
+  }>) {
+    this.database.prepare(`
+      INSERT INTO pilot_participants (tenant_id, rep_id, cohort, team_id, active_from, active_to)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      nonEmpty(input.tenantId, "tenantId"), nonEmpty(input.repId, "repId"), input.cohort,
+      nonEmpty(input.teamId, "teamId"), isoDate(input.activeFrom, "activeFrom"),
+      input.activeTo === undefined ? null : isoDate(input.activeTo, "activeTo")
+    );
+  }
+
+  recordEvaluationOwner(input: Readonly<{ tenantId: string; evaluationId: string; repId: string; recordedAt?: string }>) {
+    this.database.prepare(`
+      INSERT INTO pilot_evaluation_owners (tenant_id, evaluation_id, rep_id, recorded_at) VALUES (?, ?, ?, ?)
+    `).run(
+      nonEmpty(input.tenantId, "tenantId"), nonEmpty(input.evaluationId, "evaluationId"),
+      nonEmpty(input.repId, "repId"), isoDate(input.recordedAt ?? new Date().toISOString(), "recordedAt")
+    );
+  }
+
   saveEvaluation(input: EvaluationInput): Readonly<{ created: boolean; evaluationId: string }> {
     const { tenantId, idempotencyKey, packet } = input;
     assertLeadPacket(packet);

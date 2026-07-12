@@ -92,7 +92,7 @@ Never commit `.env` or credentials.
 | Command | Description |
 | --- | --- |
 | `npm run dev` | Start the local Astro development server. |
-| `npm start` | Start the minimal Node server; `GET /health` reports runtime readiness. |
+| `npm start` | Start the Node server; `GET /health` reports runtime readiness. |
 | `npm test` | Run the native Node test suite. |
 | `npm run build` | Create a production Astro build. |
 | `npm run db:migrate` | Create or upgrade the SQLite store. |
@@ -137,6 +137,8 @@ v0 uses the existing Node 22 runtime and Node's built-in SQLite module, so persi
 SQLite is the smallest deployable single-process store for the pilot. `DATABASE_PATH` is the deployment-owned durable volume. Audit and event tables reject updates and deletes. Evaluation rows expose a retention date and query hook, while production retention policy and deletion enforcement remain owned by the security workstream (#14).
 
 Telemetry producers use the recorder in `instrumentation.ts`; they do not import metric aggregation or reporting. Event names, required linkage, PII exclusions, retention classes, and metric inputs are documented in [TELEMETRY.md](TELEMETRY.md).
+
+Pilot reports are read-only: `GET /reports/pilot` returns JSON and `GET /reports/pilot.csv` returns an export. Both require the opaque tenant scope in `x-contextai-tenant-id` and accept `from`, `to`, `cohort`, `teamId`, `repId`, `scoreVersion`, `configVersion`, `source`, and `band` query filters. Reports include metric/window metadata and explicit data-quality caveats; missing telemetry is never presented as a valid zero.
 
 ## Contributing
 

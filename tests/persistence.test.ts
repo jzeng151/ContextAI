@@ -28,13 +28,14 @@ test("a clean store upgrades from schema v1 and failed migrations roll back", ()
     assert.throws(() => store.database.prepare("SELECT * FROM events").all(), /no such table/i);
 
     migrateDatabase(store.database);
-    assert.equal((store.database.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 6);
+    assert.equal((store.database.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, migrations.at(-1)!.version);
 
+    const brokenVersion = migrations.at(-1)!.version + 1;
     assert.throws(() => migrateDatabase(store.database, [
       ...migrations,
-      { version: 7, name: "broken", sql: "CREATE TABLE should_rollback (id TEXT); INVALID SQL;" }
-    ]), /Migration 7.*failed/);
-    assert.equal((store.database.prepare("SELECT count(*) AS count FROM schema_migrations WHERE version = 7").get() as { count: number }).count, 0);
+      { version: brokenVersion, name: "broken", sql: "CREATE TABLE should_rollback (id TEXT); INVALID SQL;" }
+    ]), new RegExp(`Migration ${brokenVersion}.*failed`));
+    assert.equal((store.database.prepare("SELECT count(*) AS count FROM schema_migrations WHERE version = ?").get(brokenVersion) as { count: number }).count, 0);
     assert.throws(() => store.database.prepare("SELECT * FROM should_rollback").all(), /no such table/i);
   } finally {
     store.close();

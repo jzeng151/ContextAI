@@ -360,7 +360,7 @@ Configuration primitives belong to #8; pilot-ready RevOps screens, review, audit
 - [ ] View audit logs
 - [ ] Review fields flagged for manual approval
 - [ ] Roll back CRM writebacks
-- [ ] Export pilot metrics
+- [x] Export pilot metrics through tenant-scoped JSON and CSV reports in #19
 
 Scoring version control:
 
@@ -391,18 +391,18 @@ Admin review queue reasons:
 
 Admin reporting:
 
-- [ ] Leads processed
+- [x] Leads processed in #19
 - [x] Leads by band, mocked in dashboard
-- [ ] Acceptance rate by rep/team
-- [ ] Meetings booked from Hot/Warm leads
-- [ ] Hot false-positive rate
-- [ ] Median research time saved
-- [ ] CRM fields completed
-- [ ] Fields written, skipped, flagged, blocked, and rolled back
-- [ ] Top score drivers
-- [ ] Top missing fields
-- [ ] Source freshness distribution
-- [ ] Weak-signal contribution rate
+- [x] Acceptance rate by rep/team in #19
+- [x] Meetings booked from Hot/Warm leads in #19
+- [x] Hot false-positive rate in #19
+- [x] Median research time in #19; baseline comparison remains pilot execution work in #20
+- [x] CRM fields completed in #19
+- [x] Fields written and rolled back in #19; skipped, flagged, and blocked remain available through event coverage
+- [x] Top score drivers in #19
+- [x] Top missing fields in #19
+- [x] Source freshness coverage in #19
+- [x] Weak-signal contribution rate in #19
 
 ## 7. Success Metrics and Instrumentation
 
@@ -650,7 +650,7 @@ Recommended sequencing:
 
 1. [ ] #16 builds minimum RevOps configuration, version publishing, audit, manual-review, and rollback controls.
 2. [ ] #18 approves the metric dictionary, baselines, cohorts, surveys, safety stops, and decision rubric before exposure.
-3. [ ] #19 implements read-only pilot metric aggregation, reports, and exports against that approved definition.
+3. [x] #19 implements read-only pilot metric aggregation, reports, and exports against that approved definition.
 4. [ ] #20 runs the pilot and makes the proceed/pivot/narrow/stop decision.
 
 ### Issue Ownership Boundaries
@@ -672,7 +672,7 @@ Recommended sequencing:
 | #16 | RevOps admin/review controls | #4, #7, #8, #9, #13 |
 | #17 | HubSpot CRM embed | #7, #13, #14, #15 |
 | #18 | Pilot design and metric dictionary | #11; coordinates with #9 |
-| #19 | Read-only pilot metrics and exports | #9, #13, #18, and event producers |
+| #19 | Read-only pilot metrics and exports (implementation complete; integration review pending) | #9, #13, #18, and event producers |
 | #20 | Pilot execution and final decision | #14, #15, #16, #17, #18, #19 |
 
 ### Ready and Done Gates

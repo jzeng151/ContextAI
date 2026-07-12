@@ -269,6 +269,41 @@ export const migrations: readonly Migration[] = [
     sql: `
       ALTER TABLE writeback_audit_records ADD COLUMN actor_id TEXT NOT NULL DEFAULT 'legacy';
     `
+  },
+  {
+    version: 7,
+    name: "frozen pilot reporting context",
+    sql: `
+      CREATE TABLE pilot_participants (
+        tenant_id TEXT NOT NULL REFERENCES tenants(tenant_id),
+        rep_id TEXT NOT NULL,
+        cohort TEXT NOT NULL CHECK (cohort IN ('control', 'contextai')),
+        team_id TEXT NOT NULL,
+        active_from TEXT NOT NULL,
+        active_to TEXT,
+        PRIMARY KEY (tenant_id, rep_id),
+        CHECK (active_to IS NULL OR active_to >= active_from)
+      );
+
+      CREATE TABLE pilot_evaluation_owners (
+        tenant_id TEXT NOT NULL,
+        evaluation_id TEXT NOT NULL,
+        rep_id TEXT NOT NULL,
+        recorded_at TEXT NOT NULL,
+        PRIMARY KEY (tenant_id, evaluation_id),
+        FOREIGN KEY (tenant_id, evaluation_id) REFERENCES evaluation_runs(tenant_id, evaluation_id),
+        FOREIGN KEY (tenant_id, rep_id) REFERENCES pilot_participants(tenant_id, rep_id)
+      );
+
+      CREATE TRIGGER pilot_participants_no_update
+      BEFORE UPDATE ON pilot_participants BEGIN SELECT RAISE(ABORT, 'pilot participants are frozen'); END;
+      CREATE TRIGGER pilot_participants_no_delete
+      BEFORE DELETE ON pilot_participants BEGIN SELECT RAISE(ABORT, 'pilot participants are frozen'); END;
+      CREATE TRIGGER pilot_evaluation_owners_no_update
+      BEFORE UPDATE ON pilot_evaluation_owners BEGIN SELECT RAISE(ABORT, 'pilot evaluation owners are append-only'); END;
+      CREATE TRIGGER pilot_evaluation_owners_no_delete
+      BEFORE DELETE ON pilot_evaluation_owners BEGIN SELECT RAISE(ABORT, 'pilot evaluation owners are append-only'); END;
+    `
   }
 ];
 
