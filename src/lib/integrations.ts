@@ -337,7 +337,7 @@ export const writeHubSpotProperties = async (
   { object, objectId, properties }: Readonly<{ object: "contact" | "company"; objectId: string; properties: Readonly<Record<string, unknown>> }>,
   config = hubSpotConfigFromEnv()
 ) => {
-    const serialized = Object.fromEntries(Object.entries(properties).map(([name, value]) => [name, Array.isArray(value) ? value.join(";") : String(value)]));
+    const serialized = Object.fromEntries(Object.entries(properties).map(([name, value]) => [name, value === null ? "" : Array.isArray(value) ? value.join(";") : String(value)]));
     const response = await fetch(`https://api.hubapi.com/crm/v3/objects/${object === "contact" ? "contacts" : "companies"}/${objectId}`, {
       method: "PATCH",
       headers: {

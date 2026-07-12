@@ -25,6 +25,7 @@ import {
   refreshHubSpotAccessToken,
   revokeHubSpotRefreshToken,
   writeHubSpotEnrichment,
+  writeHubSpotProperties,
 } from "../src/lib/integrations.ts";
 import { RuntimeStore } from "../src/lib/persistence.ts";
 import { hubSpotWritebackPolicy, planWriteback } from "../src/lib/writeback.ts";
@@ -193,6 +194,8 @@ test("HubSpot PATCH only receives policy-planned properties after explicit live 
     await writeHubSpotEnrichment(plan, { store, tenantId: "tenant-1", actorType: "system", actorId: "writeback-service", identity, policy, mode: "live", authorizedLiveWrite: true }, config);
     assert.ok(bodies.some(({ properties }) => properties.numberofemployees === "900"));
     assert.ok(bodies.some(({ properties }) => properties.technology_tags === "HubSpot;Salesforce"));
+    await writeHubSpotProperties({ object: "company", objectId: "1", properties: { numberofemployees: null } }, config);
+    assert.equal(bodies.at(-1)?.properties.numberofemployees, "");
   } finally {
     globalThis.fetch = originalFetch;
     store.close();

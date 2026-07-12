@@ -10,6 +10,7 @@ import { hubSpotWritebackPolicy, hubSpotWritebackPolicyFor, rollbackLeadWritebac
 const store = new RuntimeStore();
 const host = process.env.HOST ?? "127.0.0.1";
 const port = Number(process.env.PORT ?? 4000);
+const adminOrigin = process.env.CONTEXTAI_ADMIN_ORIGIN ?? "http://127.0.0.1:4321";
 if (!Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error("PORT must be an integer from 1 to 65535");
 
 const json = (response: Parameters<Parameters<typeof createServer>[0]>[1], status: number, body: unknown) => {
@@ -54,6 +55,18 @@ const hubSpotDependencies = (identity: RequestIdentity) => {
 };
 
 const server = createServer(async (request, response) => {
+  const origin = request.headers.origin;
+  if (origin === adminOrigin) {
+    response.setHeader("Access-Control-Allow-Origin", origin);
+    response.setHeader("Vary", "Origin");
+    response.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+    response.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  }
+  if (request.method === "OPTIONS") {
+    if (origin && origin !== adminOrigin) return json(response, 403, { error: "Origin not allowed" });
+    response.writeHead(204).end();
+    return;
+  }
   const path = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`).pathname;
   if (request.method === "GET" && path === "/health") {
     json(response, 200, { status: "ok" });
@@ -94,7 +107,12 @@ const server = createServer(async (request, response) => {
     if (request.method === "GET" && path === "/admin/audits") {
       const identity = adminIdentity(request, response);
       if (!identity) return;
-      return json(response, 200, { audits: store.listRollbackCandidates(identity) });
+      return json(response, 200, { audits: store.listWritebackAudits(identity) });
+    }
+    if (request.method === "GET" && path === "/admin/integrations") {
+      const identity = adminIdentity(request, response);
+      if (!identity) return;
+      return json(response, 200, { integrations: store.listIntegrationStatuses(identity) });
     }
     const reviewDecision = request.method === "POST" ? path.match(/^\/admin\/reviews\/([^/]+)\/decision$/) : null;
     if (reviewDecision) {
@@ -111,6 +129,7 @@ const server = createServer(async (request, response) => {
       if (!identity) return;
       const audit = fieldRollback ? store.getAuditRecord(decodeURIComponent(fieldRollback[1]!)) : store.listWrittenAuditRecords(identity.tenantId, decodeURIComponent(leadRollback![1]!))[0];
       if (!audit || audit.tenant_id !== identity.tenantId) return json(response, 404, { error: "Rollback target not found" });
+      if (audit.policy_version === "legacy") return json(response, 409, { error: "Legacy writes require manual reconciliation" });
       const provenance = store.getGovernanceAudit(identity, audit.evaluation_id);
       if (!provenance?.configVersion) throw new Error("Rollback configuration is unavailable");
       const basePolicy = audit.policy_version === hubSpotWritebackPolicy.version

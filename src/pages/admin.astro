@@ -36,6 +36,8 @@ const sections: Readonly<Record<ConfigSection, string>> = {
 };
 const label = (value: string) => value.replaceAll("_", " ").replaceAll(/\b\w/g, (letter) => letter.toUpperCase());
 const date = (value: string) => new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", timeZone: "UTC" }).format(new Date(value));
+const governanceApiUrl = import.meta.env.PUBLIC_CONTEXTAI_API_URL ?? "";
+const requiredSources = new Set(["crm", "intent", "engagement", "public_signal"]);
 ---
 
 <html lang="en">
@@ -45,7 +47,7 @@ const date = (value: string) => new Intl.DateTimeFormat("en-US", { month: "short
     <meta name="color-scheme" content="light" />
     <title>RevOps governance · ContextAI</title>
   </head>
-  <body>
+  <body data-api-origin={governanceApiUrl}>
     <a class="skip-link" href="#admin-main">Skip to governance workspace</a>
     <div class="shell">
       <aside class="nav" aria-label="ContextAI navigation">
@@ -108,7 +110,7 @@ const date = (value: string) => new Intl.DateTimeFormat("en-US", { month: "short
               <fieldset data-config-section="sourcePolicy">
                 <legend>Approved evidence sources</legend>
                 <div class="check-grid">
-                  {draft.config.sourcePolicy.approvedSourceTypes.map((source) => <label><input type="checkbox" name="approvedSources" value={source} checked /><span>{label(source)}</span></label>)}
+                  {draft.config.sourcePolicy.approvedSourceTypes.map((source) => <label><input type="checkbox" name="approvedSources" value={source} checked disabled={requiredSources.has(source)} /><span>{label(source)}{requiredSources.has(source) ? " · Required" : ""}</span></label>)}
                 </div>
               </fieldset>
 
@@ -163,7 +165,7 @@ const date = (value: string) => new Intl.DateTimeFormat("en-US", { month: "short
 
         <section id="integrations" aria-labelledby="integrations-title">
           <div class="section-heading"><div><h2 id="integrations-title">Integration health</h2><p>Connection health is visible here; credential revocation remains in the security-owned control.</p></div></div>
-          <article class="integration-row"><div class="provider"><span aria-hidden="true">H</span><div><strong>HubSpot</strong><small>Pilot CRM · OAuth reconnect required</small></div></div><div><span class="status warning">Disconnected</span><small>Last error: oauth_reconnect_required</small></div><a href="https://github.com/jzeng151/ContextAI/blob/main/SECURITY.md">Disconnect and revoke controls</a></article>
+          <div data-integration-list><article class="integration-row"><div class="provider"><span aria-hidden="true">H</span><div><strong>HubSpot</strong><small>Pilot CRM · OAuth reconnect required</small></div></div><div><span class="status warning">Disconnected</span><small>Last error: oauth_reconnect_required</small></div><a href="https://github.com/jzeng151/ContextAI/blob/main/SECURITY.md">Disconnect and revoke controls</a></article></div>
         </section>
       </main>
     </div>
@@ -171,6 +173,7 @@ const date = (value: string) => new Intl.DateTimeFormat("en-US", { month: "short
     <script>
       type Version = { id: string; author: string; createdAt: string; status: "draft" | "active" | "inactive"; changeSummary: string; adminNotes: string; config: Record<string, any> };
       type Review = { review_id: string; evaluation_id: string; reason: string; payload: Record<string, any> };
+      type Integration = { provider: string; external_account_id: string; status: string; last_health_at: string | null; last_error: string | null };
       const configForm = document.querySelector<HTMLFormElement>("#config-form")!;
       const total = document.querySelector<HTMLOutputElement>("[data-weight-total]");
       const error = document.querySelector<HTMLElement>("[data-config-error]");
@@ -178,11 +181,14 @@ const date = (value: string) => new Intl.DateTimeFormat("en-US", { month: "short
       const reviewList = document.querySelector<HTMLElement>("[data-review-list]")!;
       const reviewCounts = document.querySelectorAll<HTMLElement>("[data-review-count]");
       const auditBody = document.querySelector<HTMLTableSectionElement>("[data-audit-body]")!;
+      const historyBody = document.querySelector<HTMLTableSectionElement>("[data-history-body]")!;
+      const integrationList = document.querySelector<HTMLElement>("[data-integration-list]")!;
+      const apiOrigin = document.body.dataset.apiOrigin?.replace(/\/$/, "") ?? "";
       const token = () => sessionStorage.getItem("contextai.session-token");
       const api = async <T,>(path: string, init: RequestInit = {}) => {
         const sessionToken = token();
         if (!sessionToken) throw new Error("Sign in again to use governance controls.");
-        const response = await fetch(path, { ...init, headers: { "Authorization": `Bearer ${sessionToken}`, ...(init.body ? { "Content-Type": "application/json" } : {}), ...(init.headers ?? {}) } });
+        const response = await fetch(`${apiOrigin}${path}`, { ...init, headers: { "Authorization": `Bearer ${sessionToken}`, ...(init.body ? { "Content-Type": "application/json" } : {}), ...(init.headers ?? {}) } });
         const result = await response.json() as T & { error?: string };
         if (!response.ok) throw new Error(result.error || "Governance request failed.");
         return result;
@@ -222,7 +228,10 @@ const date = (value: string) => new Intl.DateTimeFormat("en-US", { month: "short
           while (path.length > 1) target = target[path.shift()!];
           target[path[0]!] = Number(input.value);
         }
-        config.sourcePolicy.approvedSourceTypes = values.getAll("approvedSources").map(String);
+        const approvedSources = Array.from(configForm.querySelectorAll<HTMLInputElement>('[name="approvedSources"]:checked'), ({ value }) => value);
+        config.sourcePolicy.approvedSourceTypes = approvedSources;
+        for (const family of Object.keys(config.sourcePolicy.precedence)) config.sourcePolicy.precedence[family] = config.sourcePolicy.precedence[family].filter((source: string) => approvedSources.includes(source));
+        config.writeback.approvedSourceTypes = config.writeback.approvedSourceTypes.filter((source: string) => approvedSources.includes(source));
         const lines = (name: string) => String(values.get(name) ?? "").split("\n").map((value) => value.trim()).filter(Boolean);
         for (const object of ["contact", "company"]) {
           config.writeback.allowlist[object] = lines(`writeback.allowlist.${object}`);
@@ -298,14 +307,16 @@ const date = (value: string) => new Intl.DateTimeFormat("en-US", { month: "short
       const loadAudits = async () => {
         try {
           const { audits } = await api<{ audits: Array<Record<string, any>> }>("/admin/audits");
-          if (!audits.length) return;
-          auditBody.replaceChildren(...audits.map((audit) => {
+          const rows = audits.map((audit) => {
             const row = document.createElement("tr");
             for (const value of [audit.lead_id, audit.score_version, audit.field_name, audit.policy_version, audit.rollback_id ? "Rolled back" : audit.outcome]) { const cell = document.createElement("td"); cell.textContent = String(value); row.append(cell); }
             const actions = document.createElement("td"); actions.className = "row-actions";
-            for (const [kind, text] of [["field", "Field"], ["lead", "Lead"]] as const) { const button = document.createElement("button"); button.type = "button"; button.className = "secondary"; button.dataset.rollback = kind; button.dataset.auditId = audit.audit_id; button.dataset.evaluationId = audit.evaluation_id; button.textContent = text; button.disabled = Boolean(audit.rollback_id); actions.append(button); }
+            const rollbackable = audit.outcome === "Written" && audit.policy_version !== "legacy" && !audit.rollback_id && !String(audit.audit_id).startsWith("rollback:") && !String(audit.audit_id).startsWith("pending:");
+            for (const [kind, text] of [["field", "Field"], ["lead", "Lead"]] as const) { const button = document.createElement("button"); button.type = "button"; button.className = "secondary"; button.dataset.rollback = kind; button.dataset.auditId = audit.audit_id; button.dataset.evaluationId = audit.evaluation_id; button.textContent = text; button.disabled = !rollbackable; actions.append(button); }
             row.append(actions); return row;
-          }));
+          });
+          if (!rows.length) { const row = document.createElement("tr"); const cell = document.createElement("td"); cell.colSpan = 6; cell.className = "empty"; cell.textContent = "No persisted writeback audit records."; row.append(cell); rows.push(row); }
+          auditBody.replaceChildren(...rows);
         } catch { /* Fixture audit remains visible when the runtime API is unavailable. */ }
       };
       auditBody.addEventListener("click", async (event) => {
@@ -319,9 +330,33 @@ const date = (value: string) => new Intl.DateTimeFormat("en-US", { month: "short
         } catch (rollbackError) { button.disabled = false; alert(rollbackError instanceof Error ? rollbackError.message : "Rollback failed."); }
       });
       const loadConfig = async () => {
-        try { const { versions } = await api<{ versions: Version[] }>("/admin/config"); const active = versions.find((version) => version.status === "active"); if (active) applyConfig(active); } catch { /* Static defaults remain visible until authentication is available. */ }
+        try {
+          const { versions } = await api<{ versions: Version[] }>("/admin/config");
+          historyBody.replaceChildren(...versions.map((version) => {
+            const row = document.createElement("tr");
+            const versionCell = document.createElement("td"); const strong = document.createElement("strong"); strong.textContent = version.id; versionCell.append(strong); row.append(versionCell);
+            const statusCell = document.createElement("td"); const badge = document.createElement("span"); badge.className = `status ${version.status}`; badge.textContent = version.status; statusCell.append(badge); row.append(statusCell);
+            for (const value of [version.author, new Date(version.createdAt).toLocaleString(), version.changeSummary, version.adminNotes]) { const cell = document.createElement("td"); cell.textContent = value; row.append(cell); }
+            return row;
+          }));
+          const active = versions.find((version) => version.status === "active");
+          if (active) applyConfig(active);
+        } catch { /* Static defaults remain visible until authentication is available. */ }
       };
-      void Promise.all([loadConfig(), loadReviews(), loadAudits()]);
+      const loadIntegrations = async () => {
+        try {
+          const { integrations } = await api<{ integrations: Integration[] }>("/admin/integrations");
+          const rows = integrations.map((integration) => {
+            const row = document.createElement("article"); row.className = "integration-row";
+            const provider = document.createElement("div"); provider.className = "provider"; const mark = document.createElement("span"); mark.ariaHidden = "true"; mark.textContent = integration.provider.slice(0, 1).toUpperCase(); const details = document.createElement("div"); const name = document.createElement("strong"); name.textContent = integration.provider; const account = document.createElement("small"); account.textContent = integration.external_account_id; details.append(name, account); provider.append(mark, details);
+            const health = document.createElement("div"); const badge = document.createElement("span"); badge.className = `status ${integration.status === "active" ? "active" : "warning"}`; badge.textContent = integration.status; const detail = document.createElement("small"); detail.textContent = integration.last_error ? `Last error: ${integration.last_error}` : integration.last_health_at ? `Checked ${new Date(integration.last_health_at).toLocaleString()}` : "Health check pending"; health.append(badge, detail);
+            const controls = document.createElement("a"); controls.href = "https://github.com/jzeng151/ContextAI/blob/main/SECURITY.md"; controls.textContent = "Disconnect and revoke controls"; row.append(provider, health, controls); return row;
+          });
+          if (!rows.length) { const empty = document.createElement("div"); empty.className = "empty"; empty.textContent = "No persisted integrations."; rows.push(empty); }
+          integrationList.replaceChildren(...rows);
+        } catch { /* Static integration guidance remains visible when the runtime API is unavailable. */ }
+      };
+      void Promise.all([loadConfig(), loadReviews(), loadAudits(), loadIntegrations()]);
     </script>
   </body>
 </html>

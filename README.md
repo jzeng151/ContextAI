@@ -83,6 +83,8 @@ Live integration credentials are optional for local UI development and automated
 | `OPENROUTER_API_KEY` | No | Enables OpenRouter key checks and optional live explanation calls. |
 | `OPENROUTER_MODEL` | No | Overrides the default model, `openai/gpt-4.1-mini`. |
 | `CONTEXTAI_APP_URL` | No | Sets the application URL sent with OpenRouter requests. |
+| `PUBLIC_CONTEXTAI_API_URL` | No | Sets the runtime API origin used by the Astro governance page. |
+| `CONTEXTAI_ADMIN_ORIGIN` | No | Allows the Astro governance origin to call the runtime API; defaults to `http://127.0.0.1:4321`. |
 | `HUBSPOT_ACCESS_TOKEN` | No | Enables live HubSpot contact checks. |
 | `HUBSPOT_WEBHOOK_SECRET` | No | Authenticates `POST /webhooks/hubspot/assignments`. |
 | `HUBSPOT_INTEGRATION_ID` | No | Selects the encrypted HubSpot OAuth integration used by server-triggered evaluations. |

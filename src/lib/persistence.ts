@@ -623,6 +623,21 @@ export class RuntimeStore {
       LEFT JOIN rollback_links link ON link.original_audit_id = audit.audit_id
       WHERE audit.tenant_id = ? AND audit.outcome = 'Written'
         AND audit.audit_id NOT LIKE 'rollback:%' AND audit.audit_id NOT LIKE 'pending:%'
+        AND audit.policy_version != 'legacy'
+      ORDER BY audit.recorded_at DESC, audit.audit_id
+    `).all(identity.tenantId);
+    this.recordAccess(identity, "audit.read", "tenant", identity.tenantId, "allowed");
+    return records;
+  }
+
+  listWritebackAudits(identity: RequestIdentity) {
+    this.requireAdmin(identity, "audit.read", "tenant", identity.tenantId);
+    const records = this.database.prepare(`
+      SELECT audit.*, run.lead_id, link.rollback_id
+      FROM writeback_audit_records audit
+      JOIN evaluation_runs run ON run.tenant_id = audit.tenant_id AND run.evaluation_id = audit.evaluation_id
+      LEFT JOIN rollback_links link ON link.original_audit_id = audit.audit_id
+      WHERE audit.tenant_id = ?
       ORDER BY audit.recorded_at DESC, audit.audit_id
     `).all(identity.tenantId);
     this.recordAccess(identity, "audit.read", "tenant", identity.tenantId, "allowed");

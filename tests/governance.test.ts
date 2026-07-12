@@ -103,6 +103,20 @@ test("governance audit and integration health expose pilot provenance without se
       sourceUpdatedAt: lead.evaluation_timestamp, confidence: "High", outcome: "Written", reason: "Verified update",
       scoreVersion: lead.score_version, policyVersion: "hubspot-writeback-v0"
     });
+    store.appendAuditRecord(identity("revops_admin", lead.request_id), {
+      auditId: "audit-skipped", evaluationId: lead.evaluation_id, requestId: lead.request_id,
+      crmObjectType: "company", crmObjectId: lead.account_id!, fieldName: "industry",
+      previousValue: "Software", newValue: "Software", sourceName: "EnrichmentProvider", sourceRef: "record-2",
+      sourceUpdatedAt: lead.evaluation_timestamp, confidence: "High", outcome: "Skipped", reason: "No change",
+      scoreVersion: lead.score_version, policyVersion: "hubspot-writeback-v0"
+    });
+    store.appendAuditRecord(identity("revops_admin", lead.request_id), {
+      auditId: "audit-legacy", evaluationId: lead.evaluation_id, requestId: lead.request_id,
+      crmObjectType: "company", crmObjectId: lead.account_id!, fieldName: "industry",
+      previousValue: "Technology", newValue: "Software", sourceName: "LegacyImport", sourceRef: "record-3",
+      sourceUpdatedAt: lead.evaluation_timestamp, confidence: "High", outcome: "Written", reason: "Imported write",
+      scoreVersion: lead.score_version, policyVersion: "legacy"
+    });
     const audit = store.getGovernanceAudit(identity(), lead.evaluation_id)!;
     assert.equal((audit.evaluation as { score_version: string }).score_version, lead.score_version);
     assert.equal(audit.configVersion?.author, defaultConfigVersion.author);
@@ -111,6 +125,7 @@ test("governance audit and integration health expose pilot provenance without se
     assert.ok(audit.claimEvidence.length > 0);
     assert.equal((audit.writeback[0] as { actor_id: string }).actor_id, "admin-1");
     assert.equal((store.listRollbackCandidates(identity())[0] as { audit_id: string }).audit_id, "audit-visible");
+    assert.deepEqual((store.listWritebackAudits(identity()) as Array<{ audit_id: string }>).map(({ audit_id }) => audit_id).toSorted(), ["audit-legacy", "audit-skipped", "audit-visible"]);
     const integration = store.listIntegrationStatuses(identity())[0] as Record<string, unknown>;
     assert.deepEqual({ provider: integration.provider, status: integration.status, accessToken: integration.access_token_ciphertext }, { provider: "hubspot", status: "disabled", accessToken: undefined });
   } finally {
@@ -131,9 +146,14 @@ test("admin UI exposes labeled config, review, audit, rollback, and integration 
   assert.match(page, /contextai\.session-token/);
   assert.match(page, /api<\{ versions: Version\[\] \}>\("\/admin\/config"\)/);
   assert.match(page, /api<\{ reviews: Review\[\] \}>\("\/admin\/reviews"\)/);
+  assert.match(page, /api<\{ integrations: Integration\[\] \}>\("\/admin\/integrations"\)/);
+  assert.match(page, /historyBody\.replaceChildren/);
+  assert.match(page, /apiOrigin/);
   assert.match(page, /dataset\.rollback/);
   assert.match(server, /authenticateBearer\(request\.headers\.authorization\)/);
   assert.match(server, /store\.decideReviewItem/);
   assert.match(server, /store\.publishConfigDraft/);
   assert.match(server, /rollbackWriteback/);
+  assert.match(server, /store\.listWritebackAudits/);
+  assert.match(server, /store\.listIntegrationStatuses/);
 });
