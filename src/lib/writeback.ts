@@ -1,6 +1,6 @@
 import { assertLeadPacket, type Evidence, type LeadPacket, type WritebackOutcomeStatus } from "./contextai.ts";
 import { defaultScoringConfig, permanentlyBlockedWritebackFields } from "./config.ts";
-import type { RuntimeStore } from "./persistence.ts";
+import type { RuntimeStore, StoredAuditRecord } from "./persistence.ts";
 
 export type WritebackFieldType = "string" | "number" | "string[]";
 export type PlannedWritebackOutcome = "Eligible" | Exclude<WritebackOutcomeStatus, "Written" | "Data unavailable">;
@@ -38,7 +38,6 @@ export type WritebackPlan = Readonly<{
   planId: string;
   policyVersion: string;
   packet: LeadPacket;
-  policy: WritebackPolicy;
   outcome: PlannedWritebackOutcome;
   reason: string;
   fields: readonly WritebackFieldPlan[];
@@ -107,6 +106,11 @@ export const planWriteback = (packet: LeadPacket, policy: WritebackPolicy): Writ
   assertWritebackPolicy(policy);
 
   const evidence = allEvidence(packet);
+  const packetDecision = packet.writeback_plan?.decision;
+  const packetGate = packetDecision === "Eligible" ? null : {
+    outcome: packetDecision === "Blocked" ? "Blocked" as const : packetDecision === "Skipped" ? "Skipped" as const : "Flagged for Review" as const,
+    reason: packet.writeback_plan?.reason ?? packet.writeback_outcome.reason
+  };
   const proposed = new Map<string, Evidence[]>();
   for (const item of evidence.filter(({ source_type }) => policy.allowedSourceTypes.includes(source_type))) {
     for (const field of valuesFrom(item).keys()) proposed.set(field, [...(proposed.get(field) ?? []), item]);
@@ -141,6 +145,7 @@ export const planWriteback = (packet: LeadPacket, policy: WritebackPolicy): Writ
     };
 
     if (!rule || rule.sideEffects || permanentlyBlocked.has(canonicalField) || permanentlyBlocked.has(rule.crmField) || policy.blockedFields.includes(canonicalField) || policy.blockedFields.includes(rule.crmField)) fields.push({ ...base, outcome: "Blocked", reason: "Field is not approved by the writeback schema." });
+    else if (packetGate) fields.push({ ...base, ...packetGate });
     else if (!base.crmObjectId) fields.push({ ...base, outcome: "Flagged for Review", reason: "The CRM object association is unresolved." });
     else if (emptyValue(newValue)) fields.push({ ...base, outcome: "Skipped", reason: "The proposed value is empty." });
     else if (!validValue(newValue, rule.type)) fields.push({ ...base, outcome: "Blocked", reason: "The proposed value fails the writeback schema." });
@@ -159,7 +164,6 @@ export const planWriteback = (packet: LeadPacket, policy: WritebackPolicy): Writ
     planId: `${packet.evaluation_id}:${policy.version}`,
     policyVersion: policy.version,
     packet,
-    policy,
     outcome,
     reason: fields.length === 0 ? "No approved evidence fields were proposed." : `Planned ${fields.length} field outcome${fields.length === 1 ? "" : "s"}.`,
     fields: Object.freeze(fields)
@@ -175,15 +179,17 @@ export const executeWriteback = async (
     tenantId: string;
     actorType: string;
     actorId: string;
+    policy: WritebackPolicy;
     mode?: "dry-run" | "live";
     authorizedLiveWrite?: boolean;
     write?: Writer;
   }>
 ) => {
   if (![options.tenantId, options.actorType, options.actorId].every((value) => value.trim())) throw new Error("Tenant and actor identity are required");
-  const verifiedPlan = planWriteback(plan.packet, plan.policy);
+  const verifiedPlan = planWriteback(plan.packet, options.policy);
+  if (plan.policyVersion !== verifiedPlan.policyVersion) throw new Error("Writeback plan policy version does not match the trusted policy");
   const mode = options.mode ?? "dry-run";
-  if (mode === "live" && (!verifiedPlan.policy.liveWritesEnabled || options.authorizedLiveWrite !== true || !options.write)) {
+  if (mode === "live" && (!options.policy.liveWritesEnabled || options.authorizedLiveWrite !== true || !options.write)) {
     throw new Error("Live writeback is not explicitly enabled and authorized");
   }
 
@@ -192,25 +198,36 @@ export const executeWriteback = async (
     const auditId = `${mode}:${verifiedPlan.planId}:${field.crmObjectType}:${field.crmField}`;
     const outcome = field.outcome === "Eligible" ? (mode === "live" ? "Written" : "Skipped") : field.outcome;
     const reason = mode === "dry-run" && field.outcome === "Eligible" ? "Dry run: live CRM writeback is disabled." : field.reason;
-    const existing = options.store.getAuditRecord(auditId);
-    if (existing) {
-      const expectedValue = field.newValue === undefined ? null : JSON.stringify(field.newValue);
-      if (existing.tenant_id !== options.tenantId || existing.evaluation_id !== verifiedPlan.packet.evaluation_id || existing.crm_object_type !== field.crmObjectType || existing.crm_object_id !== field.crmObjectId || existing.field_name !== field.crmField || existing.new_value_json !== expectedValue || existing.outcome !== outcome || existing.reason !== reason || existing.policy_version !== verifiedPlan.policyVersion) {
-        throw new Error("Writeback idempotency record does not match the verified plan");
-      }
-      results.push(existing);
-      continue;
-    }
-    if (outcome === "Written") await options.write!({ object: field.crmObjectType, objectId: field.crmObjectId, properties: { [field.crmField]: field.newValue } });
-    options.store.appendAuditRecord({
-      auditId, tenantId: options.tenantId, evaluationId: verifiedPlan.packet.evaluation_id, requestId: verifiedPlan.packet.request_id,
+    const expectedValue = field.newValue === undefined ? null : JSON.stringify(field.newValue);
+    const matches = (record: StoredAuditRecord, expectedOutcome: string, expectedReason: string) =>
+      record.tenant_id === options.tenantId && record.evaluation_id === verifiedPlan.packet.evaluation_id &&
+      record.crm_object_type === field.crmObjectType && record.crm_object_id === field.crmObjectId &&
+      record.field_name === field.crmField && record.new_value_json === expectedValue &&
+      record.outcome === expectedOutcome && record.reason === expectedReason && record.policy_version === verifiedPlan.policyVersion;
+    const record = (id: string, auditOutcome: string, auditReason: string) => options.store.appendAuditRecord({
+      auditId: id, tenantId: options.tenantId, evaluationId: verifiedPlan.packet.evaluation_id, requestId: verifiedPlan.packet.request_id,
       crmObjectType: field.crmObjectType, crmObjectId: field.crmObjectId, fieldName: field.crmField,
       previousValue: field.previousValue, newValue: field.newValue, sourceName: field.evidence.source_name,
       sourceRef: field.evidence.source_url ?? field.evidence.source_record_id ?? field.evidence.evidence_id,
       sourceUpdatedAt: field.evidence.source_updated_at ?? field.evidence.retrieved_at,
-      confidence: field.evidence.confidence, outcome, reason, scoreVersion: verifiedPlan.packet.score_version,
+      confidence: field.evidence.confidence, outcome: auditOutcome, reason: auditReason, scoreVersion: verifiedPlan.packet.score_version,
       policyVersion: verifiedPlan.policyVersion, actorType: options.actorType, actorId: options.actorId
     });
+    const existing = options.store.getAuditRecord(auditId);
+    if (existing) {
+      if (!matches(existing, outcome, reason)) throw new Error("Writeback idempotency record does not match the verified plan");
+      results.push(existing);
+      continue;
+    }
+    if (outcome === "Written") {
+      const reservationId = `pending:${auditId}`;
+      const reservationReason = "Reserved before live CRM write.";
+      const reservation = options.store.getAuditRecord(reservationId);
+      if (reservation && !matches(reservation, "Pending", reservationReason)) throw new Error("Writeback reservation does not match the verified plan");
+      if (!reservation) record(reservationId, "Pending", reservationReason);
+      await options.write!({ object: field.crmObjectType, objectId: field.crmObjectId, properties: { [field.crmField]: field.newValue } });
+    }
+    record(auditId, outcome, reason);
     results.push(options.store.getAuditRecord(auditId)!);
   }
   return results;
@@ -225,6 +242,7 @@ export const rollbackWriteback = async (
   if (!options.policy.liveWritesEnabled || options.authorizedLiveWrite !== true) throw new Error("Rollback is not explicitly enabled and authorized");
   const results = [];
   for (const auditId of auditIds) {
+    if (auditId.startsWith("rollback:")) throw new Error("Rollback audit records cannot be rolled back");
     const original = options.store.getAuditRecord(auditId);
     const allowed = Object.values(options.policy.fields).some((field) =>
       field.object === original?.crm_object_type && field.crmField === original.field_name && !field.sideEffects &&
@@ -234,7 +252,7 @@ export const rollbackWriteback = async (
     const rollbackId = `rollback:${auditId}`;
     const existing = options.store.getAuditRecord(rollbackId);
     if (existing) {
-      const expectedValue = original.previous_value_json;
+      const expectedValue = original.previous_value_json ?? "null";
       if (existing.tenant_id !== original.tenant_id || existing.evaluation_id !== original.evaluation_id || existing.crm_object_type !== original.crm_object_type || existing.crm_object_id !== original.crm_object_id || existing.field_name !== original.field_name || existing.new_value_json !== expectedValue || existing.outcome !== "Written" || existing.reason !== `Rollback of ${auditId}` || existing.policy_version !== original.policy_version) {
         throw new Error("Rollback idempotency record does not match the original write");
       }
@@ -242,12 +260,27 @@ export const rollbackWriteback = async (
       results.push(existing);
       continue;
     }
-    await options.write({ object: original.crm_object_type as "contact" | "company", objectId: original.crm_object_id, properties: { [original.field_name]: original.previous_value_json === null ? null : JSON.parse(original.previous_value_json) } });
+    const rollbackValue = original.previous_value_json === null ? null : JSON.parse(original.previous_value_json);
+    const reservationId = `pending:${rollbackId}`;
+    const reservationReason = `Reserved before rollback of ${auditId}`;
+    const reservation = options.store.getAuditRecord(reservationId);
+    if (reservation && (reservation.tenant_id !== original.tenant_id || reservation.evaluation_id !== original.evaluation_id || reservation.field_name !== original.field_name || reservation.new_value_json !== JSON.stringify(rollbackValue) || reservation.outcome !== "Pending" || reservation.reason !== reservationReason)) {
+      throw new Error("Rollback reservation does not match the original write");
+    }
+    if (!reservation) options.store.appendAuditRecord({
+      auditId: reservationId, tenantId: original.tenant_id, evaluationId: original.evaluation_id, requestId: original.request_id,
+      crmObjectType: original.crm_object_type, crmObjectId: original.crm_object_id, fieldName: original.field_name,
+      previousValue: original.new_value_json === null ? undefined : JSON.parse(original.new_value_json), newValue: rollbackValue,
+      sourceName: original.source_name, sourceRef: original.source_ref, sourceUpdatedAt: original.source_updated_at,
+      confidence: original.confidence, outcome: "Pending", reason: reservationReason,
+      scoreVersion: original.score_version, policyVersion: original.policy_version, actorType: options.actorType, actorId: options.actorId
+    });
+    await options.write({ object: original.crm_object_type as "contact" | "company", objectId: original.crm_object_id, properties: { [original.field_name]: rollbackValue } });
     options.store.appendAuditRecord({
       auditId: rollbackId, tenantId: original.tenant_id, evaluationId: original.evaluation_id, requestId: original.request_id,
       crmObjectType: original.crm_object_type, crmObjectId: original.crm_object_id, fieldName: original.field_name,
       previousValue: original.new_value_json === null ? undefined : JSON.parse(original.new_value_json),
-      newValue: original.previous_value_json === null ? null : JSON.parse(original.previous_value_json),
+      newValue: rollbackValue,
       sourceName: original.source_name, sourceRef: original.source_ref, sourceUpdatedAt: original.source_updated_at,
       confidence: original.confidence, outcome: "Written", reason: `Rollback of ${auditId}`,
       scoreVersion: original.score_version, policyVersion: original.policy_version, actorType: options.actorType, actorId: options.actorId

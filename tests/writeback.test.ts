@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { defaultConfigVersion } from "../src/lib/config.ts";
+import { createScoringRunContext, defaultConfigVersion } from "../src/lib/config.ts";
 import { leads } from "../src/data/leads.ts";
 import { RuntimeStore } from "../src/lib/persistence.ts";
+import { applyDeterministicScore } from "../src/lib/scoring.ts";
 import { executeWriteback, hubSpotWritebackPolicy, planWriteback, rollbackLeadWriteback, rollbackWriteback } from "../src/lib/writeback.ts";
 
 const packet = () => structuredClone(leads.find(({ lead_id }) => lead_id === "golden-normal")!);
@@ -62,6 +63,27 @@ test("planning handles empty, invalid, stale, low-confidence, and conflicting fi
   );
 });
 
+test("manual-review packets cannot write otherwise eligible fields", async () => {
+  const lead = packet();
+  lead.crm_context.duplicate_status = "suspected";
+  const review = applyDeterministicScore(lead, createScoringRunContext(defaultConfigVersion));
+  const policy = { ...hubSpotWritebackPolicy, liveWritesEnabled: true };
+  const plan = planWriteback(review, policy);
+  const store = storeFor(review);
+  let writes = 0;
+  try {
+    assert.ok(plan.fields.every(({ outcome }) => outcome === "Flagged for Review"));
+    const audits = await executeWriteback(plan, {
+      store, tenantId: "tenant-1", actorType: "system", actorId: "writeback-service", policy,
+      mode: "live", authorizedLiveWrite: true, write: async () => { writes += 1; }
+    });
+    assert.ok(audits.every(({ outcome }) => outcome === "Flagged for Review"));
+    assert.equal(writes, 0);
+  } finally {
+    store.close();
+  }
+});
+
 test("execution is dry-run-first and retries do not repeat writes", async () => {
   const lead = packet();
   const store = storeFor(lead);
@@ -69,20 +91,37 @@ test("execution is dry-run-first and retries do not repeat writes", async () => 
   const writtenFields: string[] = [];
   try {
     const plan = planWriteback(lead, hubSpotWritebackPolicy);
-    const dryRun = await executeWriteback(plan, { store, tenantId: "tenant-1", actorType: "system", actorId: "writeback-service", write: async () => { writes += 1; } });
+    const dryRun = await executeWriteback(plan, { store, tenantId: "tenant-1", actorType: "system", actorId: "writeback-service", policy: hubSpotWritebackPolicy, write: async () => { writes += 1; } });
     assert.ok(dryRun.every(({ outcome }) => outcome === "Skipped"));
     assert.equal(writes, 0);
-    await assert.rejects(executeWriteback(plan, { store, tenantId: "tenant-1", actorType: "system", actorId: "writeback-service", mode: "live", authorizedLiveWrite: true, write: async () => { writes += 1; } }), /not explicitly enabled/i);
+    await assert.rejects(executeWriteback(plan, { store, tenantId: "tenant-1", actorType: "system", actorId: "writeback-service", policy: hubSpotWritebackPolicy, mode: "live", authorizedLiveWrite: true, write: async () => { writes += 1; } }), /not explicitly enabled/i);
 
-    const livePlan = planWriteback(lead, { ...hubSpotWritebackPolicy, liveWritesEnabled: true });
-    const options = { store, tenantId: "tenant-1", actorType: "system", actorId: "writeback-service", mode: "live" as const, authorizedLiveWrite: true, write: async ({ properties }: { properties: Readonly<Record<string, unknown>> }) => { writes += 1; writtenFields.push(...Object.keys(properties)); } };
-    const forged = { ...livePlan, fields: livePlan.fields.map((field, index) => index === 0 ? { ...field, crmField: "owner" } : field) };
+    const livePolicy = { ...hubSpotWritebackPolicy, liveWritesEnabled: true };
+    const livePlan = planWriteback(lead, livePolicy);
+    const options = { store, tenantId: "tenant-1", actorType: "system", actorId: "writeback-service", policy: livePolicy, mode: "live" as const, authorizedLiveWrite: true, write: async ({ properties }: { properties: Readonly<Record<string, unknown>> }) => {
+      const pending = (store.database.prepare("SELECT count(*) AS count FROM writeback_audit_records WHERE outcome = 'Pending'").get() as { count: number }).count;
+      assert.equal(pending, writes + 1);
+      writes += 1;
+      writtenFields.push(...Object.keys(properties));
+    } };
+    const maliciousPolicy = { ...livePolicy, fields: { ...livePolicy.fields, employees: { ...livePolicy.fields.employees!, crmField: "annualrevenue" } } };
+    const maliciousPlan = planWriteback(lead, maliciousPolicy);
+    const forged = { ...maliciousPlan, fields: maliciousPlan.fields.map((field, index) => index === 0 ? { ...field, crmField: "owner" } : field) };
     const first = await executeWriteback(forged, options);
     const second = await executeWriteback(livePlan, options);
     assert.ok(first.every(({ outcome }) => outcome === "Written"));
     assert.deepEqual(second, first);
     assert.equal(writes, first.length);
     assert.equal(writtenFields.includes("owner"), false);
+    assert.equal(writtenFields.includes("annualrevenue"), false);
+
+    const missingEvaluation = new RuntimeStore(":memory:");
+    missingEvaluation.saveTenant("tenant-1", "Pilot tenant");
+    missingEvaluation.saveConfigVersion("tenant-1", defaultConfigVersion);
+    let unauditedWrites = 0;
+    await assert.rejects(executeWriteback(livePlan, { ...options, store: missingEvaluation, write: async () => { unauditedWrites += 1; } }), /foreign key/i);
+    assert.equal(unauditedWrites, 0);
+    missingEvaluation.close();
   } finally {
     store.close();
   }
@@ -102,7 +141,7 @@ test("field rollback writes the previous value and preserves an immutable audit 
   try {
     const policy = { ...hubSpotWritebackPolicy, liveWritesEnabled: true, sourcePrecedence: ["enrichment", "crm", "public_signal"] as const };
     const written = await executeWriteback(planWriteback(lead, policy), {
-      store, tenantId: "tenant-1", actorType: "system", actorId: "writeback-service", mode: "live", authorizedLiveWrite: true,
+      store, tenantId: "tenant-1", actorType: "system", actorId: "writeback-service", policy, mode: "live", authorizedLiveWrite: true,
       write: async (call) => { calls.push(call); }
     });
     const audit = written.find(({ field_name }) => field_name === "numberofemployees")!;
@@ -116,10 +155,14 @@ test("field rollback writes the previous value and preserves an immutable audit 
     assert.equal(calls.length, written.length + 1);
     assert.deepEqual(calls.at(-1), { object: "company", objectId: lead.account_id, properties: { numberofemployees: 500 } });
     assert.throws(() => store.database.prepare("DELETE FROM rollback_links").run(), /append-only/i);
-    assert.equal((store.database.prepare("SELECT count(*) AS count FROM writeback_audit_records WHERE field_name = 'numberofemployees'").get() as { count: number }).count, 2);
-    assert.equal((await rollbackLeadWriteback(lead.evaluation_id, rollbackOptions)).length, written.length);
+    assert.equal((store.database.prepare("SELECT count(*) AS count FROM writeback_audit_records WHERE field_name = 'numberofemployees'").get() as { count: number }).count, 4);
+    await assert.rejects(rollbackWriteback([`rollback:${audit.audit_id}`], rollbackOptions), /cannot be rolled back/i);
+    assert.equal((await rollbackLeadWriteback(lead.evaluation_id, rollbackOptions)).length, written.length - 1);
     assert.equal(calls.length, written.length * 2);
     assert.equal((store.database.prepare("SELECT count(*) AS count FROM rollback_links").get() as { count: number }).count, written.length);
+    const emptyPrevious = written.find(({ previous_value_json }) => previous_value_json === null)!;
+    await rollbackWriteback([emptyPrevious.audit_id], rollbackOptions);
+    assert.equal(calls.length, written.length * 2);
     store.appendAuditRecord({
       auditId: "forged-owner", tenantId: "tenant-1", evaluationId: lead.evaluation_id, requestId: lead.request_id,
       crmObjectType: "company", crmObjectId: lead.account_id!, fieldName: "owner", sourceName: "test", sourceRef: "test",

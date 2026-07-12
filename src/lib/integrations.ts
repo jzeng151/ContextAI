@@ -9,7 +9,7 @@ import {
 import type { ScoredLeadPacket } from "./scoring.ts";
 import type { ScoringRunContext } from "./config.ts";
 import type { RuntimeStore } from "./persistence.ts";
-import { executeWriteback, type WritebackPlan } from "./writeback.ts";
+import { executeWriteback, type WritebackPlan, type WritebackPolicy } from "./writeback.ts";
 
 type Env = Record<string, string | undefined>;
 
@@ -198,7 +198,7 @@ export const getHubSpotContact = async (
 
 export const writeHubSpotEnrichment = async (
   plan: WritebackPlan,
-  options: Readonly<{ store: RuntimeStore; tenantId: string; actorType: string; actorId: string; mode?: "dry-run" | "live"; authorizedLiveWrite?: boolean }>,
+  options: Readonly<{ store: RuntimeStore; tenantId: string; actorType: string; actorId: string; policy: WritebackPolicy; mode?: "dry-run" | "live"; authorizedLiveWrite?: boolean }>,
   config?: HubSpotConfig
 ) => executeWriteback(plan, {
   ...options,

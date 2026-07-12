@@ -177,9 +177,9 @@ test("HubSpot PATCH only receives policy-planned properties after explicit live 
     return new Response(JSON.stringify({ id: "1", properties: { numberofemployees: "900" } }), { status: 200 });
   };
   try {
-    await writeHubSpotEnrichment(plan, { store, tenantId: "tenant-1", actorType: "system", actorId: "writeback-service" }, config);
+    await writeHubSpotEnrichment(plan, { store, tenantId: "tenant-1", actorType: "system", actorId: "writeback-service", policy }, config);
     assert.equal(body, "");
-    await writeHubSpotEnrichment(plan, { store, tenantId: "tenant-1", actorType: "system", actorId: "writeback-service", mode: "live", authorizedLiveWrite: true }, config);
+    await writeHubSpotEnrichment(plan, { store, tenantId: "tenant-1", actorType: "system", actorId: "writeback-service", policy, mode: "live", authorizedLiveWrite: true }, config);
     assert.deepEqual(JSON.parse(body), { properties: { numberofemployees: 900 } });
   } finally {
     globalThis.fetch = originalFetch;

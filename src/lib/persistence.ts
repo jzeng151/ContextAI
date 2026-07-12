@@ -236,9 +236,9 @@ export class RuntimeStore {
   listWrittenAuditRecords(tenantId: string, evaluationId: string) {
     return this.database.prepare(`
       SELECT audit.* FROM writeback_audit_records audit
-      LEFT JOIN rollback_links link ON link.rollback_audit_id = audit.audit_id
+      LEFT JOIN rollback_links link ON link.original_audit_id = audit.audit_id
       WHERE audit.tenant_id = ? AND audit.evaluation_id = ? AND audit.outcome = 'Written'
-        AND audit.audit_id NOT LIKE 'rollback:%' AND link.rollback_audit_id IS NULL
+        AND audit.audit_id NOT LIKE 'rollback:%' AND link.original_audit_id IS NULL
       ORDER BY audit.recorded_at, audit.audit_id
     `).all(tenantId, evaluationId) as StoredAuditRecord[];
   }
