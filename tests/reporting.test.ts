@@ -98,6 +98,8 @@ test("pilot reports reconcile tenant-scoped events, filters, duplicates, windows
     const promptCsv = exportPilotReport(promptV2);
     assert.equal(csvRow(promptCsv, "leads_processed")[7], "all");
     assert.equal(csvRow(promptCsv, "recommendation_acceptance")[7], "grounding-v2");
+    assert.equal(csvRow(promptCsv, "hot_conversion")[7], "grounding-v2");
+    assert.equal(csvRow(promptCsv, "hot_false_positive")[7], "grounding-v2");
   } finally {
     store.close();
   }
@@ -222,6 +224,50 @@ test("band filters cannot promote a later rescore to the contact index", () => {
     assert.equal(report.weakSignalContribution.rate, null);
     assert.equal(report.conversion.Hot.denominator, 0);
     assert.equal(createPilotReport(store.database, "tenant-1", { from: "2026-01-02T00:00:00.000Z" }, "2026-04-01T00:00:00.000Z").leads.processed, 0);
+  } finally {
+    store.close();
+  }
+});
+
+test("conversion uses displayed treatment bands per contact and outcomes stay on index evaluations", () => {
+  const store = new RuntimeStore(":memory:");
+  try {
+    const indexes = [0, 1, 2].map((number) => ({
+      ...structuredClone(leads[0]!),
+      evaluation_id: `eval-conversion-${number}`,
+      request_id: `request-conversion-${number}`,
+      lead_id: `lead-conversion-${number}`
+    }));
+    const rescore = { ...structuredClone(indexes[0]!), evaluation_id: "eval-conversion-rescore", request_id: "request-conversion-rescore" };
+    store.saveTenant("tenant-1", "Pilot tenant");
+    store.saveConfigVersion(admin("tenant-1"), defaultConfigVersion);
+    store.registerPilotParticipant({ tenantId: "tenant-1", repId: "rep-1", cohort: "contextai", teamId: "team-1", activeFrom: "2026-01-01T00:00:00.000Z" });
+    for (const [number, packet] of indexes.entries()) {
+      store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: `conversion-${number}`, packet });
+      store.recordEvaluationOwner({ tenantId: "tenant-1", evaluationId: packet.evaluation_id, repId: "rep-1", evaluationKind: "exposure_index" });
+    }
+    store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "conversion-rescore", packet: rescore });
+    store.recordEvaluationOwner({ tenantId: "tenant-1", evaluationId: rescore.evaluation_id, repId: "rep-1", evaluationKind: "rescore" });
+    const base = (packet: typeof indexes[number]) => ({
+      tenantId: "tenant-1", requestId: packet.request_id, evaluationId: packet.evaluation_id, leadId: packet.lead_id,
+      accountId: packet.account_id, actorType: "system" as const, actorId: "system-1", scoreVersion: packet.score_version,
+      configVersion: packet.score_version, promptVersion: "grounding-v1", evidenceRefs: [] as string[], retentionClass: "pilot_analytics_12_months" as const
+    });
+    const event = <T extends PilotEvent>(value: T) => store.recordEvent(value);
+    for (const [number, packet] of indexes.entries()) {
+      event({ ...base(packet), idempotencyKey: `conversion-run-${number}`, occurredAt: `2026-01-0${number + 1}T09:00:00.000Z`, name: "evaluation.run", data: { outcome: "complete", priorityScore: 94, priorityBand: "Hot" } });
+      if (number < 2) {
+        event({ ...base(packet), idempotencyKey: `conversion-shown-${number}`, occurredAt: `2026-01-0${number + 1}T09:01:00.000Z`, name: "score.shown", data: { priorityScore: 94, priorityBand: "Hot", surface: "dashboard" } });
+        event({ ...base(packet), idempotencyKey: `conversion-meeting-${number}`, occurredAt: "2026-01-20T09:00:00.000Z", name: "meeting.attribution", data: { meetingId: "shared-meeting", attribution: "crm_association" } });
+      }
+    }
+    event({ ...base(indexes[0]!), idempotencyKey: "index-bad-fit", occurredAt: "2026-01-10T09:00:00.000Z", name: "outcome.attribution", data: { outcomeId: "shared-outcome", outcomeType: "bad_fit", attribution: "rep_reported" } });
+    event({ ...base(rescore), idempotencyKey: "rescore-opportunity", occurredAt: "2026-01-11T09:00:00.000Z", name: "outcome.attribution", data: { outcomeId: "shared-outcome", outcomeType: "opportunity_created", attribution: "crm_association" } });
+
+    const report = createPilotReport(store.database, "tenant-1", {}, "2026-04-01T00:00:00.000Z");
+    assert.deepEqual(report.conversion.Hot, { numerator: 2, denominator: 2, rate: 1 });
+    assert.equal(report.hotFalsePositives.numerator, 1);
+    assert.equal(report.hotFalsePositives.denominator, 2);
   } finally {
     store.close();
   }

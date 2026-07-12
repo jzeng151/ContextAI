@@ -175,9 +175,13 @@ export function createPilotReport(
     return indexEvaluationIds.has(event.evaluationId) && run && eventAt(event) >= eventAt(run) && eventAt(event) - eventAt(run) <= 60 * day;
   });
   const meetings = new Map<string, typeof meetingEvents[number]>();
+  const meetingsByEvaluation = new Map<string, typeof meetingEvents[number]>();
   for (const event of meetingEvents) {
     const existing = meetings.get(event.data.meetingId);
     if (!existing || event.data.attribution === "crm_association") meetings.set(event.data.meetingId, event);
+    const evaluationKey = `${event.evaluationId}\0${event.data.meetingId}`;
+    const evaluationMeeting = meetingsByEvaluation.get(evaluationKey);
+    if (!evaluationMeeting || event.data.attribution === "crm_association") meetingsByEvaluation.set(evaluationKey, event);
   }
   const participants = (database.prepare(`
     SELECT rep_id, cohort, team_id, active_from, active_to FROM pilot_participants WHERE tenant_id = ?
@@ -210,15 +214,15 @@ export function createPilotReport(
     return run && generated - eventAt(run) >= 60 * day;
   });
   const conversions = Object.fromEntries((["Hot", "Warm"] as const).map((band) => {
-    const denominator = matured.filter(({ evaluationId }) => runByEvaluation.get(evaluationId)?.data.priorityBand === band);
-    const numerator = denominator.filter(({ evaluationId }) => [...meetings.values()].some((meeting) => meeting.evaluationId === evaluationId && eventAt(meeting) >= eventAt(runByEvaluation.get(evaluationId)!) && eventAt(meeting) - eventAt(runByEvaluation.get(evaluationId)!) <= 60 * day));
+    const denominator = matured.filter(({ evaluationId, cohort }) => (cohort === "contextai" ? shown.get(evaluationId) : cohort === "control" ? runByEvaluation.get(evaluationId) : undefined)?.data.priorityBand === band);
+    const numerator = denominator.filter(({ evaluationId }) => [...meetingsByEvaluation.values()].some((meeting) => meeting.evaluationId === evaluationId));
     return [band, { numerator: numerator.length, denominator: denominator.length, rate: ratio(numerator.length, denominator.length) }];
   }));
 
   const outcomeEvents = events.filter((event): event is Extract<PilotEvent, { name: "outcome.attribution" }> => {
     if (event.name !== "outcome.attribution") return false;
     const run = runByEvaluation.get(event.evaluationId);
-    return run !== undefined && eventAt(event) >= eventAt(run) && eventAt(event) - eventAt(run) <= 60 * day;
+    return indexEvaluationIds.has(event.evaluationId) && run !== undefined && eventAt(event) >= eventAt(run) && eventAt(event) - eventAt(run) <= 60 * day;
   });
   const outcomes = new Map<string, typeof outcomeEvents[number]>();
   for (const event of outcomeEvents) {
@@ -346,9 +350,9 @@ export function exportPilotReport(report: ReturnType<typeof createPilotReport>) 
   add("research_time_median_minutes", report.researchTime.observed, report.researchTime.eligibleViews, report.researchTime.medianMinutes);
   add("meetings_per_rep", report.meetings.total, report.meetings.enrolledReps, report.meetings.perRep);
   add("meetings_per_active_rep_week", report.meetings.total, report.meetings.activeRepWeeks, report.meetings.perActiveRepWeek);
-  add("hot_conversion", report.conversion.Hot.numerator, report.conversion.Hot.denominator, report.conversion.Hot.rate);
-  add("warm_conversion", report.conversion.Warm.numerator, report.conversion.Warm.denominator, report.conversion.Warm.rate);
-  add("hot_false_positive", report.hotFalsePositives.numerator, report.hotFalsePositives.denominator, report.hotFalsePositives.rate);
+  add("hot_conversion", report.conversion.Hot.numerator, report.conversion.Hot.denominator, report.conversion.Hot.rate, true);
+  add("warm_conversion", report.conversion.Warm.numerator, report.conversion.Warm.denominator, report.conversion.Warm.rate, true);
+  add("hot_false_positive", report.hotFalsePositives.numerator, report.hotFalsePositives.denominator, report.hotFalsePositives.rate, true);
   add("crm_completeness", report.crmCompleteness.numerator, report.crmCompleteness.denominator, report.crmCompleteness.rate);
   add("writeback_rollback", report.writebacks.rolledBack, report.writebacks.written, report.writebacks.rate);
   for (const [outcome, count] of Object.entries(report.writebacks.byOutcome)) add(`writeback_outcome:${outcome}`, count, report.leads.processed, count);
