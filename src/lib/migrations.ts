@@ -461,6 +461,21 @@ export const migrations: readonly Migration[] = [
       ALTER TABLE pilot_evaluation_owners ADD COLUMN evaluation_kind TEXT NOT NULL DEFAULT 'exposure_index'
         CHECK (evaluation_kind IN ('baseline_anchor', 'exposure_index', 'rescore'));
     `
+  },
+  {
+    version: 16,
+    name: "pilot participant departures",
+    sql: `
+      DROP TRIGGER pilot_participants_no_update;
+      CREATE TRIGGER pilot_participants_no_update
+      BEFORE UPDATE ON pilot_participants
+      WHEN NOT (
+        OLD.active_to IS NULL AND NEW.active_to IS NOT NULL
+        AND NEW.tenant_id = OLD.tenant_id AND NEW.rep_id = OLD.rep_id
+        AND NEW.cohort = OLD.cohort AND NEW.team_id = OLD.team_id AND NEW.active_from = OLD.active_from
+      )
+      BEGIN SELECT RAISE(ABORT, 'pilot participants are frozen'); END;
+    `
   }
 ];
 

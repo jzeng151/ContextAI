@@ -349,6 +349,12 @@ export class RuntimeStore {
     );
   }
 
+  endPilotParticipation(tenantId: string, repId: string, activeTo: string) {
+    return this.database.prepare(`
+      UPDATE pilot_participants SET active_to = ? WHERE tenant_id = ? AND rep_id = ?
+    `).run(isoDate(activeTo, "activeTo"), nonEmpty(tenantId, "tenantId"), nonEmpty(repId, "repId")).changes === 1;
+  }
+
   recordEvaluationOwner(input: Readonly<{
     tenantId: string;
     evaluationId: string;

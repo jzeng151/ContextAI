@@ -91,20 +91,20 @@ export function createPilotReport(
   if (filters.band && !bands.includes(filters.band)) throw new Error("band is not supported");
 
   const rawEvents = database.prepare(`
-    SELECT payload_json FROM events WHERE tenant_id = ? ORDER BY occurred_at, event_id
-  `).all(tenantId) as Array<{ payload_json: string }>;
-  let invalidEvents = 0;
-  const allEvents = rawEvents.flatMap(({ payload_json }) => {
+    SELECT evaluation_id, occurred_at, payload_json FROM events
+    WHERE tenant_id = ? AND julianday(occurred_at) <= julianday(?) ORDER BY occurred_at, event_id
+  `).all(tenantId, new Date(effectiveTo).toISOString()) as Array<{ evaluation_id: string | null; occurred_at: string; payload_json: string }>;
+  const invalidEventRows: typeof rawEvents = [];
+  const allEvents = rawEvents.flatMap((row) => {
     try {
-      const event = JSON.parse(payload_json) as PilotEvent;
+      const event = JSON.parse(row.payload_json) as PilotEvent;
       assertPilotEvent(event);
       return [event];
     } catch {
-      invalidEvents++;
+      invalidEventRows.push(row);
       return [];
     }
-  }).filter((event) => eventAt(event) <= effectiveTo)
-    .sort((left, right) => eventAt(left) - eventAt(right) || String(left.eventId).localeCompare(String(right.eventId)));
+  }).sort((left, right) => eventAt(left) - eventAt(right) || String(left.eventId).localeCompare(String(right.eventId)));
   const allRunByEvaluation = firstBy(allEvents.filter((event): event is Extract<PilotEvent, { name: "evaluation.run" }> => event.name === "evaluation.run"), ({ evaluationId }) => evaluationId);
 
   const allEvaluations = (database.prepare(`
@@ -150,6 +150,7 @@ export function createPilotReport(
   const evaluations = candidateEvaluations.filter((evaluation) => !filters.band || evaluation.packet.priority_band === filters.band);
 
   const evaluationIds = new Set(evaluations.map(({ evaluationId }) => evaluationId));
+  const invalidEvents = invalidEventRows.filter(({ evaluation_id, occurred_at }) => evaluation_id !== null && evaluationIds.has(evaluation_id) && (from === undefined || Date.parse(occurred_at) >= from)).length;
   const events = allEvents.filter((event) => evaluationIds.has(event.evaluationId) &&
     (!filters.configVersion || event.configVersion === filters.configVersion));
   const byEvaluation = new Map(evaluations.map((evaluation) => [evaluation.evaluationId, evaluation]));
@@ -349,6 +350,7 @@ export function createPilotReport(
     ...(invalidEvents ? [`${invalidEvents} invalid stored event(s) were excluded.`] : []),
     ...(unresolvedReservations.length ? [`${unresolvedReservations.length} live writeback reservation(s) require manual reconciliation.`] : []),
     ...(pendingWrites.length ? [`${pendingWrites.length} written writeback(s) lack a complete 30-day rollback window and were excluded.`] : []),
+    ...(writtenIds.size > 0 && writtenIds.size < 100 ? [`${writtenIds.size} matured Written ID(s); bad-writeback rate is descriptive only and the exact rollback count is ${rollbackIds.size}.`] : []),
     ...(!evaluations.length ? ["No evaluations match this tenant and filter window; metrics are unavailable, not zero."] : []),
     ...(matured.length < indexEvaluations.size ? ["Outcome metrics exclude index evaluations without a complete 60-day maturation window."] : [])
   ];

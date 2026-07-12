@@ -30,6 +30,9 @@ test("pilot reports reconcile tenant-scoped events, filters, duplicates, windows
       activeFrom: "2025-12-01T00:00:00.000Z"
     });
     assert.throws(() => store.database.prepare("INSERT OR REPLACE INTO pilot_participants SELECT * FROM pilot_participants WHERE tenant_id = 'tenant-1' AND rep_id = 'rep-1'").run(), /frozen/i);
+    assert.equal(store.endPilotParticipation("tenant-1", "rep-1", "2026-02-01T00:00:00.000Z"), true);
+    assert.throws(() => store.endPilotParticipation("tenant-1", "rep-1", "2026-03-01T00:00:00.000Z"), /frozen/i);
+    assert.throws(() => store.database.prepare("UPDATE pilot_participants SET cohort = 'control' WHERE tenant_id = 'tenant-1' AND rep_id = 'rep-1'").run(), /frozen/i);
     store.recordEvaluationOwner({ tenantId: "tenant-1", evaluationId: packet.evaluation_id, repId: "rep-1", evaluationKind: "exposure_index", recordedAt: "2026-01-01T00:00:00.000Z" });
     assert.throws(() => store.database.prepare("INSERT OR REPLACE INTO pilot_evaluation_owners SELECT * FROM pilot_evaluation_owners WHERE tenant_id = 'tenant-1' AND evaluation_id = ?").run(packet.evaluation_id), /append-only/i);
 
@@ -70,7 +73,7 @@ test("pilot reports reconcile tenant-scoped events, filters, duplicates, windows
     assert.deepEqual(report.recommendations.accepted, { numerator: 1, denominator: 1, rate: 1 });
     assert.deepEqual(report.recommendations.overridden, { numerator: 0, denominator: 1, rate: 0 });
     assert.equal(report.researchTime.medianMinutes, 60);
-    assert.deepEqual(report.meetings, { total: 1, enrolledReps: 1, activeRepWeeks: 121 / 7, perRep: 1, perActiveRepWeek: 7 / 121, byRep: { "rep-1": 1 } });
+    assert.deepEqual(report.meetings, { total: 1, enrolledReps: 1, activeRepWeeks: 62 / 7, perRep: 1, perActiveRepWeek: 7 / 62, byRep: { "rep-1": 1 } });
     assert.deepEqual(report.conversion.Hot, { numerator: 1, denominator: 1, rate: 1 });
     assert.equal(report.hotFalsePositives.rate, 1);
     assert.equal(report.writebacks.rate, 1);
@@ -192,6 +195,7 @@ test("pilot metric denominators honor index runs, active enrollment, attribution
     assert.equal(report.writebacks.byField.contact_title!.Written, 3);
     assert.equal(report.weakSignalContribution.rate, 0);
     assert.match(report.dataQuality.caveats.join(" "), /30-day rollback window/i);
+    assert.match(report.dataQuality.caveats.join(" "), /2 matured Written ID\(s\).*descriptive only.*exact rollback count is 1/i);
   } finally {
     store.close();
   }
@@ -419,11 +423,20 @@ test("default report window excludes future evaluations and events", () => {
       sourceRef: current.lead_id, sourceUpdatedAt: current.evaluation_timestamp, confidence: "High",
       outcome: "Written", reason: "Future write", scoreVersion: current.score_version, recordedAt: "2027-01-01T09:02:00.000Z"
     });
+    const invalid = store.database.prepare(`
+      INSERT INTO events (event_id, tenant_id, evaluation_id, request_id, event_type, payload_json, occurred_at, idempotency_key, retention_class)
+      VALUES (?, 'tenant-1', ?, ?, 'evaluation.run', '{', ?, ?, 'pilot_analytics_12_months')
+    `);
+    invalid.run("invalid-current", current.evaluation_id, current.request_id, current.evaluation_timestamp, "invalid-current");
+    invalid.run("invalid-past", current.evaluation_id, current.request_id, "2026-06-01T00:00:00.000Z", "invalid-past");
+    invalid.run("invalid-future", current.evaluation_id, current.request_id, "2027-01-01T09:03:00.000Z", "invalid-future");
 
-    const report = createPilotReport(store.database, "tenant-1", {}, "2026-10-01T00:00:00.000Z");
+    const report = createPilotReport(store.database, "tenant-1", { from: "2026-07-01T00:00:00.000Z" }, "2026-10-01T00:00:00.000Z");
     assert.equal(report.leads.processed, 1);
     assert.equal(report.recommendations.coverage.denominator, 0);
     assert.equal(report.writebacks.byOutcome.Written, 0);
+    assert.equal(report.dataQuality.invalidEvents, 1);
+    assert.equal(createPilotReport(store.database, "tenant-1", { repId: "other" }, "2026-10-01T00:00:00.000Z").dataQuality.invalidEvents, 0);
     const historical = createPilotReport(store.database, "tenant-1", { to: "2026-07-15T00:00:00.000Z" }, "2026-10-01T00:00:00.000Z");
     assert.match(historical.metadata.caveats.join(" "), /without a complete 60-day maturation window/i);
   } finally {
