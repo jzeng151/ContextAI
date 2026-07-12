@@ -131,6 +131,7 @@ const server = createServer(async (request, response) => {
           idempotencyKey: `dashboard:${refreshedAt}:${id}`,
           contactId: id,
           evaluatedAt: refreshedAt,
+          recordPilotOwner: false,
           store,
           dependencies,
         }))));

@@ -389,7 +389,7 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
 
 <script>
   import { dashboardOutcomeEvents, dashboardViewEvents, rankDashboardLeads } from "../lib/dashboard.ts";
-  import type { LeadPacket } from "../lib/contextai.ts";
+  import { requiredToolSteps, type LeadPacket } from "../lib/contextai.ts";
   import type { ActionType, PilotEvent } from "../lib/instrumentation.ts";
 
   type EventPacket = Parameters<typeof dashboardViewEvents>[0]["packet"];
@@ -405,8 +405,8 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
   const noSelection = document.querySelector<HTMLElement>("[data-no-selection]");
   const desktopRows = [...document.querySelectorAll<HTMLElement>("[data-lead-row]")];
   const mobileRows = [...document.querySelectorAll<HTMLElement>("[data-mobile-lead]")];
-  const detailPanels = [...document.querySelectorAll<HTMLElement>("[data-lead-detail]")];
-  const selectButtons = [...document.querySelectorAll<HTMLButtonElement>("[data-select-lead]")];
+  let detailPanels = [...document.querySelectorAll<HTMLElement>("[data-lead-detail]")];
+  let selectButtons = [...document.querySelectorAll<HTMLButtonElement>("[data-select-lead]")];
   const mobile = matchMedia("(max-width: 820px)");
   const eventSessionId = crypto.randomUUID();
   const emittedViews = new Set<string>();
@@ -428,11 +428,170 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
     if (!response.ok) throw new Error(result.error || "HubSpot dashboard request failed");
     return result;
   };
-  const textElement = (tag: keyof HTMLElementTagNameMap, text: string, className?: string) => {
+  const textElement = <Tag extends keyof HTMLElementTagNameMap>(tag: Tag, text: string, className?: string): HTMLElementTagNameMap[Tag] => {
     const node = document.createElement(tag);
     node.textContent = text;
     if (className) node.className = className;
     return node;
+  };
+  const definitionList = (entries: Array<[string, string]>) => {
+    const list = document.createElement("dl");
+    list.className = "definition-grid";
+    for (const [term, value] of entries) {
+      const item = document.createElement("div");
+      item.append(textElement("dt", term), textElement("dd", value));
+      list.append(item);
+    }
+    return list;
+  };
+  const createClientDetail = (lead: LeadPacket, selected: boolean) => {
+    const article = document.createElement("article");
+    article.className = "lead-detail";
+    article.dataset.leadDetail = lead.lead_id;
+    article.hidden = !selected;
+
+    const header = document.createElement("header");
+    header.className = "detail-header";
+    const back = textElement("button", "Back to queue", "back-button");
+    back.dataset.backToQueue = "";
+    const identity = document.createElement("div");
+    const heading = textElement("h2", lead.lead_identity.company);
+    heading.tabIndex = -1;
+    identity.append(textElement("span", "Selected lead"), heading, textElement("p", `${lead.lead_identity.name}, ${lead.lead_identity.title}`));
+    const score = document.createElement("div");
+    score.className = "detail-score";
+    score.append(
+      textElement("strong", lead.priority_score === null ? "Review" : String(lead.priority_score)),
+      textElement("span", lead.priority_band),
+      textElement("small", `${lead.confidence} confidence`)
+    );
+    header.append(back, identity, score);
+
+    const tabs = ["decision", "evidence", "crm", "run", "audit"] as const;
+    const tabList = document.createElement("div");
+    tabList.className = "detail-tabs";
+    tabList.setAttribute("role", "tablist");
+    tabList.setAttribute("aria-label", `${lead.lead_identity.company} details`);
+    const scroll = document.createElement("div");
+    scroll.className = "detail-scroll";
+    for (const [index, tab] of tabs.entries()) {
+      const button = textElement("button", tab === "crm" ? "CRM" : tab[0]!.toUpperCase() + tab.slice(1));
+      button.type = "button";
+      button.id = `${lead.lead_id}-${tab}-tab`;
+      button.dataset.tab = tab;
+      button.setAttribute("role", "tab");
+      button.setAttribute("aria-controls", `${lead.lead_id}-${tab}-panel`);
+      button.setAttribute("aria-selected", String(index === 0));
+      button.tabIndex = index === 0 ? 0 : -1;
+      tabList.append(button);
+
+      const panel = document.createElement("section");
+      panel.className = `tab-panel ${tab}-panel`;
+      panel.id = `${lead.lead_id}-${tab}-panel`;
+      panel.dataset.panel = tab;
+      panel.setAttribute("role", "tabpanel");
+      panel.setAttribute("aria-labelledby", button.id);
+      panel.hidden = index !== 0;
+      if (tab === "decision") {
+        const reason = document.createElement("section");
+        reason.className = "decision-copy";
+        reason.append(textElement("h3", "Why prioritized"), textElement("p", lead.reason), textElement("small", `${lead.confidence} confidence`));
+        const hook = document.createElement("section");
+        hook.className = "decision-copy hook-copy";
+        const hookHeading = document.createElement("div");
+        const copy = textElement("button", "Copy");
+        copy.type = "button";
+        copy.dataset.copyHook = "";
+        hookHeading.append(textElement("h3", "Grounded hook"), copy);
+        const hookText = textElement("p", lead.hook);
+        hookText.dataset.hookText = "";
+        hook.append(hookHeading, hookText);
+
+        const form = document.createElement("form");
+        form.className = "outcome-form";
+        form.dataset.outcomeForm = lead.lead_id;
+        const fieldset = document.createElement("fieldset");
+        fieldset.append(textElement("legend", "Recommendation disposition"));
+        const dispositions = document.createElement("div");
+        dispositions.className = "segmented-control";
+        for (const disposition of ["accepted", "overridden", "ignored"] as const) {
+          const label = document.createElement("label");
+          const input = document.createElement("input");
+          input.type = "radio";
+          input.name = `disposition-${lead.lead_id}`;
+          input.value = disposition;
+          input.required = true;
+          input.disabled = disposition === "accepted" && lead.priority_band === "Needs Manual Review";
+          label.append(input, textElement("span", disposition[0]!.toUpperCase() + disposition.slice(1)));
+          dispositions.append(label);
+        }
+        fieldset.append(dispositions);
+        const actionLabel = document.createElement("label");
+        actionLabel.className = "action-select";
+        const action = document.createElement("select");
+        action.name = "actionType";
+        for (const [value, label] of [["", "No linked action"], ["call", "Call"], ["email", "Email"], ["sequence", "Sequence"], ["manual_enrichment", "Manual enrichment"], ["nurture", "Nurture"], ["disqualify", "Disqualify"]]) {
+          const option = document.createElement("option");
+          option.value = value;
+          option.textContent = label;
+          action.append(option);
+        }
+        actionLabel.append(textElement("span", "Observed action (optional)"), action);
+        const submit = textElement("button", "Emit outcome events", "primary-button");
+        submit.type = "submit";
+        const output = document.createElement("output");
+        output.dataset.outcomeStatus = "";
+        output.setAttribute("aria-live", "polite");
+        form.append(fieldset, actionLabel, submit, output);
+        panel.append(reason, hook, form);
+      } else if (tab === "evidence") {
+        panel.append(textElement("h3", "Approved evidence ledger"));
+        const claims = document.createElement("ol");
+        claims.className = "tool-ledger";
+        for (const claim of lead.allowed_claims) {
+          const item = document.createElement("li");
+          item.append(textElement("strong", claim.text), textElement("p", claim.evidence_ids.join(", ")));
+          claims.append(item);
+        }
+        panel.append(claims);
+      } else if (tab === "crm") {
+        panel.append(textElement("h3", "Authoritative CRM context"), definitionList([
+          ["Owner", lead.crm_context.owner ?? "Unassigned"],
+          ["Lifecycle stage", lead.crm_context.lifecycle_stage ?? "Data unavailable"],
+          ["Routing status", lead.crm_context.routing_status ?? "Data unavailable"],
+          ["Company association", lead.crm_context.company_association.status],
+          ["Account ID", lead.account_id ?? "None"],
+          ["Source", lead.crm_context.source ?? "Data unavailable"]
+        ]));
+      } else if (tab === "run") {
+        panel.append(textElement("h3", "Evaluation run"));
+        const tools = document.createElement("ol");
+        tools.className = "tool-ledger";
+        for (const step of requiredToolSteps) {
+          const result = lead.tool_status[step];
+          const item = document.createElement("li");
+          item.append(textElement("span", step.replaceAll("_", " ")), textElement("strong", result.status), textElement("p", result.detail ?? result.completed_at));
+          tools.append(item);
+        }
+        panel.append(tools);
+      } else {
+        panel.append(textElement("h3", "Audit view"), definitionList([
+          ["Evaluation", lead.evaluation_id],
+          ["Score version", lead.score_version],
+          ["Writeback plan", lead.writeback_plan?.decision ?? "Unavailable"],
+          ["Writeback outcome", lead.writeback_outcome.status],
+          ["Recorded", lead.writeback_outcome.recorded_at],
+          ["Actor", "HubSpot analysis worker"]
+        ]));
+        const events = document.createElement("ol");
+        events.dataset.sessionEvents = "";
+        events.append(textElement("li", "No rep outcome events emitted."));
+        panel.append(events);
+      }
+      scroll.append(panel);
+    }
+    article.append(header, tabList, scroll);
+    return article;
   };
   const renderClientLeads = (leads: LeadPacket[]) => {
     const empty = document.querySelector<HTMLElement>("[data-empty-state]");
@@ -441,23 +600,28 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
     const ordered = rankDashboardLeads(leads);
     const list = document.createElement("ol");
     list.className = "client-lead-list";
-    for (const lead of ordered) {
+    for (const [leadIndex, lead] of ordered.entries()) {
       const item = document.createElement("li");
       item.dataset.clientLead = lead.lead_id;
       item.dataset.search = `${lead.lead_identity.name} ${lead.lead_identity.company} ${lead.lead_identity.title} ${lead.crm_context.owner ?? ""}`.toLowerCase();
       item.dataset.band = lead.priority_band;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.selectLead = lead.lead_id;
+      button.setAttribute("aria-pressed", String(leadIndex === 0));
       const heading = document.createElement("div");
       heading.append(
         textElement("strong", lead.lead_identity.company),
         textElement("span", `${lead.lead_identity.name}, ${lead.lead_identity.title}`)
       );
-      item.append(
+      button.append(
         textElement("strong", lead.priority_score === null ? "Review" : String(lead.priority_score), `score score-${lead.priority_band.toLowerCase().replaceAll(" ", "-")}`),
         heading,
         textElement("span", lead.priority_band),
         textElement("p", lead.reason),
         textElement("small", `${lead.crm_context.owner ?? "Unassigned"} · ${lead.writeback_outcome.status}`)
       );
+      item.append(button);
       list.append(item);
     }
     empty.replaceChildren(
@@ -468,14 +632,32 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
     empty.hidden = false;
     document.querySelector<HTMLElement>("[data-queue-table]")?.setAttribute("hidden", "");
     document.querySelector<HTMLElement>("[data-mobile-list]")?.setAttribute("hidden", "");
+    for (const key of Object.keys(packets)) delete packets[key];
+    for (const lead of ordered) packets[lead.lead_id] = {
+      request_id: lead.request_id,
+      evaluation_id: lead.evaluation_id,
+      lead_id: lead.lead_id,
+      account_id: lead.account_id,
+      score_version: lead.score_version,
+      priority_score: lead.priority_score,
+      priority_band: lead.priority_band
+    };
+    detailPanels.forEach((panel) => panel.remove());
+    detailPanels = ordered.map((lead, index) => createClientDetail(lead, index === 0));
+    detailPane?.append(...detailPanels);
+    selectButtons = [...list.querySelectorAll<HTMLButtonElement>("[data-select-lead]")];
+    selectedId = ordered[0]?.lead_id ?? null;
+    emittedViews.clear();
+    bindDetailControls();
     const count = document.querySelector<HTMLElement>("[data-result-count]");
     if (count) count.textContent = String(ordered.length);
     if (noSelection) {
-      noSelection.hidden = false;
+      noSelection.hidden = ordered.length > 0;
       noSelection.querySelector("h2")!.textContent = ordered.length ? "Live HubSpot results" : "Waiting for HubSpot";
       noSelection.querySelector("p")!.textContent = ordered.length ? "The current analyzed contacts are shown in the queue." : "Refresh the queue to analyze current CRM contacts.";
     }
     applyFilters();
+    if (selectedId && !mobile.matches) emitView(selectedId);
   };
   const emit = (events: PilotEvent[]) => events.forEach((event) => window.dispatchEvent(new CustomEvent("contextai:pilot-event", { detail: event })));
   const emitView = (leadId: string) => {
@@ -562,10 +744,6 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
   };
   const clearFilters = () => { if (search) search.value = ""; if (band) band.value = "all"; applyFilters(); };
 
-  selectButtons.forEach((button) => button.addEventListener("click", () => {
-    originButton = button;
-    selectLead(button.dataset.selectLead ?? "");
-  }));
   desktopRows.forEach((row) => row.addEventListener("click", (event) => {
     if ((event.target as HTMLElement).closest("button")) return;
     selectLead(row.dataset.leadRow ?? "", "decision", false, false);
@@ -595,79 +773,79 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
     if (leadId) selectLead(leadId, button.dataset.navTab ?? "decision");
   }));
 
-  detailPanels.forEach((panel) => {
-    const tabs = [...panel.querySelectorAll<HTMLButtonElement>("[role=tab]")];
-    tabs.forEach((tab, index) => {
-      tab.addEventListener("click", () => activateTab(panel, tab.dataset.tab ?? "decision"));
-      tab.addEventListener("keydown", (event) => {
-        const keys = ["ArrowLeft", "ArrowRight", "Home", "End"];
-        if (!keys.includes(event.key)) return;
+  const bindDetailControls = () => {
+    selectButtons.forEach((button) => button.addEventListener("click", () => {
+      originButton = button;
+      selectLead(button.dataset.selectLead ?? "");
+    }));
+    detailPanels.forEach((panel) => {
+      const tabs = [...panel.querySelectorAll<HTMLButtonElement>("[role=tab]")];
+      tabs.forEach((tab, index) => {
+        tab.addEventListener("click", () => activateTab(panel, tab.dataset.tab ?? "decision"));
+        tab.addEventListener("keydown", (event) => {
+          const keys = ["ArrowLeft", "ArrowRight", "Home", "End"];
+          if (!keys.includes(event.key)) return;
+          event.preventDefault();
+          const nextIndex = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+          activateTab(panel, tabs[nextIndex]?.dataset.tab ?? "decision", true);
+        });
+      });
+      panel.querySelector<HTMLButtonElement>("[data-back-to-queue]")?.addEventListener("click", () => {
+        shell?.classList.remove("mobile-detail");
+        window.scrollTo({ top: queueScroll, behavior: "auto" });
+        originButton?.focus({ preventScroll: true });
+      });
+      panel.querySelector<HTMLButtonElement>("[data-copy-hook]")?.addEventListener("click", async (event) => {
+        const button = event.currentTarget as HTMLButtonElement;
+        const text = button.closest(".hook-copy")?.querySelector<HTMLElement>("[data-hook-text]")?.textContent?.trim();
+        if (!text) return;
+        try {
+          await navigator.clipboard.writeText(text);
+          const previous = button.textContent;
+          button.textContent = "Copied";
+          announce("Grounded hook copied.");
+          setTimeout(() => button.textContent = previous, 1200);
+        } catch {
+          announce("Copy failed. Select the hook text and copy it manually.");
+        }
+      });
+      const form = panel.querySelector<HTMLFormElement>("[data-outcome-form]");
+      const action = form?.elements.namedItem("actionType") as HTMLSelectElement | null;
+      form?.addEventListener("submit", (event) => {
         event.preventDefault();
-        const nextIndex = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
-        activateTab(panel, tabs[nextIndex]?.dataset.tab ?? "decision", true);
+        const leadId = form.dataset.outcomeForm ?? "";
+        const packet = packets[leadId];
+        const disposition = new FormData(form).get(`disposition-${leadId}`);
+        if (!packet || !["accepted", "ignored", "overridden"].includes(String(disposition))) return;
+        const button = form.querySelector<HTMLButtonElement>("button[type=submit]");
+        const output = form.querySelector<HTMLOutputElement>("[data-outcome-status]");
+        const actionType = action?.value ? action.value as ActionType : undefined;
+        if (button) button.disabled = true;
+        try {
+          const events = dashboardOutcomeEvents({
+            packet,
+            disposition: disposition as "accepted" | "ignored" | "overridden",
+            actionType,
+            tenantId: "pilot-workspace",
+            actorType: "rep",
+            actorId: "dashboard-user",
+            configVersion: document.body.dataset.configVersion ?? "score-v0.1",
+            occurredAt: new Date().toISOString(),
+            idempotencySeed: `dashboard:${eventSessionId}:${packet.evaluation_id}:${String(disposition)}:${actionType ?? "none"}`
+          });
+          emit(events);
+          const list = activeDetail()?.querySelector<HTMLOListElement>("[data-session-events]");
+          if (list) list.replaceChildren(...events.map((pilotEvent) => textElement("li", `${pilotEvent.name}: ${pilotEvent.name === "recommendation.disposition" ? pilotEvent.data.disposition : pilotEvent.data.actionType}`)));
+          if (output) output.textContent = `${events.length} valid event${events.length === 1 ? "" : "s"} emitted. No external action was executed.`;
+          announce(output?.textContent ?? "Outcome events emitted.");
+        } catch (error) {
+          if (output) output.textContent = `Event emission failed: ${error instanceof Error ? error.message : String(error)}`;
+          if (button) button.disabled = false;
+        }
       });
     });
-  });
-  document.querySelectorAll<HTMLButtonElement>("[data-back-to-queue]").forEach((button) => button.addEventListener("click", () => {
-    shell?.classList.remove("mobile-detail");
-    window.scrollTo({ top: queueScroll, behavior: "auto" });
-    originButton?.focus({ preventScroll: true });
-  }));
-  document.querySelectorAll<HTMLButtonElement>("[data-copy-hook]").forEach((button) => button.addEventListener("click", async () => {
-    const text = button.closest(".hook-copy")?.querySelector<HTMLElement>("[data-hook-text]")?.textContent?.trim();
-    if (!text) return;
-    try {
-      await navigator.clipboard.writeText(text);
-      const previous = button.textContent;
-      button.textContent = "Copied";
-      announce("Grounded hook copied.");
-      setTimeout(() => button.textContent = previous, 1200);
-    } catch {
-      announce("Copy failed. Select the hook text and copy it manually.");
-    }
-  }));
-
-  document.querySelectorAll<HTMLFormElement>("[data-outcome-form]").forEach((form) => {
-    const action = form.elements.namedItem("actionType") as HTMLSelectElement | null;
-    form.addEventListener("submit", (event) => {
-      event.preventDefault();
-      const leadId = form.dataset.outcomeForm ?? "";
-      const packet = packets[leadId];
-      const disposition = new FormData(form).get(`disposition-${leadId}`);
-      if (!packet || !["accepted", "ignored", "overridden"].includes(String(disposition))) return;
-      const button = form.querySelector<HTMLButtonElement>("button[type=submit]");
-      const output = form.querySelector<HTMLOutputElement>("[data-outcome-status]");
-      const actionType = action?.value ? action.value as ActionType : undefined;
-      if (button) button.disabled = true;
-      try {
-        const events = dashboardOutcomeEvents({
-          packet,
-          disposition: disposition as "accepted" | "ignored" | "overridden",
-          actionType,
-          tenantId: "pilot-workspace",
-          actorType: "rep",
-          actorId: "dashboard-user",
-          configVersion: document.body.dataset.configVersion ?? "score-v0.1",
-          occurredAt: new Date().toISOString(),
-          idempotencySeed: `dashboard:${eventSessionId}:${packet.evaluation_id}:${String(disposition)}:${actionType ?? "none"}`
-        });
-        emit(events);
-        const list = activeDetail()?.querySelector<HTMLOListElement>("[data-session-events]");
-        if (list) {
-          list.replaceChildren(...events.map((pilotEvent) => {
-            const item = document.createElement("li");
-            item.textContent = `${pilotEvent.name}: ${pilotEvent.name === "recommendation.disposition" ? pilotEvent.data.disposition : pilotEvent.data.actionType}`;
-            return item;
-          }));
-        }
-        if (output) output.textContent = `${events.length} valid event${events.length === 1 ? "" : "s"} emitted. No external action was executed.`;
-        announce(output?.textContent ?? "Outcome events emitted.");
-      } catch (error) {
-        if (output) output.textContent = `Event emission failed: ${error instanceof Error ? error.message : String(error)}`;
-        if (button) button.disabled = false;
-      }
-    });
-  });
+  };
+  bindDetailControls();
 
   const refreshQueue = async (button: HTMLButtonElement) => {
     const loading = document.querySelector<HTMLElement>("[data-loading-ledger]");
@@ -819,9 +997,11 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
   .empty-state { padding: 64px 24px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); text-align: center; }
   .empty-state h2 { font-size: 18px; }.empty-state p { max-width: 48ch; margin: 6px auto 16px; color: var(--muted); }
   .client-lead-list { display: grid; gap: 8px; margin: 20px auto 0; padding: 0; list-style: none; text-align: left; }
-  .client-lead-list li { display: grid; grid-template-columns: 64px minmax(160px, 1fr) 150px; gap: 6px 16px; align-items: center; padding: 14px; border: 1px solid var(--line); border-radius: 6px; }
-  .client-lead-list li > p, .client-lead-list li > small { grid-column: 2 / -1; max-width: none; margin: 0; }
-  .client-lead-list li > div { display: grid; }.client-lead-list li > div span, .client-lead-list li > small { color: var(--muted); }
+  .client-lead-list li { border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .client-lead-list li > button { width: 100%; display: grid; grid-template-columns: 64px minmax(160px, 1fr) 150px; gap: 6px 16px; align-items: center; padding: 14px; border: 0; color: var(--ink); background: transparent; text-align: left; }
+  .client-lead-list li > button[aria-pressed="true"] { background: var(--accent-soft); box-shadow: inset 3px 0 var(--accent); }
+  .client-lead-list li > button > p, .client-lead-list li > button > small { grid-column: 2 / -1; max-width: none; margin: 0; }
+  .client-lead-list li > button > div { display: grid; }.client-lead-list li > button > div span, .client-lead-list li > button > small { color: var(--muted); }
   .primary-button { padding: 0 13px; border: 1px solid var(--accent); border-radius: 5px; color: white; background: var(--accent); font-weight: 750; }
   .primary-button:hover { background: var(--accent-dark); }
   .loading-ledger { border: 1px solid var(--line); border-radius: 6px; background: var(--surface); overflow: hidden; }
@@ -916,7 +1096,7 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
     .filter-control select { width: 112px; }
     .run-summary { grid-template-columns: 1fr 1fr; }
     .run-summary p:nth-child(2) { border-right: 0; }.run-summary p:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
-    .client-lead-list li { grid-template-columns: 56px 1fr; }.client-lead-list li > span, .client-lead-list li > p, .client-lead-list li > small { grid-column: 2; }
+    .client-lead-list li > button { grid-template-columns: 56px 1fr; }.client-lead-list li > button > span, .client-lead-list li > button > p, .client-lead-list li > button > small { grid-column: 2; }
     .queue-table-wrap { display: none; }
     .mobile-lead-list { display: block; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); overflow: hidden; }
     .mobile-lead-list li { border-bottom: 1px solid var(--line); }.mobile-lead-list li:last-child { border-bottom: 0; }

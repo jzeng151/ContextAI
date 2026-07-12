@@ -140,10 +140,16 @@ test("dashboard runtime keeps refresh secure, bounded, auditable, and current", 
   assert.match(server, /adminOrigins\.has\(request\.headers\.origin\)/);
   assert.match(server, /index \+= 4/);
   assert.match(server, /evaluateLead\(\{\s*identity,/);
+  assert.match(server, /recordPilotOwner: false/);
   assert.match(server, /result\.value\.packet/);
   assert.match(page, /fetchDashboard\("\/dashboard"\)/);
   assert.match(page, /renderClientLeads/);
   assert.match(page, /dataset\.clientLead/);
+  assert.match(page, /createClientDetail/);
+  assert.match(page, /dataset\.leadDetail/);
+  assert.match(page, /packets\[lead\.lead_id\]/);
+  assert.match(page, /bindDetailControls/);
+  assert.match(page, /dataset\.outcomeForm/);
   assert.match(page, /leads = fixtureLeads/);
   assert.doesNotMatch(page, /location\.reload\(\)/);
 });
