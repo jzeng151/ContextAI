@@ -249,10 +249,32 @@ export const migrations: readonly Migration[] = [
   },
   {
     version: 5,
+    name: "immutable rollback links",
+    sql: `
+      ALTER TABLE writeback_audit_records ADD COLUMN policy_version TEXT NOT NULL DEFAULT 'legacy';
+      CREATE UNIQUE INDEX rollback_links_original_audit ON rollback_links (original_audit_id);
+      CREATE TRIGGER rollback_links_no_update
+      BEFORE UPDATE ON rollback_links BEGIN SELECT RAISE(ABORT, 'rollback links are append-only'); END;
+      CREATE TRIGGER rollback_links_no_delete
+      BEFORE DELETE ON rollback_links BEGIN SELECT RAISE(ABORT, 'rollback links are append-only'); END;
+      CREATE TRIGGER rollback_links_no_duplicate
+      BEFORE INSERT ON rollback_links
+      WHEN EXISTS (SELECT 1 FROM rollback_links WHERE rollback_id = NEW.rollback_id)
+      BEGIN SELECT RAISE(ABORT, 'rollback links are append-only'); END;
+    `
+  },
+  {
+    version: 6,
+    name: "writeback audit actor identity",
+    sql: `
+      ALTER TABLE writeback_audit_records ADD COLUMN actor_id TEXT NOT NULL DEFAULT 'legacy';
+    `
+  },
+  {
+    version: 7,
     name: "request identity and pilot access controls",
     sql: `
       ALTER TABLE evaluation_runs ADD COLUMN assigned_rep_id TEXT;
-      ALTER TABLE writeback_audit_records ADD COLUMN actor_id TEXT;
       ALTER TABLE writeback_audit_records ADD COLUMN access_request_id TEXT;
 
       CREATE TABLE access_audit_records (
@@ -280,7 +302,7 @@ export const migrations: readonly Migration[] = [
     `
   },
   {
-    version: 6,
+    version: 8,
     name: "encrypted integration credentials and operations",
     sql: `
       ALTER TABLE integrations ADD COLUMN access_token_ciphertext TEXT;
@@ -297,7 +319,7 @@ export const migrations: readonly Migration[] = [
     `
   },
   {
-    version: 7,
+    version: 9,
     name: "retention purge controls",
     sql: `
       ALTER TABLE evaluation_runs ADD COLUMN purged_at TEXT;
@@ -312,10 +334,16 @@ export const migrations: readonly Migration[] = [
       WHEN OLD.retention_class = 'writeback_audit_24_months'
         OR NOT EXISTS (SELECT 1 FROM retention_job_guard WHERE active = 1)
       BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
+
+      DROP TRIGGER grounding_audit_records_no_update;
+      CREATE TRIGGER grounding_audit_records_no_update
+      BEFORE UPDATE ON grounding_audit_records
+      WHEN NOT EXISTS (SELECT 1 FROM retention_job_guard WHERE active = 1)
+      BEGIN SELECT RAISE(ABORT, 'grounding audit records are append-only'); END;
     `
   },
   {
-    version: 8,
+    version: 10,
     name: "access audit replacement guard",
     sql: `
       CREATE TRIGGER IF NOT EXISTS access_audit_records_no_duplicate
@@ -325,7 +353,7 @@ export const migrations: readonly Migration[] = [
     `
   },
   {
-    version: 9,
+    version: 11,
     name: "legacy security backfills",
     sql: `
       UPDATE integrations SET status = 'disabled', last_error = 'oauth_reconnect_required'

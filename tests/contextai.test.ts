@@ -26,6 +26,8 @@ import {
   revokeHubSpotRefreshToken,
   writeHubSpotEnrichment,
 } from "../src/lib/integrations.ts";
+import { RuntimeStore } from "../src/lib/persistence.ts";
+import { hubSpotWritebackPolicy, planWriteback } from "../src/lib/writeback.ts";
 
 const defaultContext = createScoringRunContext(defaultConfigVersion);
 
@@ -163,27 +165,37 @@ test("writeback eligibility allows safe fields alongside non-writable evidence",
   }), true);
 });
 
-test("HubSpot writeback requires an eligible lead and allowlisted properties", async () => {
+test("HubSpot PATCH only receives policy-planned properties after explicit live authorization", async () => {
   const eligible = leads.find((item) => item.lead_id === "no-public-signal");
-  const stale = leads.find((item) => item.lead_id === "stale-writeback");
-  assert.ok(eligible && stale);
+  assert.ok(eligible);
   const config = { accessToken: "test" };
-
-  await assert.rejects(writeHubSpotEnrichment(stale, "1", { company: "SafeCo" }, ["company"], config), /not eligible/i);
-  await assert.rejects(writeHubSpotEnrichment(eligible, "1", { hubspot_owner_id: "2" }, ["company"], config), /not allowlisted/i);
-  await assert.rejects(writeHubSpotEnrichment(eligible, "1", { annualrevenue: "900" }, ["annualrevenue"], config), /lack eligible evidence/i);
+  const store = new RuntimeStore(":memory:");
+  store.saveTenant("tenant-1", "Pilot tenant");
+  store.saveConfigVersion({ requestId: "hubspot-write", tenantId: "tenant-1", actorId: "admin-1", role: "revops_admin" }, defaultConfigVersion);
+  store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "hubspot-write", packet: eligible });
+  const policy = {
+    ...hubSpotWritebackPolicy,
+    liveWritesEnabled: true,
+    fields: { employees: hubSpotWritebackPolicy.fields.employees!, tech_stack: hubSpotWritebackPolicy.fields.tech_stack! }
+  };
+  const plan = planWriteback(eligible, policy);
+  const identity = { requestId: "hubspot-write", tenantId: "tenant-1", actorId: "admin-1", role: "revops_admin" } as const;
 
   const originalFetch = globalThis.fetch;
-  let body = "";
+  const bodies: Array<{ properties: Record<string, string> }> = [];
   globalThis.fetch = async (_input, init) => {
-    body = String(init?.body);
+    bodies.push(JSON.parse(String(init?.body)));
     return new Response(JSON.stringify({ id: "1", properties: { numberofemployees: "900" } }), { status: 200 });
   };
   try {
-    await writeHubSpotEnrichment(eligible, "1", { numberofemployees: "900" }, ["numberofemployees"], config);
-    assert.deepEqual(JSON.parse(body), { properties: { numberofemployees: "900" } });
+    await writeHubSpotEnrichment(plan, { store, tenantId: "tenant-1", actorType: "system", actorId: "writeback-service", identity, policy }, config);
+    assert.equal(bodies.length, 0);
+    await writeHubSpotEnrichment(plan, { store, tenantId: "tenant-1", actorType: "system", actorId: "writeback-service", identity, policy, mode: "live", authorizedLiveWrite: true }, config);
+    assert.ok(bodies.some(({ properties }) => properties.numberofemployees === "900"));
+    assert.ok(bodies.some(({ properties }) => properties.technology_tags === "HubSpot;Salesforce"));
   } finally {
     globalThis.fetch = originalFetch;
+    store.close();
   }
 });
 

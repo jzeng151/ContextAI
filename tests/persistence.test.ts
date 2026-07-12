@@ -4,6 +4,7 @@ import { leads } from "../src/data/leads.ts";
 import { defaultConfigVersion } from "../src/lib/config.ts";
 import { assertPilotEvent, createEventRecorder, pilotEventNames, type PilotEvent } from "../src/lib/instrumentation.ts";
 import { migrateDatabase, migrations } from "../src/lib/migrations.ts";
+import { hubSpotRequiredScopes } from "../src/lib/integrations.ts";
 import { createEvaluationIdentifiers, RuntimeStore } from "../src/lib/persistence.ts";
 import { compileAllowedClaims, fallbackGroundedExplanation } from "../src/lib/grounding.ts";
 import type { RequestIdentity } from "../src/lib/security.ts";
@@ -77,7 +78,7 @@ test("a clean store upgrades from schema v1 and failed migrations roll back", ()
     );
 
     migrateDatabase(store.database);
-    assert.equal((store.database.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 9);
+    assert.equal((store.database.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 11);
     assert.deepEqual(
       { ...(store.database.prepare("SELECT status, last_error FROM integrations WHERE integration_id = 'legacy-hubspot'").get() as object) },
       { status: "disabled", last_error: "oauth_reconnect_required" }
@@ -89,9 +90,9 @@ test("a clean store upgrades from schema v1 and failed migrations roll back", ()
 
     assert.throws(() => migrateDatabase(store.database, [
       ...migrations,
-      { version: 10, name: "broken", sql: "CREATE TABLE should_rollback (id TEXT); INVALID SQL;" }
-    ]), /Migration 10.*failed/);
-    assert.equal((store.database.prepare("SELECT count(*) AS count FROM schema_migrations WHERE version = 10").get() as { count: number }).count, 0);
+      { version: 12, name: "broken", sql: "CREATE TABLE should_rollback (id TEXT); INVALID SQL;" }
+    ]), /Migration 12.*failed/);
+    assert.equal((store.database.prepare("SELECT count(*) AS count FROM schema_migrations WHERE version = 12").get() as { count: number }).count, 0);
     assert.throws(() => store.database.prepare("SELECT * FROM should_rollback").all(), /no such table/i);
   } finally {
     store.close();
@@ -302,10 +303,17 @@ test("integration credentials are encrypted, rate limited, and revoked on discon
       (store.database.prepare("SELECT token_expires_at FROM integrations WHERE integration_id = 'hubspot-1'").get() as { token_expires_at: string }).token_expires_at,
       "2026-07-12T00:30:01.000Z"
     );
+    assert.equal(await store.getHubSpotAccessToken(
+      integrationIdentity,
+      "hubspot-1",
+      key,
+      "2026-07-12T00:30:02.000Z",
+      async () => ({ access_token: "access-minimal", refresh_token: "refresh-minimal", expires_in: 1800 })
+    ), "access-minimal");
 
     let revoked = "";
     await store.disconnectHubSpotIntegration(identity, "hubspot-1", key, async (token) => { revoked = token; });
-    assert.equal(revoked, "refresh-rotated");
+    assert.equal(revoked, "refresh-minimal");
     await assert.rejects(
       store.getHubSpotAccessToken(integrationIdentity, "hubspot-1", key, "2026-07-11T23:01:00.000Z"),
       /disconnected/i
@@ -346,6 +354,20 @@ test("integration credentials are encrypted, rate limited, and revoked on discon
     `).all() as Array<{ outcome: string }>;
     assert.ok(tokenAudits.some(({ outcome }) => outcome === "allowed"));
     assert.ok(tokenAudits.some(({ outcome }) => outcome === "denied"));
+
+    store.saveIntegration(identity, { integrationId: "hubspot-refresh-fail", provider: "hubspot", externalAccountId: "789", status: "disabled" });
+    store.activateHubSpotIntegration(identity, "hubspot-refresh-fail", {
+      accessToken: "expired", refreshToken: "revoked", scopes: [...hubSpotRequiredScopes],
+      expiresAt: "2026-07-12T00:00:00.000Z", externalAccountId: "789",
+    }, key);
+    await assert.rejects(
+      store.getHubSpotAccessToken(integrationIdentity, "hubspot-refresh-fail", key, "2026-07-12T00:00:01.000Z", async () => { throw new Error("invalid_grant"); }),
+      /invalid_grant/
+    );
+    assert.deepEqual(
+      { ...(store.database.prepare("SELECT status, last_error FROM integrations WHERE integration_id = 'hubspot-refresh-fail'").get() as object) },
+      { status: "error", last_error: "token_refresh_failed" }
+    );
 
     store.saveIntegration(identity, { integrationId: "hubspot-placeholder", provider: "hubspot", externalAccountId: "456", status: "disabled" });
     assert.throws(() => store.recordIntegrationHealth(integrationIdentity, "hubspot-placeholder", "healthy"), /not found/i);
@@ -444,6 +466,9 @@ test("retention purges customer data while preserving required audits", () => {
     assert.equal((store.database.prepare("SELECT count(*) AS count FROM evidence").get() as { count: number }).count, 0);
     assert.equal((store.database.prepare("SELECT count(*) AS count FROM writeback_audit_records").get() as { count: number }).count, 1);
     assert.equal((store.database.prepare("SELECT count(*) AS count FROM grounding_audit_records").get() as { count: number }).count, 3);
+    const redactedGrounding = store.database.prepare("SELECT compiled_claims_json, output_json FROM grounding_audit_records WHERE grounding_audit_id = 1").get() as { compiled_claims_json: string; output_json: string };
+    assert.deepEqual(JSON.parse(redactedGrounding.compiled_claims_json), []);
+    assert.deepEqual(JSON.parse(redactedGrounding.output_json), {});
     const purged = store.database.prepare("SELECT packet_json, lead_id, purged_at FROM evaluation_runs WHERE evaluation_id = ?").get(packet.evaluation_id) as { packet_json: string; lead_id: string; purged_at: string };
     assert.equal(purged.packet_json, "null");
     assert.equal(purged.lead_id, "[deleted]");
@@ -486,7 +511,7 @@ test("pilot event contract records every event idempotently without PII or repor
       { ...base, idempotencyKey: "fixture:view", name: "lead.viewed", data: { surface: "dashboard" } },
       { ...base, idempotencyKey: "fixture:action", name: "action.first_meaningful", data: { actionType: "call" } },
       { ...base, idempotencyKey: "fixture:disposition", name: "recommendation.disposition", data: { disposition: "accepted", actionType: "call" } },
-      { ...base, evidenceRefs: [packet.crm_context.evidence[0]!.evidence_id], idempotencyKey: "fixture:source", name: "source.contribution", data: { sourceType: "crm", contribution: "primary", weakSignal: false } },
+      { ...base, evidenceRefs: [packet.crm_context.evidence[0]!.evidence_id], idempotencyKey: "fixture:source", name: "source.contribution", data: { sourceType: "crm", contribution: "primary", weakSignal: false, hotMaking: false } },
       { ...base, retentionClass: "writeback_audit_24_months", idempotencyKey: "fixture:write", name: "writeback.outcome", data: { writebackId: "write-1", outcome: "Written", fieldName: "contact_title" } },
       { ...base, retentionClass: "writeback_audit_24_months", idempotencyKey: "fixture:edit", name: "writeback.edit", data: { writebackId: "write-1", fieldName: "contact_title" } },
       { ...base, retentionClass: "writeback_audit_24_months", idempotencyKey: "fixture:rollback", name: "writeback.rollback", data: { writebackId: "write-1", rollbackId: "rollback-1", fieldName: "contact_title" } },
@@ -509,6 +534,9 @@ test("pilot event contract records every event idempotently without PII or repor
     const missingRequired = structuredClone(events[3]!) as unknown as { data: Record<string, unknown> };
     delete missingRequired.data.actionType;
     assert.throws(() => assertPilotEvent(missingRequired), /actionType is required/i);
+    const missingHotMaking = structuredClone(events[5]!) as unknown as { data: Record<string, unknown> };
+    delete missingHotMaking.data.hotMaking;
+    assert.throws(() => assertPilotEvent(missingHotMaking), /hotMaking is required/i);
     assert.throws(
       () => assertPilotEvent({ ...editEvent, data: { ...editEvent.data, fieldName: undefined } }),
       /fieldName is required/i

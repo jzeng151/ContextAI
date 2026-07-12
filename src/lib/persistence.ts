@@ -22,7 +22,7 @@ type EvaluationInput = Readonly<{
   retentionAfter?: string;
 }>;
 
-type AuditRecord = Readonly<{
+export type AuditRecord = Readonly<{
   auditId?: string;
   evaluationId: string;
   requestId: string;
@@ -38,7 +38,33 @@ type AuditRecord = Readonly<{
   outcome: string;
   reason: string;
   scoreVersion: string;
+  policyVersion?: string;
+  actorType?: string;
+  actorId?: string;
   recordedAt?: string;
+}>;
+
+export type StoredAuditRecord = Readonly<{
+  audit_id: string;
+  tenant_id: string;
+  evaluation_id: string;
+  request_id: string;
+  crm_object_type: string;
+  crm_object_id: string;
+  field_name: string;
+  previous_value_json: string | null;
+  new_value_json: string | null;
+  source_name: string;
+  source_ref: string;
+  source_updated_at: string;
+  confidence: string;
+  outcome: string;
+  reason: string;
+  score_version: string;
+  policy_version: string;
+  actor_type: string;
+  actor_id: string;
+  recorded_at: string;
 }>;
 
 const controlText = /[\u0000-\u001f\u007f]/;
@@ -165,7 +191,7 @@ export class RuntimeStore {
     try {
       if (identity.role !== "system" && identity.role !== "integration") throw new Error("Integration worker access required");
       const integration = this.database.prepare(`
-        SELECT status, external_account_id, access_token_ciphertext, refresh_token_ciphertext, token_expires_at,
+        SELECT status, external_account_id, access_token_ciphertext, refresh_token_ciphertext, scopes_json, token_expires_at,
           rate_limited_until, revoked_at
         FROM integrations WHERE tenant_id = ? AND integration_id = ? AND provider = 'hubspot'
       `).get(identity.tenantId, integrationId) as {
@@ -173,6 +199,7 @@ export class RuntimeStore {
         external_account_id: string;
         access_token_ciphertext: string | null;
         refresh_token_ciphertext: string | null;
+        scopes_json: string;
         token_expires_at: string | null;
         rate_limited_until: string | null;
         revoked_at: string | null;
@@ -185,8 +212,18 @@ export class RuntimeStore {
       let accessToken: string;
       if (!integration.token_expires_at || Date.parse(integration.token_expires_at) <= nowMs) {
         if (!integration.refresh_token_ciphertext) throw new Error("HubSpot refresh token is unavailable");
-        const tokens = await refresh(decryptSecret(integration.refresh_token_ciphertext, key));
-        if (String(tokens.hub_id) !== integration.external_account_id || hubSpotRequiredScopes.some((scope) => !tokens.scopes.includes(scope))) {
+        let tokens: HubSpotOAuthTokens;
+        try {
+          tokens = await refresh(decryptSecret(integration.refresh_token_ciphertext, key));
+        } catch (error) {
+          this.database.prepare(`
+            UPDATE integrations SET status = 'error', last_error = 'token_refresh_failed'
+            WHERE tenant_id = ? AND integration_id = ? AND status = 'active' AND revoked_at IS NULL
+          `).run(identity.tenantId, integrationId);
+          throw error;
+        }
+        const scopes = tokens.scopes ?? parse<string[]>(integration.scopes_json);
+        if ((tokens.hub_id !== undefined && String(tokens.hub_id) !== integration.external_account_id) || hubSpotRequiredScopes.some((scope) => !scopes.includes(scope))) {
           throw new Error("HubSpot returned tokens for the wrong account or scopes");
         }
         const result = this.database.prepare(`
@@ -194,7 +231,7 @@ export class RuntimeStore {
             token_expires_at = ?, last_error = NULL
           WHERE tenant_id = ? AND integration_id = ? AND status = 'active' AND revoked_at IS NULL
         `).run(
-          encryptSecret(tokens.access_token, key), encryptSecret(tokens.refresh_token, key), json(tokens.scopes),
+          encryptSecret(tokens.access_token, key), encryptSecret(tokens.refresh_token, key), json(scopes),
           new Date(nowMs + tokens.expires_in * 1000).toISOString(), identity.tenantId, integrationId
         );
         if (result.changes !== 1) throw new Error("HubSpot integration changed during token refresh");
@@ -388,17 +425,51 @@ export class RuntimeStore {
       INSERT INTO writeback_audit_records (
         audit_id, tenant_id, evaluation_id, request_id, crm_object_type, crm_object_id, field_name,
         previous_value_json, new_value_json, source_name, source_ref, source_updated_at, confidence,
-        outcome, reason, score_version, actor_type, recorded_at, actor_id, access_request_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        outcome, reason, score_version, policy_version, actor_type, actor_id, recorded_at, access_request_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       auditId, identity.tenantId, input.evaluationId, input.requestId, input.crmObjectType, input.crmObjectId,
       input.fieldName, input.previousValue === undefined ? null : json(input.previousValue),
       input.newValue === undefined ? null : json(input.newValue), input.sourceName, input.sourceRef,
-      input.sourceUpdatedAt, input.confidence, input.outcome, input.reason, input.scoreVersion, identity.role,
-      input.recordedAt ?? new Date().toISOString(), identity.actorId, identity.requestId
+      input.sourceUpdatedAt, input.confidence, input.outcome, input.reason, input.scoreVersion, input.policyVersion ?? input.scoreVersion,
+      input.actorType ?? identity.role, input.actorId ?? identity.actorId,
+      input.recordedAt ?? new Date().toISOString(), identity.requestId
     );
     this.recordAccess(identity, "writeback.execute", "evaluation", input.evaluationId, "allowed");
     return auditId;
+  }
+
+  getAuditRecord(auditId: string) {
+    return this.database.prepare("SELECT * FROM writeback_audit_records WHERE audit_id = ?").get(auditId) as StoredAuditRecord | undefined;
+  }
+
+  listWrittenAuditRecords(tenantId: string, evaluationId: string) {
+    return this.database.prepare(`
+      SELECT audit.* FROM writeback_audit_records audit
+      LEFT JOIN rollback_links link ON link.original_audit_id = audit.audit_id
+      WHERE audit.tenant_id = ? AND audit.evaluation_id = ? AND audit.outcome = 'Written'
+        AND audit.audit_id NOT LIKE 'rollback:%' AND link.original_audit_id IS NULL
+      ORDER BY audit.recorded_at, audit.audit_id
+    `).all(tenantId, evaluationId) as StoredAuditRecord[];
+  }
+
+  appendRollbackLink(rollbackId: string, tenantId: string, evaluationId: string, originalAuditId: string, rollbackAuditId: string) {
+    this.database.prepare(`
+      INSERT INTO rollback_links (rollback_id, tenant_id, evaluation_id, original_audit_id, rollback_audit_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(rollbackId, tenantId, evaluationId, originalAuditId, rollbackAuditId, new Date().toISOString());
+    return rollbackId;
+  }
+
+  getRollbackLink(rollbackId: string) {
+    return this.database.prepare("SELECT * FROM rollback_links WHERE rollback_id = ?").get(rollbackId) as Readonly<{
+      rollback_id: string;
+      tenant_id: string;
+      evaluation_id: string;
+      original_audit_id: string;
+      rollback_audit_id: string;
+      created_at: string;
+    }> | undefined;
   }
 
   appendGroundingAudit(tenantId: string, explanation: GroundedExplanation, claims: GroundedClaim[], audit: GroundingAudit) {
@@ -494,6 +565,12 @@ export class RuntimeStore {
         this.database.prepare(`
           DELETE FROM events
           WHERE tenant_id = ? AND evaluation_id = ? AND retention_class != 'writeback_audit_24_months'
+        `).run(identity.tenantId, evaluationId);
+        this.database.prepare(`
+          UPDATE grounding_audit_records
+          SET allowed_claim_ids_json = '[]', evidence_ids_json = '[]', compiled_claims_json = '[]',
+            hook_claim_ids_json = '[]', output_json = '{}'
+          WHERE tenant_id = ? AND evaluation_id = ?
         `).run(identity.tenantId, evaluationId);
         this.database.prepare(`
           UPDATE evaluation_runs SET packet_json = 'null', lead_id = '[deleted]', account_id = NULL, assigned_rep_id = NULL, purged_at = ?

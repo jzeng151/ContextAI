@@ -4,7 +4,7 @@ ContextAI is a RevOps-owned lead prioritization and data-quality layer for B2B G
 
 This document is the delivery and status view of the PRD. The source-of-truth order is: `PRD.md` for product and safety requirements; shared schemas and active configuration for runtime contracts; this roadmap for phase and status; and GitHub issues for executable scope, dependencies, and acceptance criteria.
 
-Implementation status below was reconciled against `main` plus the pending #7 dashboard work on July 11, 2026. Checked #7 items describe implemented behavior on its branch; issue completion still requires integration review under the Done gate below. PR #26's reviewed adapter-contract defects are addressed locally; #5 remains incomplete until validation and review pass.
+Implementation status below was reconciled against `main` plus the pending #4 writeback and #7 dashboard work on July 12, 2026. Checked branch items describe implemented behavior; issue completion still requires integration review under the Done gate below. PR #26's reviewed adapter-contract defects are addressed locally; #5 remains incomplete until validation and review pass.
 
 ## 1. Product Focus
 
@@ -72,6 +72,7 @@ Poor-fit v0 segments:
 - [x] Configurable deterministic scoring, active score-version linkage, evidence-backed drivers, freshness-aware confidence, and fixture rescoring merged in PR #25
 - [x] Provider-neutral enrichment, intent/engagement, and public-signal adapter foundation with bounded retries, terminal failure mapping, and reviewed contract fixes in PR #26; full #5 completion still requires validation and review
 - [x] Native Node/SQLite runtime foundation with transactional migrations, durable evaluation/config/evidence/writeback/review records, idempotency, fixture seeding, retention hooks, and append-only audit/events in #13
+- [x] Deterministic dry-run-first CRM writeback planning, trusted-policy execution, durable reservations, immutable audits, and field/lead rollback in PR #34; final integration review remains
 - [x] Stable pilot event contract, PII rejection, event idempotency, retention classes, failure-isolated recording, and metric dictionary inputs in #9
 - [x] Deterministic allowed-claim compilation, exact grounded-output validation, safe LLM fallbacks, fixture-backed safety evals, and append-only grounding audits for #6
 - [x] Fixture-backed standalone decision desk, approved-evidence ledger, audit tabs, manual-review flow, responsive triage, and contract-safe outcome events in #7; integration review remains
@@ -88,7 +89,7 @@ Poor-fit v0 segments:
 - [x] Implement real `fetch_intent_triggers`
 - [x] Implement real `fetch_public_signals`
 - [x] Implement deterministic scoring service
-- [ ] Implement deterministic CRM writeback evaluation before LLM invocation
+- [x] Implement deterministic CRM writeback evaluation before LLM invocation
 - [x] Implement OpenRouter-backed LLM explanation client foundation
 - [x] Implement HubSpot writeback client foundation
 - [x] Validate grounded LLM output against the required schema and evidence IDs
@@ -158,7 +159,7 @@ Source conflict rules:
 
 - [x] Contract declares CRM owner, lifecycle stage, routing, open-opportunity, association, and duplicate state authoritative; production mapping remains in #15
 - [x] Verified customer CRM data overrides enrichment unless blank, stale, or flagged low quality
-- [ ] Newer enrichment can replace stale CRM firmographics only after confidence/source-quality checks
+- [x] Newer enrichment can replace stale CRM firmographics only after confidence/source-quality checks
 - [x] Contract requires public-signal source name, publication date, and either a URL or stable provider record ID
 - [x] Contract requires ambiguous associations, duplicate risk, unresolved/conflicting corporate domains, and material high-impact conflicts to use Needs Manual Review and block eligible writeback
 
@@ -237,7 +238,7 @@ Grounding rules:
 
 ContextAI may write verified enrichment back to CRM only through audited `write_crm_enrichment`. The LLM never decides whether a field should be written.
 
-Live writeback remains dry-run/feature-flagged until #4 proves schema, allowlist, source confidence/freshness, conflict precedence, blocked downstream side effects, idempotency, immutable audit, and rollback. Scoring freshness and writeback eligibility are separate policies; evidence usable for scoring is not automatically writable.
+PR #34 implements the #4 schema, allowlist, source confidence/freshness, conflict precedence, blocked downstream side effects, idempotency, immutable audit, and rollback gate. Live writeback remains disabled by default pending final integration review and the production authorization/orchestration boundaries in #14/#15. Scoring freshness and writeback eligibility are separate policies; evidence usable for scoring is not automatically writable.
 
 The packet's `writeback_plan` is only the deterministic policy result and may be `null` when evaluation fails. `writeback_outcome` is the authoritative observed execution status. An Eligible plan in dry-run remains Skipped; it is never presented as Written without CRM confirmation.
 
@@ -245,15 +246,15 @@ Eligible automated writeback fields for v0:
 
 - [ ] Company domain
 - [ ] Company name
-- [ ] Company size band
+- [x] Company size / employee count
 - [ ] Industry
-- [ ] Revenue band
+- [x] Revenue band
 - [ ] Headquarters country/region
 - [ ] LinkedIn company URL
 - [ ] Contact title
 - [ ] Contact seniority
 - [ ] Contact department
-- [ ] Technology tags
+- [x] Technology tags
 - [ ] Source-backed hiring signal
 - [ ] Source-backed funding signal
 - [ ] Last enrichment verified date
@@ -261,63 +262,63 @@ Eligible automated writeback fields for v0:
 
 Blocked from automated writeback in v0:
 
-- [ ] Lead status
-- [ ] Lifecycle stage
-- [ ] Owner
-- [ ] Deal stage
-- [ ] Forecast category
-- [ ] Opportunity amount
-- [ ] Disqualification reason
-- [ ] External buying-intent score unless stored as clearly labeled external field
-- [ ] Fields triggering prospect-facing automation
-- [ ] Fields enrolling a prospect into a sequence
-- [ ] Sensitive personal data
+- [x] Lead status
+- [x] Lifecycle stage
+- [x] Owner
+- [x] Deal stage
+- [x] Forecast category
+- [x] Opportunity amount
+- [x] Disqualification reason
+- [x] External buying-intent score unless stored as clearly labeled external field
+- [x] Fields triggering prospect-facing automation
+- [x] Fields enrolling a prospect into a sequence
+- [x] Sensitive personal data
 
 Writeback requirements:
 
 - [x] Field is on customer-approved allowlist
-- [ ] Value passes schema validation
+- [x] Value passes schema validation
 - [x] Source confidence is High
 - [x] Source is fresher than configured threshold
-- [ ] Value does not conflict with higher-priority CRM field
-- [ ] Field does not control routing, ownership, lifecycle stage, or prospect-visible automation
-- [ ] Action logged with source, timestamp, old value, new value, score version, and actor type
-- [x] Basic no-empty-write guard exists in HubSpot PATCH helper
-- [x] Basic stale-data helper exists for current mock writeback eligibility
+- [x] Value does not conflict with higher-priority CRM field
+- [x] Field does not control routing, ownership, lifecycle stage, or prospect-visible automation
+- [x] Action logged with source, timestamp, old value, new value, score/config/policy version, actor type, and actor ID
+- [x] Empty values are skipped before the CRM adapter
+- [x] Freshness is evaluated per field against the active writeback policy
 
 Writeback outcomes:
 
-- [ ] Written
+- [x] Written
 - [x] Skipped, mocked in fixtures
 - [x] Flagged for Review, mocked in fixtures
-- [ ] Blocked
+- [x] Blocked
 - [x] Data unavailable, represented when writeback evaluation has no authoritative result
 
 Audit log requirements:
 
-- [ ] CRM object type
-- [ ] CRM object ID
-- [ ] Field name
-- [ ] Previous value
-- [ ] New value
-- [ ] Source name
-- [ ] Source URL or source record ID
-- [ ] Source updated date
-- [ ] Confidence level
-- [ ] Writeback outcome
-- [ ] Reason
-- [ ] Score version
-- [ ] Timestamp
-- [ ] Request ID
-- [ ] Rollback availability
+- [x] CRM object type
+- [x] CRM object ID
+- [x] Field name
+- [x] Previous value
+- [x] New value
+- [x] Source name
+- [x] Source URL or source record ID
+- [x] Source updated date
+- [x] Confidence level
+- [x] Writeback outcome
+- [x] Reason
+- [x] Score/config/policy version
+- [x] Timestamp
+- [x] Request ID
+- [x] Rollback availability
 
 Rollback:
 
-- [ ] Reverse writebacks by field for v0
-- [ ] Reverse writebacks by lead for v0
+- [x] Reverse writebacks by field for v0
+- [x] Reverse writebacks by lead for v0
 - [ ] Reverse writebacks by batch after v0 unless pilot evidence requires it
 - [ ] Reverse writebacks by time window after v0 unless pilot evidence requires it
-- [ ] Create audit-log entry for rollback
+- [x] Create audit-log entry for rollback
 
 ## 6. Dashboard and Admin Experience
 
@@ -453,9 +454,11 @@ Pilot no-go criteria:
 
 #18 owns the metric dictionary, baseline instruments, cohort design, and decision rubric before exposure. #20 owns running the approved pilot and making the evidence-backed proceed/pivot/narrow/stop decision after #19 reporting is ready.
 
+The approval-ready design is documented in [PILOT_PLAN.md](PILOT_PLAN.md). Issue #18 closes after its Stage A design sign-off; customer-specific setup and launch readiness remain Stage B work under #20 and its dependencies.
+
 Pilot setup:
 
-- [ ] 6-8 week pilot
+- [ ] 8-week exposure, followed by 60-day outcome maturation per contact
 - [ ] 1-2 RevOps admins
 - [ ] 5-20 SDRs/AEs
 - [ ] At least 500 processed leads or contacts
@@ -568,7 +571,7 @@ Governance questions ContextAI must answer:
 - [x] Which claims were used in the hook via `allowed_claims`?
 - [x] Which mocked fields were written/skipped/flagged?
 - [ ] Who configured scoring/writeback rules?
-- [ ] Can this action be rolled back?
+- [x] Can a written CRM field or lead evaluation be rolled back with an immutable audit link?
 
 If ContextAI cannot provide an audit trail for a score, hook, or writeback, that output is not production-safe.
 
@@ -641,7 +644,7 @@ Recommended sequencing:
 1. [ ] #14 establishes the production authentication, tenant, role, retention, health, and revoke boundary after #13.
 2. [ ] #15 maps HubSpot records, implements morning and assignment/reassignment triggers, and orchestrates the complete ordered flow in parallel with #14 where contracts permit.
 3. [ ] #17 embeds the rep experience in HubSpot after #7, #14, and #15 expose stable authorized APIs.
-4. [ ] Keep live CRM writes disabled until #4's full audit and rollback gate passes.
+4. [x] Keep live CRM writes disabled by default while #4's audit and rollback gate completes review.
 
 ### Phase 3: Pilot Hardening and Validation
 
@@ -660,7 +663,7 @@ Recommended sequencing:
 | #8 | Pure versioned config model | #11 |
 | #3 | Deterministic score result (merged in PR #25; confidence-based writeback replanning remains owned by #4) | #8, #11 |
 | #5 | Provider adapters and normalized evidence (PR #26 implementation and review fixes complete locally; not Done pending validation/review) | #11 |
-| #4 | Writeback plan, execution, audit, rollback | #8, #11, #13; #5 for live data |
+| #4 | Writeback plan, execution, audit, rollback (implemented in PR #34; final review/merge pending) | #8, #11, #13; #5 for live data |
 | #6 | Allowed-claim compiler, LLM validator, evals | #3, #11; #5 for real-source completion |
 | #9 | Event contract and append-only recording | #11; #13 for persistence |
 | #7 | Standalone rep/audit UX (implementation complete; integration review pending) | #11 and #9 event contract |
