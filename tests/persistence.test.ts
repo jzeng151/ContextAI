@@ -145,23 +145,20 @@ test("audit records are append-only and retention is only surfaced as a hook", (
     assert.ok(hookClaim);
     explanation.hook_recommendation = hookClaim.hook;
     explanation.hook_claim_ids = [hookClaim.claim_id];
-    const groundingAuditId = store.appendGroundingAudit("tenant-1", explanation, claims, {
+    const groundingAudit = {
       prompt_version: "grounding-v1",
       model_id: "test-model",
       evaluation_id: packet.evaluation_id,
       allowed_claim_ids: claims.map((claim) => claim.claim_id),
       evidence_ids: [...new Set(claims.flatMap((claim) => claim.evidence_ids))],
-      outcome: "validated",
-    });
-    store.appendGroundingAudit("tenant-1", fallbackGroundedExplanation(packet), claims, {
-      prompt_version: "grounding-v1",
-      model_id: "test-model",
-      evaluation_id: packet.evaluation_id,
-      allowed_claim_ids: claims.map((claim) => claim.claim_id),
-      evidence_ids: [...new Set(claims.flatMap((claim) => claim.evidence_ids))],
-      outcome: "fallback",
-      failure: "invalid_output",
-    });
+    };
+    const groundingAuditId = store.appendGroundingAudit("tenant-1", explanation, claims, { ...groundingAudit, outcome: "validated" });
+    store.appendGroundingAudit("tenant-1", fallbackGroundedExplanation(packet), claims, { ...groundingAudit, outcome: "fallback", failure: "invalid_output" });
+    assert.doesNotThrow(() => store.appendGroundingAudit("tenant-1", fallbackGroundedExplanation(packet), claims, { ...groundingAudit, outcome: "fallback" }));
+    assert.throws(
+      () => store.appendGroundingAudit("tenant-1", explanation, claims, { ...groundingAudit, outcome: "validated", failure: "invalid_output" }),
+      /CHECK constraint failed/i,
+    );
     assert.equal(auditId, "audit-1");
     assert.equal(groundingAuditId, 1);
     assert.throws(() => store.database.prepare("UPDATE writeback_audit_records SET reason = 'changed' WHERE audit_id = 'audit-1'").run(), /append-only/i);

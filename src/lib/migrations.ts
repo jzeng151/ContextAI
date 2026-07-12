@@ -230,6 +230,7 @@ export const migrations: readonly Migration[] = [
         outcome TEXT NOT NULL CHECK (outcome IN ('validated', 'fallback')),
         failure TEXT CHECK (failure IN ('invalid_output', 'provider_failure')),
         recorded_at TEXT NOT NULL,
+        CHECK (outcome = 'fallback' OR failure IS NULL),
         FOREIGN KEY (tenant_id, evaluation_id) REFERENCES evaluation_runs(tenant_id, evaluation_id)
       );
 
