@@ -208,7 +208,7 @@ test("pilot event contract records every event idempotently without PII or repor
       { ...base, idempotencyKey: "fixture:view", name: "lead.viewed", data: { surface: "dashboard" } },
       { ...base, idempotencyKey: "fixture:action", name: "action.first_meaningful", data: { actionType: "call" } },
       { ...base, idempotencyKey: "fixture:disposition", name: "recommendation.disposition", data: { disposition: "accepted", actionType: "call" } },
-      { ...base, evidenceRefs: [packet.crm_context.evidence[0]!.evidence_id], idempotencyKey: "fixture:source", name: "source.contribution", data: { sourceType: "crm", contribution: "primary", weakSignal: false } },
+      { ...base, evidenceRefs: [packet.crm_context.evidence[0]!.evidence_id], idempotencyKey: "fixture:source", name: "source.contribution", data: { sourceType: "crm", contribution: "primary", weakSignal: false, hotMaking: false } },
       { ...base, retentionClass: "writeback_audit_24_months", idempotencyKey: "fixture:write", name: "writeback.outcome", data: { writebackId: "write-1", outcome: "Written", fieldName: "contact_title" } },
       { ...base, retentionClass: "writeback_audit_24_months", idempotencyKey: "fixture:edit", name: "writeback.edit", data: { writebackId: "write-1", fieldName: "contact_title" } },
       { ...base, retentionClass: "writeback_audit_24_months", idempotencyKey: "fixture:rollback", name: "writeback.rollback", data: { writebackId: "write-1", rollbackId: "rollback-1", fieldName: "contact_title" } },
@@ -231,6 +231,9 @@ test("pilot event contract records every event idempotently without PII or repor
     const missingRequired = structuredClone(events[3]!) as unknown as { data: Record<string, unknown> };
     delete missingRequired.data.actionType;
     assert.throws(() => assertPilotEvent(missingRequired), /actionType is required/i);
+    const missingHotMaking = structuredClone(events[5]!) as unknown as { data: Record<string, unknown> };
+    delete missingHotMaking.data.hotMaking;
+    assert.throws(() => assertPilotEvent(missingHotMaking), /hotMaking is required/i);
     assert.throws(
       () => assertPilotEvent({ ...editEvent, data: { ...editEvent.data, fieldName: undefined } }),
       /fieldName is required/i

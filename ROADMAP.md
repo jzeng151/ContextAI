@@ -453,9 +453,11 @@ Pilot no-go criteria:
 
 #18 owns the metric dictionary, baseline instruments, cohort design, and decision rubric before exposure. #20 owns running the approved pilot and making the evidence-backed proceed/pivot/narrow/stop decision after #19 reporting is ready.
 
+The approval-ready design is documented in [PILOT_PLAN.md](PILOT_PLAN.md). Issue #18 closes after its Stage A design sign-off; customer-specific setup and launch readiness remain Stage B work under #20 and its dependencies.
+
 Pilot setup:
 
-- [ ] 6-8 week pilot
+- [ ] 8-week exposure, followed by 60-day outcome maturation per contact
 - [ ] 1-2 RevOps admins
 - [ ] 5-20 SDRs/AEs
 - [ ] At least 500 processed leads or contacts
