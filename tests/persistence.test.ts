@@ -88,7 +88,7 @@ test("a clean store upgrades from a legacy schema and failed migrations roll bac
     `);
 
     migrateDatabase(store.database);
-    assert.equal((store.database.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 13);
+    assert.equal((store.database.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 14);
     assert.deepEqual(
       { ...(store.database.prepare("SELECT status, last_error FROM integrations WHERE integration_id = 'legacy-hubspot'").get() as object) },
       { status: "disabled", last_error: "oauth_reconnect_required" }
@@ -103,9 +103,9 @@ test("a clean store upgrades from a legacy schema and failed migrations roll bac
 
     assert.throws(() => migrateDatabase(store.database, [
       ...migrations,
-      { version: 14, name: "broken", sql: "CREATE TABLE should_rollback (id TEXT); INVALID SQL;" }
-    ]), /Migration 14.*failed/);
-    assert.equal((store.database.prepare("SELECT count(*) AS count FROM schema_migrations WHERE version = 14").get() as { count: number }).count, 0);
+      { version: 15, name: "broken", sql: "CREATE TABLE should_rollback (id TEXT); INVALID SQL;" }
+    ]), /Migration 15.*failed/);
+    assert.equal((store.database.prepare("SELECT count(*) AS count FROM schema_migrations WHERE version = 15").get() as { count: number }).count, 0);
     assert.throws(() => store.database.prepare("SELECT * FROM should_rollback").all(), /no such table/i);
   } finally {
     store.close();

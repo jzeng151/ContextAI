@@ -410,6 +410,45 @@ export const migrations: readonly Migration[] = [
       JOIN claims ON claims.claim_id = legacy.claim_id AND claims.evaluation_id = legacy.evaluation_id;
       DROP TABLE claim_evidence_legacy;
     `
+  },
+  {
+    version: 14,
+    name: "legacy-compatible grounding audit links",
+    sql: `
+      DROP TRIGGER grounding_audit_records_no_update;
+      DROP TRIGGER grounding_audit_records_no_delete;
+      DROP TRIGGER grounding_audit_records_no_duplicate;
+      ALTER TABLE grounding_audit_records RENAME TO grounding_audit_records_legacy;
+      CREATE TABLE grounding_audit_records (
+        grounding_audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tenant_id TEXT NOT NULL REFERENCES tenants(tenant_id),
+        evaluation_id TEXT NOT NULL REFERENCES evaluation_runs(evaluation_id),
+        prompt_version TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        allowed_claim_ids_json TEXT NOT NULL,
+        evidence_ids_json TEXT NOT NULL,
+        compiled_claims_json TEXT NOT NULL,
+        hook_claim_ids_json TEXT NOT NULL,
+        output_json TEXT NOT NULL,
+        outcome TEXT NOT NULL CHECK (outcome IN ('validated', 'fallback')),
+        failure TEXT CHECK (failure IN ('invalid_output', 'provider_failure')),
+        recorded_at TEXT NOT NULL,
+        CHECK (outcome = 'fallback' OR failure IS NULL)
+      );
+      INSERT INTO grounding_audit_records SELECT * FROM grounding_audit_records_legacy;
+      DROP TABLE grounding_audit_records_legacy;
+      CREATE INDEX grounding_audits_tenant_evaluation ON grounding_audit_records (tenant_id, evaluation_id);
+      CREATE TRIGGER grounding_audit_records_no_update
+      BEFORE UPDATE ON grounding_audit_records
+      WHEN NOT EXISTS (SELECT 1 FROM retention_job_guard WHERE active = 1)
+      BEGIN SELECT RAISE(ABORT, 'grounding audit records are append-only'); END;
+      CREATE TRIGGER grounding_audit_records_no_delete
+      BEFORE DELETE ON grounding_audit_records BEGIN SELECT RAISE(ABORT, 'grounding audit records are append-only'); END;
+      CREATE TRIGGER grounding_audit_records_no_duplicate
+      BEFORE INSERT ON grounding_audit_records
+      WHEN EXISTS (SELECT 1 FROM grounding_audit_records WHERE grounding_audit_id = NEW.grounding_audit_id)
+      BEGIN SELECT RAISE(ABORT, 'grounding audit records are append-only'); END;
+    `
   }
 ];
 
