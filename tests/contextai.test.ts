@@ -14,7 +14,7 @@ import {
   publishConfigDraft,
   selectActiveConfig
 } from "../src/lib/config.ts";
-import { assertLeadPacket, groundedHook, hasOnlyWeakOpenIntent, isWritebackEligible } from "../src/lib/contextai.ts";
+import { assertLeadPacket, groundedHook, groundedHookEvidence, hasOnlyWeakOpenIntent, isWritebackEligible } from "../src/lib/contextai.ts";
 import { explainLeadWithOpenRouter, hubSpotConfigFromEnv, listHubSpotContacts, openRouterConfigFromEnv, writeHubSpotEnrichment } from "../src/lib/integrations.ts";
 
 const defaultContext = createScoringRunContext(defaultConfigVersion);
@@ -40,12 +40,14 @@ test("missing public signal uses grounded hook fallback", () => {
   const lead = leads.find((item) => item.lead_id === "no-public-signal");
   assert.ok(lead);
   assert.equal(groundedHook(lead), "No grounded hook available — no recent verified signal found.");
+  assert.equal(groundedHookEvidence(lead), undefined);
 });
 
 test("non-hook allowed claims do not ground hooks", () => {
   const lead = leads.find((item) => item.lead_id === "weak-opens");
   assert.ok(lead);
   assert.equal(groundedHook({ ...lead, hook: "Reference the observed email opens." }), "No grounded hook available — no recent verified signal found.");
+  assert.equal(groundedHookEvidence(lead), undefined);
 });
 
 test("intent evidence does not ground arbitrary hooks", () => {
@@ -693,6 +695,7 @@ test("golden fixture grounds its score drivers", () => {
   assert.match(allowedText, /demo request and pricing-page visit/i);
   assert.match(allowedText, /Series B funding round on July 1, 2026/i);
   assert.equal(groundedHook(lead), lead.hook);
+  assert.equal(groundedHookEvidence(lead)?.evidence_id, lead.public_signals[0].evidence[0].evidence_id);
   assert.equal(lead.public_signals[0].days_ago, 8);
   assert.equal(lead.public_signals[0].evidence[0].source_published_at, "2026-07-01T09:00:00.000Z");
 });

@@ -47,6 +47,20 @@ test("dashboard outcomes emit contract-safe disposition and optional action even
   });
   assert.equal(ignored.length, 1);
   assert.deepEqual(ignored[0]!.data, { disposition: "ignored" });
+  const ignoredWithAction = dashboardOutcomeEvents({
+    ...input,
+    disposition: "ignored",
+    actionType: "nurture",
+    idempotencySeed: "dashboard:eval-3"
+  });
+  assert.deepEqual(ignoredWithAction.map(({ name }) => name), [
+    "recommendation.disposition",
+    "action.first_meaningful"
+  ]);
+  assert.deepEqual(ignoredWithAction.map(({ data }) => data), [
+    { disposition: "ignored", actionType: "nurture" },
+    { actionType: "nurture" }
+  ]);
   assert.throws(
     () => dashboardOutcomeEvents({ ...input, disposition: "ignored", actorId: packet.lead_identity.email }),
     /excluded PII/i

@@ -4,6 +4,7 @@ import { dashboardPromptVersion } from "../lib/dashboard";
 import { defaultConfigVersion } from "../lib/config";
 import {
   groundedHook,
+  groundedHookEvidence,
   hasOnlyWeakOpenIntent,
   requiredToolSteps,
   scoreLabel,
@@ -24,6 +25,7 @@ const queueLeads = [...leads].sort((a, b) =>
 );
 const selected = queueLeads[0];
 const scoreCaps = defaultConfigVersion.config.categoryWeights;
+const bandThresholds = defaultConfigVersion.config.bandThresholds;
 const scoreKeys = Object.keys(scoreCaps) as Array<keyof ScoreBreakdown>;
 const hot = leads.filter(({ priority_band }) => priority_band === "Hot").length;
 const review = leads.filter(({ priority_band }) => priority_band === "Needs Manual Review").length;
@@ -225,7 +227,8 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
           const ledger = evidenceLedger(lead);
           const sources = approvedSources(lead);
           const groups = sourceGroups(lead);
-          const hookEvidence = ledger.flatMap(({ evidence }) => evidence).find(({ source_type }) => source_type === "public_signal" || source_type === "intent" || source_type === "engagement");
+          const hook = groundedHook(lead);
+          const hookEvidence = groundedHookEvidence(lead);
           const failedTools = requiredToolSteps.filter((step) => !["success", "no_result"].includes(lead.tool_status[step].status));
           const hasDataIssues = lead.manual_review_reasons.length + lead.missing_fields.length + lead.stale_fields.length + lead.source_conflicts.length + failedTools.length > 0;
           const manualReview = lead.priority_band === "Needs Manual Review";
@@ -265,9 +268,9 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
                     <p>{lead.reason}</p>
                     <small>Approved sources: {sources.length ? sources.slice(0, 3).join(", ") : "ContextAI validation only"}</small>
                   </section>
-                  <section class:list={["decision-copy", "hook-copy", groundedHook(lead).startsWith("No grounded hook") && "unavailable"]}>
+                  <section class:list={["decision-copy", "hook-copy", !hookEvidence && "unavailable"]}>
                     <div><h3>Grounded hook</h3><button type="button" data-copy-hook disabled={!hookEvidence}>Copy</button></div>
-                    <p data-hook-text>{groundedHook(lead)}</p>
+                    <p data-hook-text>{hook}</p>
                     <small>{hookEvidence ? `${hookEvidence.source_name} · ${evidenceAge(lead, hookEvidence)} · ${hookEvidence.confidence} confidence` : "No approved recent signal is available for outreach."}</small>
                   </section>
                   {hasOnlyWeakOpenIntent(lead) && (
@@ -349,7 +352,7 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
                   <div class="score-ledger">
                     {scoreKeys.map((key) => <div><span>{humanize(key)}</span><meter min="0" max={scoreCaps[key]} value={lead.score_breakdown[key]} aria-label={`${humanize(key)} ${lead.score_breakdown[key]} of ${scoreCaps[key]}`}></meter><strong>{lead.score_breakdown[key]} / {scoreCaps[key]}</strong></div>)}
                   </div>
-                  <dl class="version-grid"><div><dt>Score version</dt><dd>{lead.score_version}</dd></div><div><dt>Config version</dt><dd>{defaultConfigVersion.id}</dd></div><div><dt>Cold</dt><dd>0-59</dd></div><div><dt>Warm</dt><dd>60-79</dd></div><div><dt>Hot</dt><dd>80-100</dd></div><div><dt>Manual review</dt><dd>Nonnumeric override</dd></div></dl>
+                  <dl class="version-grid"><div><dt>Score version</dt><dd>{lead.score_version}</dd></div><div><dt>Config version</dt><dd>{defaultConfigVersion.id}</dd></div><div><dt>Cold</dt><dd>{`≥ ${bandThresholds.Cold} and < ${bandThresholds.Warm}`}</dd></div><div><dt>Warm</dt><dd>{`≥ ${bandThresholds.Warm} and < ${bandThresholds.Hot}`}</dd></div><div><dt>Hot</dt><dd>{`≥ ${bandThresholds.Hot} and ≤ 100`}</dd></div><div><dt>Manual review</dt><dd>Nonnumeric override</dd></div></dl>
                 </section>
 
                 <section class="tab-panel run-panel" role="tabpanel" id={`${lead.lead_id}-run-panel`} aria-labelledby={`${lead.lead_id}-run-tab`} data-panel="run" hidden>
@@ -396,6 +399,7 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
   const detailPanels = [...document.querySelectorAll<HTMLElement>("[data-lead-detail]")];
   const selectButtons = [...document.querySelectorAll<HTMLButtonElement>("[data-select-lead]")];
   const mobile = matchMedia("(max-width: 820px)");
+  const eventSessionId = crypto.randomUUID();
   const emittedViews = new Set<string>();
   let selectedId = detailPanels.find((panel) => !panel.hidden)?.dataset.leadDetail ?? null;
   let activeTab = "decision";
@@ -414,7 +418,7 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
       actorId: "rep-fixture-1",
       configVersion: document.body.dataset.configVersion ?? "score-v0.1",
       occurredAt: new Date().toISOString(),
-      idempotencySeed: `dashboard:${packets[leadId].evaluation_id}:view`
+      idempotencySeed: `dashboard:${eventSessionId}:${packets[leadId].evaluation_id}:view`
     }));
   };
   const activeDetail = () => detailPanels.find((panel) => panel.dataset.leadDetail === selectedId) ?? null;
@@ -431,7 +435,8 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
       const active = item === tab;
       item.setAttribute("aria-selected", String(active));
       item.tabIndex = active ? 0 : -1;
-      const target = panel.querySelector<HTMLElement>(`#${item.getAttribute("aria-controls")}`);
+      const targetId = item.getAttribute("aria-controls");
+      const target = targetId ? document.getElementById(targetId) : null;
       if (target) target.hidden = !active;
     });
     if (focus) tab.focus();
@@ -550,9 +555,6 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
 
   document.querySelectorAll<HTMLFormElement>("[data-outcome-form]").forEach((form) => {
     const action = form.elements.namedItem("actionType") as HTMLSelectElement | null;
-    form.querySelectorAll<HTMLInputElement>("input[type=radio]").forEach((radio) => radio.addEventListener("change", () => {
-      if (action) { action.disabled = radio.value === "ignored"; if (action.disabled) action.value = ""; }
-    }));
     form.addEventListener("submit", (event) => {
       event.preventDefault();
       const leadId = form.dataset.outcomeForm ?? "";
@@ -561,7 +563,7 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
       if (!packet || !["accepted", "ignored", "overridden"].includes(String(disposition))) return;
       const button = form.querySelector<HTMLButtonElement>("button[type=submit]");
       const output = form.querySelector<HTMLOutputElement>("[data-outcome-status]");
-      const actionType = action?.disabled || !action?.value ? undefined : action.value as ActionType;
+      const actionType = action?.value ? action.value as ActionType : undefined;
       if (button) button.disabled = true;
       try {
         const events = dashboardOutcomeEvents({
@@ -573,7 +575,7 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
           actorId: "rep-fixture-1",
           configVersion: document.body.dataset.configVersion ?? "score-v0.1",
           occurredAt: new Date().toISOString(),
-          idempotencySeed: `dashboard:${packet.evaluation_id}:${String(disposition)}:${actionType ?? "none"}`
+          idempotencySeed: `dashboard:${eventSessionId}:${packet.evaluation_id}:${String(disposition)}:${actionType ?? "none"}`
         });
         emit(events);
         const list = activeDetail()?.querySelector<HTMLOListElement>("[data-session-events]");

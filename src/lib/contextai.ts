@@ -421,19 +421,21 @@ const hasAllowedHookClaim = (lead: LeadPacket, signal: LeadPacket["public_signal
   });
 };
 
-const hasHookEvidence = (lead: LeadPacket) => {
+export const groundedHookEvidence = (lead: LeadPacket): Evidence | undefined => {
+  if (lead.hook === fallbackHook) return;
   const hook = normalized(lead.hook);
-  if (!hasPhrase(hook, lead.lead_identity.company)) return false;
-  return lead.public_signals.some((signal) => {
-    if (signal.evidence.length === 0 || !hook.includes(normalized(signal.label))) return false;
-    return signal.evidence.some((item) =>
+  if (!hasPhrase(hook, lead.lead_identity.company)) return;
+  for (const signal of lead.public_signals) {
+    if (signal.evidence.length === 0 || !hook.includes(normalized(signal.label))) continue;
+    const evidence = signal.evidence.find((item) =>
       hook.includes(normalized(item.field_value ?? item.event_value ?? signal.label)) && hasAllowedHookClaim(lead, signal, item)
     );
-  });
+    if (evidence) return evidence;
+  }
 };
 
 export const groundedHook = (lead: LeadPacket) =>
-  lead.hook !== fallbackHook && hasHookEvidence(lead) ? lead.hook : fallbackHook;
+  groundedHookEvidence(lead) ? lead.hook : fallbackHook;
 
 const isFreshHighConfidenceWritebackEvidence = (item: Evidence, evaluatedAt: string) => {
   const ageMs = Date.parse(evaluatedAt) - Date.parse(item.source_updated_at ?? "");
