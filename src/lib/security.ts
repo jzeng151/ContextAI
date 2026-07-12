@@ -70,3 +70,26 @@ export const authenticateBearer = (authorization: string | undefined, secret = s
   if (typeof expires !== "number" || !Number.isFinite(expires) || expires <= now) throw new Error("Session expired");
   return identity as RequestIdentity;
 };
+
+const hubSpotEscapes = /%3A|%2F|%3F|%40|%21|%24|%27|%28|%29|%2A|%2C|%3B/gi;
+
+export const verifyHubSpotRequestSignature = (input: Readonly<{
+  method: string;
+  uri: string;
+  body: string;
+  signature?: string;
+  timestamp?: string;
+  clientSecret: string;
+  now?: number;
+}>) => {
+  const timestamp = Number(input.timestamp);
+  if (!input.signature || !input.clientSecret || !Number.isSafeInteger(timestamp) || Math.abs((input.now ?? Date.now()) - timestamp) > 300_000) return false;
+  const [base, query] = input.uri.split("?", 2);
+  const uri = query === undefined ? base! : `${base}?${query.replace(hubSpotEscapes, decodeURIComponent)}`;
+  const expected = createHmac("sha256", input.clientSecret)
+    .update(`${input.method}${uri.split("#", 1)[0]}${input.body}${input.timestamp}`)
+    .digest("base64");
+  const left = Buffer.from(input.signature);
+  const right = Buffer.from(expected);
+  return left.length === right.length && timingSafeEqual(left, right);
+};

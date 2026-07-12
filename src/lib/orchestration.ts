@@ -19,6 +19,7 @@ export type HubSpotLeadRecord = Readonly<{
   jobtitle?: string | null;
   company?: string | null;
   owner?: string | null;
+  assignedUserId?: string | null;
   source?: string | null;
   lifecycleStage?: string | null;
   routingStatus?: string | null;
@@ -216,8 +217,10 @@ export const evaluateLead = async (options: EvaluationOptions) => {
   const keyHash = createHash("sha256").update(`${options.identity.tenantId}|${options.idempotencyKey}`).digest("hex").slice(0, 24);
   const ids = { requestId: options.requestId ?? `request-${keyHash}`, evaluationId: `evaluation-${keyHash}` };
   let packet: LeadPacket;
+  let assignedUserId: string | undefined;
   try {
     const crm = await options.dependencies.getCrmLead(options.contactId);
+    assignedUserId = crm.assignedUserId ?? undefined;
     packet = mapHubSpotLead(crm, ids, at, context.score_version);
   } catch (error) {
     packet = mapHubSpotLead({ id: options.contactId }, ids, at, context.score_version);
@@ -291,7 +294,7 @@ export const evaluateLead = async (options: EvaluationOptions) => {
     hook: explanation.hook_recommendation,
     allowed_claims: result.claims.map((claim) => ({ text: claim.text, evidence_ids: claim.evidence_ids })),
   };
-  const saved = options.store.saveEvaluation({ tenantId: options.identity.tenantId, idempotencyKey: options.idempotencyKey, packet: finalPacket, assignedRepId: finalPacket.crm_context.owner ?? undefined });
+  const saved = options.store.saveEvaluation({ tenantId: options.identity.tenantId, idempotencyKey: options.idempotencyKey, packet: finalPacket, assignedRepId: assignedUserId });
   if (!saved.created) return { ...options.store.getEvaluation(options.identity, saved.evaluationId)!, replayed: true as const };
   if (finalPacket.tool_status.evaluate_crm_writeback.status === "success" && options.identity.role === "revops_admin") {
     await executeWriteback(planWriteback(finalPacket, writebackPolicy), { store: options.store, tenantId: options.identity.tenantId, actorType: options.identity.role, actorId: options.identity.actorId, identity: options.identity, policy: writebackPolicy, mode: "dry-run" });

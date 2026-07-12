@@ -18,8 +18,10 @@ import { assertLeadPacket, groundedHook, groundedHookEvidence, hasOnlyWeakOpenIn
 import {
   exchangeHubSpotAuthorizationCode,
   explainLeadWithOpenRouter,
+  getHubSpotLeadRecord,
   hubSpotAuthorizationUrl,
   hubSpotConfigFromEnv,
+  hubSpotRequiredScopes,
   listHubSpotContacts,
   openRouterConfigFromEnv,
   refreshHubSpotAccessToken,
@@ -800,7 +802,7 @@ test("HubSpot OAuth requests least privilege and keeps secrets in request bodies
       refresh_token: "refresh-secret",
       expires_in: 1800,
       hub_id: 123,
-      scopes: ["oauth", "crm.objects.contacts.read", "crm.objects.contacts.write"],
+      scopes: [...hubSpotRequiredScopes],
     }), { status: 200 });
   };
   try {
@@ -831,6 +833,23 @@ test("HubSpot first call lists contacts instead of requiring a contact id", asyn
     await listHubSpotContacts(1, { accessToken: "test" });
     assert.match(requested, /\/crm\/v3\/objects\/contacts\?/);
     assert.match(requested, /limit=1/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("HubSpot lead reads map owner IDs to signed card user IDs", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/associations/company")) return new Response(JSON.stringify({ results: [] }), { status: 200 });
+    if (url.includes("/crm/owners/2026-03/owner-17")) return new Response(JSON.stringify({ id: "owner-17", userId: 170017, archived: false }), { status: 200 });
+    return new Response(JSON.stringify({ id: "contact-17", properties: { hubspot_owner_id: "owner-17" } }), { status: 200 });
+  };
+  try {
+    const record = await getHubSpotLeadRecord("contact-17", { accessToken: "test" });
+    assert.equal(record.owner, "owner-17");
+    assert.equal(record.assignedUserId, "170017");
   } finally {
     globalThis.fetch = originalFetch;
   }

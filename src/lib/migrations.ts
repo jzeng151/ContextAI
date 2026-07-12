@@ -389,6 +389,27 @@ export const migrations: readonly Migration[] = [
         OR OLD.config_json != NEW.config_json
       BEGIN SELECT RAISE(ABORT, 'config versions are immutable'); END;
     `
+  },
+  {
+    version: 13,
+    name: "tenant-scoped claim evidence links",
+    sql: `
+      ALTER TABLE claim_evidence RENAME TO claim_evidence_legacy;
+      CREATE TABLE claim_evidence (
+        tenant_id TEXT NOT NULL,
+        claim_id INTEGER NOT NULL,
+        evaluation_id TEXT NOT NULL,
+        evidence_id TEXT NOT NULL,
+        PRIMARY KEY (claim_id, evidence_id),
+        FOREIGN KEY (claim_id) REFERENCES claims(claim_id),
+        FOREIGN KEY (evaluation_id, evidence_id) REFERENCES evidence(evaluation_id, evidence_id)
+      );
+      INSERT INTO claim_evidence (tenant_id, claim_id, evaluation_id, evidence_id)
+      SELECT claims.tenant_id, legacy.claim_id, legacy.evaluation_id, legacy.evidence_id
+      FROM claim_evidence_legacy legacy
+      JOIN claims ON claims.claim_id = legacy.claim_id AND claims.evaluation_id = legacy.evaluation_id;
+      DROP TABLE claim_evidence_legacy;
+    `
   }
 ];
 
