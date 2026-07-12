@@ -52,11 +52,10 @@ test("persistence rejects control characters before writing JSON payloads", () =
   }
 });
 
-test("a clean store upgrades from schema v1 and failed migrations roll back", () => {
-  const store = new RuntimeStore(":memory:", 1);
+test("a clean store upgrades from a legacy schema and failed migrations roll back", () => {
+  const store = new RuntimeStore(":memory:", 2);
   try {
-    assert.equal((store.database.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 1);
-    assert.throws(() => store.database.prepare("SELECT * FROM events").all(), /no such table/i);
+    assert.equal((store.database.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 2);
     store.saveTenant("legacy-tenant", "Legacy tenant");
     store.database.prepare(`
       INSERT INTO integrations (integration_id, tenant_id, provider, external_account_id, status, created_at)
@@ -78,9 +77,18 @@ test("a clean store upgrades from schema v1 and failed migrations roll back", ()
       "legacy-evaluation", "legacy-tenant", legacyPacket.request_id, "legacy", legacyPacket.lead_id, legacyPacket.account_id,
       legacyPacket.score_version, "complete", JSON.stringify(legacyPacket), "2026-07-01T00:00:00.000Z", "2026-07-01T00:00:00.000Z"
     );
+    store.database.exec(`
+      DROP TABLE claim_evidence;
+      CREATE TABLE claim_evidence (
+        claim_id INTEGER NOT NULL,
+        evaluation_id TEXT NOT NULL,
+        evidence_id TEXT NOT NULL,
+        PRIMARY KEY (claim_id, evidence_id)
+      );
+    `);
 
     migrateDatabase(store.database);
-    assert.equal((store.database.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 12);
+    assert.equal((store.database.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 13);
     assert.deepEqual(
       { ...(store.database.prepare("SELECT status, last_error FROM integrations WHERE integration_id = 'legacy-hubspot'").get() as object) },
       { status: "disabled", last_error: "oauth_reconnect_required" }
@@ -90,12 +98,14 @@ test("a clean store upgrades from schema v1 and failed migrations roll back", ()
       "2027-07-01T00:00:00.000Z"
     );
     assert.deepEqual(store.listConfigVersions(admin("legacy-tenant"))[0]?.config.writeback.manualApprovalFields, { contact: [], company: [] });
+    assert.ok(store.database.prepare("PRAGMA table_info(claim_evidence)").all().some((column) => (column as { name: string }).name === "tenant_id"));
+    store.saveEvaluation({ tenantId: "legacy-tenant", idempotencyKey: "post-upgrade", packet: legacyPacket });
 
     assert.throws(() => migrateDatabase(store.database, [
       ...migrations,
-      { version: 13, name: "broken", sql: "CREATE TABLE should_rollback (id TEXT); INVALID SQL;" }
-    ]), /Migration 13.*failed/);
-    assert.equal((store.database.prepare("SELECT count(*) AS count FROM schema_migrations WHERE version = 13").get() as { count: number }).count, 0);
+      { version: 14, name: "broken", sql: "CREATE TABLE should_rollback (id TEXT); INVALID SQL;" }
+    ]), /Migration 14.*failed/);
+    assert.equal((store.database.prepare("SELECT count(*) AS count FROM schema_migrations WHERE version = 14").get() as { count: number }).count, 0);
     assert.throws(() => store.database.prepare("SELECT * FROM should_rollback").all(), /no such table/i);
   } finally {
     store.close();
