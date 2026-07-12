@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { leads } from "../src/data/leads.ts";
 import {
@@ -123,4 +124,17 @@ test("live dashboard excludes evaluations that are not current HubSpot contacts"
 
   assert.deepEqual(hubSpotDashboardPackets(store, identity, ["hubspot-contact-1"]).map(({ lead_id }) => lead_id), ["hubspot-contact-1"]);
   store.close();
+});
+
+test("dashboard runtime keeps refresh secure, bounded, auditable, and current", () => {
+  const server = readFileSync(new URL("../src/server.ts", import.meta.url), "utf8");
+  const page = readFileSync(new URL("../src/pages/index.astro", import.meta.url), "utf8");
+  assert.match(server, /isLoopbackAddress\(request\.socket\.remoteAddress\)/);
+  assert.match(server, /adminOrigins\.has\(request\.headers\.origin\)/);
+  assert.match(server, /index \+= 4/);
+  assert.match(server, /evaluateLead\(\{\s*identity,/);
+  assert.match(server, /result\.value\.packet/);
+  assert.match(page, /fetchDashboard\("\/dashboard"\)/);
+  assert.match(page, /renderClientLeads/);
+  assert.doesNotMatch(page, /location\.reload\(\)/);
 });

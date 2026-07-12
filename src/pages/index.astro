@@ -396,9 +396,11 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
 
 <script>
   import { dashboardOutcomeEvents, dashboardViewEvents } from "../lib/dashboard.ts";
+  import type { LeadPacket } from "../lib/contextai.ts";
   import type { ActionType, PilotEvent } from "../lib/instrumentation.ts";
 
   type EventPacket = Parameters<typeof dashboardViewEvents>[0]["packet"];
+  type DashboardResponse = { leads?: LeadPacket[]; analyzed?: number; failed?: number; error?: string };
   const packetElement = document.querySelector<HTMLScriptElement>("#event-packets");
   const packets = JSON.parse(packetElement?.textContent ?? "{}") as Record<string, EventPacket>;
   const shell = document.querySelector<HTMLElement>("[data-app-shell]");
@@ -421,6 +423,61 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
   let queueScroll = 0;
 
   const announce = (message: string) => { if (live) live.textContent = message; };
+  const fetchDashboard = async (path: string, init?: RequestInit) => {
+    const apiOrigin = document.body.dataset.apiOrigin?.replace(/\/$/, "") ?? "";
+    const sessionToken = sessionStorage.getItem("contextai.session-token");
+    const response = await fetch(`${apiOrigin}${path}`, {
+      ...init,
+      headers: { ...init?.headers, ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}) },
+    });
+    const result = await response.json() as DashboardResponse;
+    if (!response.ok) throw new Error(result.error || "HubSpot dashboard request failed");
+    return result;
+  };
+  const textElement = (tag: keyof HTMLElementTagNameMap, text: string, className?: string) => {
+    const node = document.createElement(tag);
+    node.textContent = text;
+    if (className) node.className = className;
+    return node;
+  };
+  const renderClientLeads = (leads: LeadPacket[]) => {
+    const empty = document.querySelector<HTMLElement>("[data-empty-state]");
+    if (!empty) return;
+    const ordered = [...leads].sort((left, right) => (right.priority_score ?? -1) - (left.priority_score ?? -1));
+    const list = document.createElement("ol");
+    list.className = "client-lead-list";
+    for (const lead of ordered) {
+      const item = document.createElement("li");
+      const heading = document.createElement("div");
+      heading.append(
+        textElement("strong", lead.lead_identity.company),
+        textElement("span", `${lead.lead_identity.name}, ${lead.lead_identity.title}`)
+      );
+      item.append(
+        textElement("strong", lead.priority_score === null ? "Review" : String(lead.priority_score), `score score-${lead.priority_band.toLowerCase().replaceAll(" ", "-")}`),
+        heading,
+        textElement("span", lead.priority_band),
+        textElement("p", lead.reason),
+        textElement("small", `${lead.crm_context.owner ?? "Unassigned"} · ${lead.writeback_outcome.status}`)
+      );
+      list.append(item);
+    }
+    empty.replaceChildren(
+      textElement("h2", ordered.length ? "Analyzed HubSpot contacts" : "No contacts were successfully analyzed"),
+      textElement("p", ordered.length ? "Live results loaded from the ContextAI runtime." : "Review the refresh errors and try again."),
+      ...(ordered.length ? [list] : [])
+    );
+    empty.hidden = false;
+    document.querySelector<HTMLElement>("[data-queue-table]")?.setAttribute("hidden", "");
+    document.querySelector<HTMLElement>("[data-mobile-list]")?.setAttribute("hidden", "");
+    const count = document.querySelector<HTMLElement>("[data-result-count]");
+    if (count) count.textContent = String(ordered.length);
+    if (noSelection) {
+      noSelection.hidden = false;
+      noSelection.querySelector("h2")!.textContent = ordered.length ? "Live HubSpot results" : "Waiting for HubSpot";
+      noSelection.querySelector("p")!.textContent = ordered.length ? "The current analyzed contacts are shown in the queue." : "Refresh the queue to analyze current CRM contacts.";
+    }
+  };
   const emit = (events: PilotEvent[]) => events.forEach((event) => window.dispatchEvent(new CustomEvent("contextai:pilot-event", { detail: event })));
   const emitView = (leadId: string) => {
     if (emittedViews.has(leadId) || !packets[leadId]) return;
@@ -623,16 +680,14 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
     if (list) list.hidden = true;
     announce("Pulling contacts from HubSpot and running analysis.");
     try {
-      const apiOrigin = document.body.dataset.apiOrigin?.replace(/\/$/, "") ?? "";
-      const sessionToken = sessionStorage.getItem("contextai.session-token");
-      const response = await fetch(`${apiOrigin}/dashboard/refresh`, {
-        method: "POST",
-        headers: sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {},
-      });
-      const result = await response.json() as { analyzed?: number; failed?: number; error?: string };
-      if (!response.ok) throw new Error(result.error || "HubSpot analysis failed");
+      const result = await fetchDashboard("/dashboard/refresh", { method: "POST" });
       announce(`Analyzed ${result.analyzed ?? 0} HubSpot contacts${result.failed ? `; ${result.failed} failed` : ""}.`);
-      location.reload();
+      renderClientLeads(result.leads ?? []);
+      if (loading) loading.hidden = true;
+      queuePane?.setAttribute("aria-busy", "false");
+      shell?.classList.remove("is-loading");
+      button.disabled = false;
+      button.textContent = previous;
     } catch (error) {
       if (loading) loading.hidden = true;
       if (table) table.hidden = false;
@@ -648,6 +703,10 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
   document.querySelectorAll<HTMLButtonElement>("[data-refresh-queue], [data-empty-refresh]").forEach((button) =>
     button.addEventListener("click", () => refreshQueue(button))
   );
+
+  if (!desktopRows.length) void fetchDashboard("/dashboard")
+    .then(({ leads }) => { if (leads?.length) renderClientLeads(leads); })
+    .catch((error) => announce(error instanceof Error ? error.message : "HubSpot dashboard is unavailable"));
 
   const hash = new URLSearchParams(location.hash.slice(1));
   const hashLead = hash.get("lead");
@@ -756,6 +815,10 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
   .mobile-lead-list { display: none; padding: 0; list-style: none; }
   .empty-state { padding: 64px 24px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); text-align: center; }
   .empty-state h2 { font-size: 18px; }.empty-state p { max-width: 48ch; margin: 6px auto 16px; color: var(--muted); }
+  .client-lead-list { display: grid; gap: 8px; margin: 20px auto 0; padding: 0; list-style: none; text-align: left; }
+  .client-lead-list li { display: grid; grid-template-columns: 64px minmax(160px, 1fr) 150px; gap: 6px 16px; align-items: center; padding: 14px; border: 1px solid var(--line); border-radius: 6px; }
+  .client-lead-list li > p, .client-lead-list li > small { grid-column: 2 / -1; max-width: none; margin: 0; }
+  .client-lead-list li > div { display: grid; }.client-lead-list li > div span, .client-lead-list li > small { color: var(--muted); }
   .primary-button { padding: 0 13px; border: 1px solid var(--accent); border-radius: 5px; color: white; background: var(--accent); font-weight: 750; }
   .primary-button:hover { background: var(--accent-dark); }
   .loading-ledger { border: 1px solid var(--line); border-radius: 6px; background: var(--surface); overflow: hidden; }
@@ -850,6 +913,7 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
     .filter-control select { width: 112px; }
     .run-summary { grid-template-columns: 1fr 1fr; }
     .run-summary p:nth-child(2) { border-right: 0; }.run-summary p:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+    .client-lead-list li { grid-template-columns: 56px 1fr; }.client-lead-list li > span, .client-lead-list li > p, .client-lead-list li > small { grid-column: 2; }
     .queue-table-wrap { display: none; }
     .mobile-lead-list { display: block; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); overflow: hidden; }
     .mobile-lead-list li { border-bottom: 1px solid var(--line); }.mobile-lead-list li:last-child { border-bottom: 0; }

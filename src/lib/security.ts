@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { isIP } from "node:net";
 
 export type ActorRole = "revops_admin" | "rep" | "system" | "integration";
 
@@ -8,6 +9,16 @@ export type RequestIdentity = Readonly<{
   actorId: string;
   role: ActorRole;
 }>;
+
+export const isLoopbackAddress = (address?: string) => {
+  if (!address) return false;
+  if (isIP(address) === 4) return address.startsWith("127.");
+  return isIP(address) === 6 && (address === "::1" || address.toLowerCase().startsWith("::ffff:127."));
+};
+
+export const adminOriginsFromEnv = (configured?: string) => new Set(
+  configured ? [configured] : ["http://127.0.0.1:4321", "http://localhost:4321"]
+);
 
 const controlText = /[\u0000-\u001f\u007f]/;
 const actorRoles: readonly string[] = ["revops_admin", "rep", "system", "integration"];

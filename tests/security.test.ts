@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { authenticateBearer, createSessionToken, sessionSecretFromEnv } from "../src/lib/security.ts";
+import { adminOriginsFromEnv, authenticateBearer, createSessionToken, isLoopbackAddress, sessionSecretFromEnv } from "../src/lib/security.ts";
 import { decryptSecret, encryptSecret } from "../src/lib/secrets.ts";
+
+test("dashboard demo access recognizes only direct loopback addresses and default origins", () => {
+  for (const address of ["127.0.0.1", "127.23.4.5", "::1", "::ffff:127.0.0.1"]) assert.equal(isLoopbackAddress(address), true);
+  for (const address of [undefined, "localhost", "0.0.0.0", "192.168.1.2", "::ffff:192.168.1.2"]) assert.equal(isLoopbackAddress(address), false);
+  assert.deepEqual([...adminOriginsFromEnv()], ["http://127.0.0.1:4321", "http://localhost:4321"]);
+  assert.deepEqual([...adminOriginsFromEnv("https://admin.example.com")], ["https://admin.example.com"]);
+});
 
 test("signed sessions authenticate request identity and reject tampering or expiry", () => {
   const secret = "a sufficiently long session secret value";

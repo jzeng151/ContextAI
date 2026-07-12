@@ -4,7 +4,7 @@ import { getHubSpotLeadRecord, listAllHubSpotContacts, listAssignedOpenHubSpotLe
 import { evaluateLead, handleAssignmentEvent, parseHubSpotAssignmentEvents, runMorningEvaluation, verifyAssignmentSignature } from "./lib/orchestration.ts";
 import { RuntimeStore } from "./lib/persistence.ts";
 import { createPilotReport, exportPilotReport, reportFiltersFrom } from "./lib/reporting.ts";
-import { authenticateBearer, type RequestIdentity } from "./lib/security.ts";
+import { adminOriginsFromEnv, authenticateBearer, isLoopbackAddress, type RequestIdentity } from "./lib/security.ts";
 import { secretKeyFromEnv } from "./lib/secrets.ts";
 import { handleCrmExtensionRequest } from "./lib/crm-extension.ts";
 import { hubSpotWritebackPolicy, hubSpotWritebackPolicyFor, rollbackLeadWriteback, rollbackWriteback } from "./lib/writeback.ts";
@@ -15,7 +15,7 @@ import type { ScoredLeadPacket } from "./lib/scoring.ts";
 const store = new RuntimeStore();
 const host = process.env.HOST ?? "127.0.0.1";
 const port = Number(process.env.PORT ?? 4000);
-const adminOrigin = process.env.CONTEXTAI_ADMIN_ORIGIN ?? "http://127.0.0.1:4321";
+const adminOrigins = adminOriginsFromEnv(process.env.CONTEXTAI_ADMIN_ORIGIN);
 if (!Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error("PORT must be an integer from 1 to 65535");
 
 const json = (response: Parameters<Parameters<typeof createServer>[0]>[1], status: number, body: unknown) => {
@@ -60,9 +60,9 @@ const hubSpotDependencies = (identity: RequestIdentity) => {
 };
 const dashboardIdentity = (request: Parameters<Parameters<typeof createServer>[0]>[0], response: Parameters<Parameters<typeof createServer>[0]>[1]) => {
   if (request.headers.authorization) return adminIdentity(request, response);
-  const localHost = /^(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?$/.test(request.headers.host ?? "");
-  if (localHost && (!request.headers.origin || request.headers.origin === adminOrigin)) {
-    // ponytail: local demo bypass; require signed sessions when the dashboard moves off loopback.
+  const forwarded = ["forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto"].some((name) => request.headers[name]);
+  const directLoopback = isLoopbackAddress(host) && isLoopbackAddress(request.socket.localAddress) && isLoopbackAddress(request.socket.remoteAddress) && !forwarded;
+  if (directLoopback && (!request.headers.origin || adminOrigins.has(request.headers.origin))) {
     return { requestId: `dashboard-${Date.now()}`, tenantId, actorId: "local-demo", role: "revops_admin" as const };
   }
   json(response, 401, { error: "Authentication required" });
@@ -75,14 +75,14 @@ const dashboardContacts = async (identity: RequestIdentity) => {
 
 const server = createServer(async (request, response) => {
   const origin = request.headers.origin;
-  if (origin === adminOrigin) {
+  if (origin && adminOrigins.has(origin)) {
     response.setHeader("Access-Control-Allow-Origin", origin);
     response.setHeader("Vary", "Origin");
     response.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
     response.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   }
   if (request.method === "OPTIONS") {
-    if (origin && origin !== adminOrigin) return json(response, 403, { error: "Origin not allowed" });
+    if (origin && !adminOrigins.has(origin)) return json(response, 403, { error: "Origin not allowed" });
     response.writeHead(204).end();
     return;
   }
@@ -123,16 +123,20 @@ const server = createServer(async (request, response) => {
           },
         }),
       };
-      const results = await Promise.allSettled(contacts.map(({ id }) => evaluateLead({
-        identity: worker,
-        idempotencyKey: `dashboard:${refreshedAt}:${id}`,
-        contactId: id,
-        evaluatedAt: refreshedAt,
-        store,
-        dependencies,
-      })));
+      const results: PromiseSettledResult<Awaited<ReturnType<typeof evaluateLead>>>[] = [];
+      // ponytail: fixed batches bound provider bursts; use a worker pool if refresh latency matters.
+      for (let index = 0; index < contacts.length; index += 4) {
+        results.push(...await Promise.allSettled(contacts.slice(index, index + 4).map(({ id }) => evaluateLead({
+          identity,
+          idempotencyKey: `dashboard:${refreshedAt}:${id}`,
+          contactId: id,
+          evaluatedAt: refreshedAt,
+          store,
+          dependencies,
+        }))));
+      }
       return json(response, 200, {
-        leads: hubSpotDashboardPackets(store, identity, contacts.map(({ id }) => id)),
+        leads: results.flatMap((result) => result.status === "fulfilled" ? [result.value.packet] : []),
         contacts: contacts.length,
         analyzed: results.filter(({ status }) => status === "fulfilled").length,
         failed: results.filter(({ status }) => status === "rejected").length,
