@@ -138,7 +138,7 @@ SQLite is the smallest deployable single-process store for the pilot. `DATABASE_
 
 Telemetry producers use the recorder in `instrumentation.ts`; they do not import metric aggregation or reporting. Event names, required linkage, PII exclusions, retention classes, and metric inputs are documented in [TELEMETRY.md](TELEMETRY.md).
 
-Pilot reports are read-only: `GET /reports/pilot` returns JSON and `GET /reports/pilot.csv` returns an export. Both require the opaque tenant scope in `x-contextai-tenant-id` and accept `from`, `to`, `cohort`, `teamId`, `repId`, `scoreVersion`, `configVersion`, `source`, and `band` query filters. Reports include metric/window metadata and explicit data-quality caveats; missing telemetry is never presented as a valid zero.
+Pilot reports are read-only: `GET /reports/pilot` returns JSON and `GET /reports/pilot.csv` returns an export. Both require the opaque tenant scope in `x-contextai-tenant-id` and accept `from`, `to`, `cohort`, `teamId`, `repId`, `scoreVersion`, `configVersion`, `promptVersion`, `source`, and `band` query filters. Reports include metric/window metadata and explicit data-quality caveats; missing telemetry is never presented as a valid zero.
 
 ## Contributing
 

@@ -19,7 +19,9 @@ test("pilot reports reconcile tenant-scoped events, filters, duplicates, windows
       tenantId: "tenant-1", repId: "rep-1", cohort: "contextai", teamId: "team-1",
       activeFrom: "2025-12-01T00:00:00.000Z"
     });
+    assert.throws(() => store.database.prepare("INSERT OR REPLACE INTO pilot_participants SELECT * FROM pilot_participants WHERE tenant_id = 'tenant-1' AND rep_id = 'rep-1'").run(), /frozen/i);
     store.recordEvaluationOwner({ tenantId: "tenant-1", evaluationId: packet.evaluation_id, repId: "rep-1", recordedAt: "2026-01-01T00:00:00.000Z" });
+    assert.throws(() => store.database.prepare("INSERT OR REPLACE INTO pilot_evaluation_owners SELECT * FROM pilot_evaluation_owners WHERE tenant_id = 'tenant-1' AND evaluation_id = ?").run(packet.evaluation_id), /append-only/i);
 
     const base = {
       tenantId: "tenant-1",
@@ -41,6 +43,8 @@ test("pilot reports reconcile tenant-scoped events, filters, duplicates, windows
     event({ ...base, idempotencyKey: "view", occurredAt: "2026-01-01T09:02:00.000Z", name: "lead.viewed", data: { surface: "dashboard" } });
     event({ ...base, idempotencyKey: "accept", occurredAt: "2026-01-01T09:03:00.000Z", name: "recommendation.disposition", data: { disposition: "accepted", actionType: "email" } });
     event({ ...base, idempotencyKey: "override-late", occurredAt: "2026-01-01T10:03:00.000Z", name: "recommendation.disposition", data: { disposition: "overridden" } });
+    event({ ...base, promptVersion: "grounding-v2", idempotencyKey: "shown-v2", occurredAt: "2026-01-01T11:00:00.000Z", name: "score.shown", data: { priorityScore: 94, priorityBand: "Hot", surface: "dashboard" } });
+    event({ ...base, promptVersion: "grounding-v2", idempotencyKey: "override-v2", occurredAt: "2026-01-01T11:01:00.000Z", name: "recommendation.disposition", data: { disposition: "overridden" } });
     event({ ...base, idempotencyKey: "action", occurredAt: "2026-01-01T10:02:00.000Z", name: "action.first_meaningful", data: { actionType: "email" } });
     event({ ...base, idempotencyKey: "meeting-reported", occurredAt: "2026-01-20T09:00:00.000Z", name: "meeting.attribution", data: { meetingId: "meeting-1", attribution: "rep_reported" } });
     event({ ...base, idempotencyKey: "meeting-crm", occurredAt: "2026-01-21T09:00:00.000Z", name: "meeting.attribution", data: { meetingId: "meeting-1", attribution: "crm_association" } });
@@ -61,8 +65,13 @@ test("pilot reports reconcile tenant-scoped events, filters, duplicates, windows
     assert.equal(report.writebacks.rate, 1);
     assert.equal(report.writebacks.byOutcome.Written, 1);
     assert.equal(report.weakSignalContribution.rate, 1);
-    assert.equal(report.dataQuality.duplicateDispositionEvents, 1);
+    assert.equal(report.dataQuality.duplicateDispositionEvents, 2);
     assert.equal(report.dataQuality.duplicateMeetingEvents, 1);
+    const promptV2 = createPilotReport(store.database, "tenant-1", { promptVersion: "grounding-v2" }, "2026-04-01T00:00:00.000Z");
+    assert.equal(promptV2.recommendations.accepted.rate, 0);
+    assert.equal(promptV2.recommendations.overridden.rate, 1);
+    assert.match(exportPilotReport(promptV2), /"prompt_version"/);
+    assert.match(exportPilotReport(promptV2), /"grounding-v2"/);
     assert.equal(createPilotReport(store.database, "tenant-2", {}, "2026-04-01T00:00:00.000Z").dataQuality.status, "no_data");
     assert.equal(createPilotReport(store.database, "tenant-1", { cohort: "control" }, "2026-04-01T00:00:00.000Z").leads.processed, 0);
     assert.equal(createPilotReport(store.database, "tenant-1", { configVersion: "wrong" }, "2026-04-01T00:00:00.000Z").leads.processed, 0);
@@ -119,8 +128,8 @@ test("pilot metric denominators honor index runs, active enrollment, attribution
       evidenceRefs: [] as string[], retentionClass: "pilot_analytics_12_months" as const
     });
     const event = <T extends PilotEvent>(value: T) => store.recordEvent(value);
-    event({ ...base(index), idempotencyKey: "index-run", occurredAt: "2026-01-01T09:00:00.000Z", name: "evaluation.run", data: { outcome: "complete", priorityScore: 94, priorityBand: "Hot" } });
-    event({ ...base(index), idempotencyKey: "index-run-retry", occurredAt: "2026-01-01T09:00:01.000Z", name: "evaluation.run", data: { outcome: "complete", priorityScore: 70, priorityBand: "Warm" } });
+    event({ ...base(index), idempotencyKey: "index-run", occurredAt: "2026-01-01T08:00:00.000Z", name: "evaluation.run", data: { outcome: "complete", priorityScore: 94, priorityBand: "Hot" } });
+    event({ ...base(index), idempotencyKey: "index-run-retry", occurredAt: "2026-01-01T04:30:00-05:00", name: "evaluation.run", data: { outcome: "complete", priorityScore: 70, priorityBand: "Warm" } });
     event({ ...base(index), idempotencyKey: "index-shown", occurredAt: "2026-01-01T09:01:00.000Z", name: "score.shown", data: { priorityScore: 94, priorityBand: "Hot", surface: "dashboard" } });
     event({ ...base(index), idempotencyKey: "index-view", occurredAt: "2026-01-01T09:02:00.000Z", name: "lead.viewed", data: { surface: "dashboard" } });
     event({ ...base(index), idempotencyKey: "index-action", occurredAt: "2026-01-01T10:02:00.000Z", name: "action.first_meaningful", data: { actionType: "email" } });
@@ -151,6 +160,35 @@ test("pilot metric denominators honor index runs, active enrollment, attribution
     assert.equal(report.writebacks.rate, 0.5);
     assert.equal(report.writebacks.byField.contact_title!.Written, 2);
     assert.equal(report.weakSignalContribution.rate, 0);
+  } finally {
+    store.close();
+  }
+});
+
+test("band filters cannot promote a later rescore to the contact index", () => {
+  const store = new RuntimeStore(":memory:");
+  try {
+    const coldIndex = { ...structuredClone(leads[1]!), evaluation_id: "eval-band-a-index", request_id: "request-band-index", lead_id: "lead-band" };
+    const hotRescore = { ...structuredClone(leads[0]!), evaluation_id: "eval-band-z-rescore", request_id: "request-band-rescore", lead_id: "lead-band" };
+    store.saveTenant("tenant-1", "Pilot tenant");
+    store.saveConfigVersion("tenant-1", defaultConfigVersion);
+    store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "band-index", packet: coldIndex });
+    store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "band-rescore", packet: hotRescore });
+    const event = <T extends PilotEvent>(value: T) => store.recordEvent(value);
+    const base = (packet: typeof coldIndex) => ({
+      tenantId: "tenant-1", requestId: packet.request_id, evaluationId: packet.evaluation_id, leadId: packet.lead_id,
+      accountId: packet.account_id, actorType: "system" as const, actorId: "system-1", scoreVersion: packet.score_version,
+      configVersion: packet.score_version, evidenceRefs: [] as string[], retentionClass: "pilot_analytics_12_months" as const
+    });
+    event({ ...base(coldIndex), idempotencyKey: "cold-run", occurredAt: "2026-01-01T09:00:00.000Z", name: "evaluation.run", data: { outcome: "complete", priorityScore: coldIndex.priority_score, priorityBand: "Cold" } });
+    event({ ...base(hotRescore), idempotencyKey: "hot-run", occurredAt: "2026-01-02T09:00:00.000Z", name: "evaluation.run", data: { outcome: "complete", priorityScore: 94, priorityBand: "Hot" } });
+    event({ ...base(hotRescore), evidenceRefs: ["gn-intent"], idempotencyKey: "hot-weak", occurredAt: "2026-01-02T09:00:01.000Z", name: "source.contribution", data: { sourceType: "engagement", contribution: "supporting", weakSignal: true, hotMaking: true } });
+
+    const report = createPilotReport(store.database, "tenant-1", { band: "Hot" }, "2026-04-01T00:00:00.000Z");
+    assert.equal(report.leads.processed, 1);
+    assert.equal(report.weakSignalContribution.denominator, 0);
+    assert.equal(report.weakSignalContribution.rate, null);
+    assert.equal(report.conversion.Hot.denominator, 0);
   } finally {
     store.close();
   }

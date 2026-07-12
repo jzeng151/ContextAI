@@ -15,6 +15,7 @@ export type PilotReportFilters = Readonly<{
   repId?: string;
   scoreVersion?: string;
   configVersion?: string;
+  promptVersion?: string;
   source?: string;
   band?: Band;
 }>;
@@ -83,12 +84,12 @@ export function createPilotReport(
       invalidEvents++;
       return [];
     }
-  });
+  }).sort((left, right) => eventAt(left) - eventAt(right) || String(left.eventId).localeCompare(String(right.eventId)));
   const configEvaluations = filters.configVersion
     ? new Set(allEvents.filter(({ configVersion }) => configVersion === filters.configVersion).map(({ evaluationId }) => evaluationId))
     : null;
 
-  const evaluations = (database.prepare(`
+  const candidateEvaluations = (database.prepare(`
     SELECT er.evaluation_id, er.lead_id, er.packet_json, er.completed_at,
       pp.rep_id, pp.cohort, pp.team_id
     FROM evaluation_runs er
@@ -96,8 +97,8 @@ export function createPilotReport(
       ON po.tenant_id = er.tenant_id AND po.evaluation_id = er.evaluation_id
     LEFT JOIN pilot_participants pp
       ON pp.tenant_id = po.tenant_id AND pp.rep_id = po.rep_id
-      AND er.completed_at >= pp.active_from
-      AND (pp.active_to IS NULL OR er.completed_at <= pp.active_to)
+      AND julianday(er.completed_at) >= julianday(pp.active_from)
+      AND (pp.active_to IS NULL OR julianday(er.completed_at) <= julianday(pp.active_to))
     WHERE er.tenant_id = ?
     ORDER BY er.completed_at, er.evaluation_id
   `).all(tenantId) as Array<Record<string, string | null>>).map((row): Evaluation => ({
@@ -108,7 +109,7 @@ export function createPilotReport(
     repId: row.rep_id,
     cohort: row.cohort as Evaluation["cohort"],
     teamId: row.team_id
-  })).filter((evaluation) => {
+  })).sort((left, right) => Date.parse(left.completedAt) - Date.parse(right.completedAt) || left.evaluationId.localeCompare(right.evaluationId)).filter((evaluation) => {
     const at = Date.parse(evaluation.completedAt);
     return (from === undefined || at >= from) && (to === undefined || at <= to) &&
       (!filters.cohort || evaluation.cohort === filters.cohort) &&
@@ -116,22 +117,23 @@ export function createPilotReport(
       (!filters.repId || evaluation.repId === filters.repId) &&
       (!filters.scoreVersion || evaluation.packet.score_version === filters.scoreVersion) &&
       (!filters.source || evaluation.packet.crm_context.source === filters.source) &&
-      (!filters.band || evaluation.packet.priority_band === filters.band) &&
       (!configEvaluations || configEvaluations.has(evaluation.evaluationId));
   });
+  const candidateIndexes = firstBy(candidateEvaluations, ({ leadId }) => leadId);
+  const evaluations = candidateEvaluations.filter((evaluation) => !filters.band || evaluation.packet.priority_band === filters.band);
 
   const evaluationIds = new Set(evaluations.map(({ evaluationId }) => evaluationId));
   const events = allEvents.filter((event) => evaluationIds.has(event.evaluationId) &&
     (!filters.configVersion || event.configVersion === filters.configVersion));
   const byEvaluation = new Map(evaluations.map((evaluation) => [evaluation.evaluationId, evaluation]));
-  const indexEvaluations = firstBy(evaluations, ({ leadId }) => leadId);
+  const indexEvaluations = new Map([...candidateIndexes].filter(([, evaluation]) => !filters.band || evaluation.packet.priority_band === filters.band));
   const indexEvaluationIds = new Set([...indexEvaluations.values()].map(({ evaluationId }) => evaluationId));
   const eventRuns = events.filter((event): event is Extract<PilotEvent, { name: "evaluation.run" }> => event.name === "evaluation.run");
   const runByEvaluation = firstBy(eventRuns, ({ evaluationId }) => evaluationId);
   const leadsByBand = Object.fromEntries(bands.map((band) => [band, [...runByEvaluation.values()].filter(({ data }) => data.priorityBand === band).length]));
 
-  const shown = firstBy(events.filter((event): event is Extract<PilotEvent, { name: "score.shown" }> => event.name === "score.shown"), ({ evaluationId }) => evaluationId);
-  const allDispositionEvents = events.filter((event): event is Extract<PilotEvent, { name: "recommendation.disposition" }> => event.name === "recommendation.disposition");
+  const shown = firstBy(events.filter((event): event is Extract<PilotEvent, { name: "score.shown" }> => event.name === "score.shown" && (!filters.promptVersion || event.promptVersion === filters.promptVersion)), ({ evaluationId }) => evaluationId);
+  const allDispositionEvents = events.filter((event): event is Extract<PilotEvent, { name: "recommendation.disposition" }> => event.name === "recommendation.disposition" && (!filters.promptVersion || event.promptVersion === filters.promptVersion));
   const dispositionEvents = allDispositionEvents.filter((event) => {
     const score = shown.get(event.evaluationId);
     return score && eventAt(event) >= eventAt(score) && eventAt(event) - eventAt(score) <= day;
@@ -297,8 +299,8 @@ export function createPilotReport(
 const csvCell = (value: unknown) => `"${String(value ?? "").replaceAll('"', '""')}"`;
 
 export function exportPilotReport(report: ReturnType<typeof createPilotReport>) {
-  const rows: unknown[][] = [["metric_version", "tenant_id", "cohort", "window_from", "window_to", "generated_at", "metric", "numerator", "denominator", "value", "caveats"]];
-  const metadata = [report.metadata.metricVersion, report.metadata.tenantId, report.metadata.filters.cohort ?? "all", report.metadata.window.from ?? "", report.metadata.window.to ?? "", report.metadata.generatedAt];
+  const rows: unknown[][] = [["metric_version", "tenant_id", "cohort", "prompt_version", "window_from", "window_to", "generated_at", "metric", "numerator", "denominator", "value", "caveats"]];
+  const metadata = [report.metadata.metricVersion, report.metadata.tenantId, report.metadata.filters.cohort ?? "all", report.metadata.filters.promptVersion ?? "all", report.metadata.window.from ?? "", report.metadata.window.to ?? "", report.metadata.generatedAt];
   const caveats = report.metadata.caveats.join(" ");
   const add = (metric: string, numerator: number | null, denominator: number | null, value: number | null) => rows.push([...metadata, metric, numerator, denominator, value, caveats]);
   add("leads_processed", report.leads.processed, report.leads.processed, report.leads.processed);
@@ -330,6 +332,6 @@ export function reportFiltersFrom(search: URLSearchParams): PilotReportFilters {
   return {
     from: value("from"), to: value("to"), cohort: cohort as PilotReportFilters["cohort"],
     teamId: value("teamId"), repId: value("repId"), scoreVersion: value("scoreVersion"),
-    configVersion: value("configVersion"), source: value("source"), band: band as Band | undefined
+    configVersion: value("configVersion"), promptVersion: value("promptVersion"), source: value("source"), band: band as Band | undefined
   };
 }

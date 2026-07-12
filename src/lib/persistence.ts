@@ -162,6 +162,7 @@ export class RuntimeStore {
     nonEmpty(tenantId, "tenantId");
     nonEmpty(idempotencyKey, "idempotencyKey");
     const retentionAfter = input.retentionAfter === undefined ? null : isoDate(input.retentionAfter, "retentionAfter");
+    const evaluationTimestamp = isoDate(packet.evaluation_timestamp, "evaluation_timestamp");
     const outcome: EvaluationOutcome = Object.values(packet.tool_status).some(({ status }) => failedStatuses.has(status))
       ? "partial_failure"
       : "complete";
@@ -186,7 +187,7 @@ export class RuntimeStore {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         packet.evaluation_id, tenantId, packet.request_id, idempotencyKey, packet.lead_id, packet.account_id,
-        packet.score_version, outcome, json(packet), packet.evaluation_timestamp, packet.evaluation_timestamp,
+        packet.score_version, outcome, json(packet), evaluationTimestamp, evaluationTimestamp,
         retentionAfter
       );
 

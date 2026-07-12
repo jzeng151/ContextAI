@@ -299,10 +299,18 @@ export const migrations: readonly Migration[] = [
       BEFORE UPDATE ON pilot_participants BEGIN SELECT RAISE(ABORT, 'pilot participants are frozen'); END;
       CREATE TRIGGER pilot_participants_no_delete
       BEFORE DELETE ON pilot_participants BEGIN SELECT RAISE(ABORT, 'pilot participants are frozen'); END;
+      CREATE TRIGGER pilot_participants_no_duplicate
+      BEFORE INSERT ON pilot_participants
+      WHEN EXISTS (SELECT 1 FROM pilot_participants WHERE tenant_id = NEW.tenant_id AND rep_id = NEW.rep_id)
+      BEGIN SELECT RAISE(ABORT, 'pilot participants are frozen'); END;
       CREATE TRIGGER pilot_evaluation_owners_no_update
       BEFORE UPDATE ON pilot_evaluation_owners BEGIN SELECT RAISE(ABORT, 'pilot evaluation owners are append-only'); END;
       CREATE TRIGGER pilot_evaluation_owners_no_delete
       BEFORE DELETE ON pilot_evaluation_owners BEGIN SELECT RAISE(ABORT, 'pilot evaluation owners are append-only'); END;
+      CREATE TRIGGER pilot_evaluation_owners_no_duplicate
+      BEFORE INSERT ON pilot_evaluation_owners
+      WHEN EXISTS (SELECT 1 FROM pilot_evaluation_owners WHERE tenant_id = NEW.tenant_id AND evaluation_id = NEW.evaluation_id)
+      BEGIN SELECT RAISE(ABORT, 'pilot evaluation owners are append-only'); END;
     `
   }
 ];
