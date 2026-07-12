@@ -215,7 +215,7 @@ export const explainLeadWithOpenRouter = async (
             reason: { type: "string", enum: reasonOptions.map(({ text }) => text) },
             reason_claim_ids: { type: "array", items: { type: "string", enum: reasonOptions.map(({ claim_id }) => claim_id) }, minItems: 1, maxItems: 1 },
             hook_recommendation: { type: "string", enum: hookOptions.length ? hookOptions.map(({ hook }) => hook) : [fallback.hook_recommendation] },
-            hook_claim_ids: { type: "array", items: { type: "string", enum: hookOptions.map(({ claim_id }) => claim_id) }, minItems: hookOptions.length ? 1 : 0, maxItems: hookOptions.length ? 1 : 0 },
+            hook_claim_ids: { type: "array", items: hookOptions.length ? { type: "string", enum: hookOptions.map(({ claim_id }) => claim_id) } : { type: "string" }, minItems: hookOptions.length ? 1 : 0, maxItems: hookOptions.length ? 1 : 0 },
             missing_stale_data: { type: "string", enum: [fallback.missing_stale_data] },
             crm_writeback: { type: "string", enum: [fallback.crm_writeback] },
           },

@@ -188,6 +188,25 @@ test("OpenAI display text is derived from its approved claim IDs", async () => {
   }
 });
 
+test("OpenAI no-hook schema requires an empty array without an empty enum", async () => {
+  const originalFetch = globalThis.fetch;
+  let hookClaimIds: { items: { enum?: string[] }; maxItems: number } | undefined;
+  globalThis.fetch = async (_input, init) => {
+    const body = JSON.parse(String(init?.body));
+    hookClaimIds = body.response_format.json_schema.schema.properties.hook_claim_ids;
+    return new Response(JSON.stringify({ choices: [{ message: { content: "{}" } }] }), { status: 200 });
+  };
+  try {
+    await explainLeadWithOpenRouter(byId("weak-opens"), defaultContext, {
+      apiKey: "test", model: "test", endpoint: "https://api.openai.com/v1/chat/completions", enforceZdr: false,
+    });
+    assert.equal(hookClaimIds?.maxItems, 0);
+    assert.equal(hookClaimIds?.items.enum, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("OpenRouter rejects a scoring context that does not match the packet version", async () => {
   const originalFetch = globalThis.fetch;
   let called = false;

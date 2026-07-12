@@ -1,6 +1,7 @@
 ---
-import { dashboardPromptVersion } from "../lib/dashboard";
+import { dashboardPromptVersion, rankDashboardLeads } from "../lib/dashboard";
 import { defaultConfigVersion } from "../lib/config";
+import { leads as fixtureLeads } from "../data/leads";
 import {
   groundedHook,
   groundedHookEvidence,
@@ -22,20 +23,12 @@ if (import.meta.env.DEV) {
     if (!response.ok) throw new Error(result.error || "HubSpot dashboard request failed");
     leads = result.leads ?? [];
   } catch (error) {
+    leads = fixtureLeads;
     dashboardError = error instanceof Error ? error.message : "HubSpot dashboard is unavailable";
   }
 }
 
-const bandRank: Record<LeadPacket["priority_band"], number> = {
-  Hot: 4,
-  "Needs Manual Review": 3,
-  Warm: 2,
-  Cold: 1
-};
-const queueLeads = [...leads].sort((a, b) =>
-  bandRank[b.priority_band] - bandRank[a.priority_band] ||
-  (b.priority_score ?? -1) - (a.priority_score ?? -1)
-);
+const queueLeads = rankDashboardLeads(leads);
 const selected = queueLeads[0];
 const scoreCaps = defaultConfigVersion.config.categoryWeights;
 const bandThresholds = defaultConfigVersion.config.bandThresholds;
@@ -395,7 +388,7 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
 </html>
 
 <script>
-  import { dashboardOutcomeEvents, dashboardViewEvents } from "../lib/dashboard.ts";
+  import { dashboardOutcomeEvents, dashboardViewEvents, rankDashboardLeads } from "../lib/dashboard.ts";
   import type { LeadPacket } from "../lib/contextai.ts";
   import type { ActionType, PilotEvent } from "../lib/instrumentation.ts";
 
@@ -421,6 +414,7 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
   let activeTab = "decision";
   let originButton: HTMLButtonElement | null = null;
   let queueScroll = 0;
+  let clientQueueActive = false;
 
   const announce = (message: string) => { if (live) live.textContent = message; };
   const fetchDashboard = async (path: string, init?: RequestInit) => {
@@ -443,11 +437,15 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
   const renderClientLeads = (leads: LeadPacket[]) => {
     const empty = document.querySelector<HTMLElement>("[data-empty-state]");
     if (!empty) return;
-    const ordered = [...leads].sort((left, right) => (right.priority_score ?? -1) - (left.priority_score ?? -1));
+    clientQueueActive = true;
+    const ordered = rankDashboardLeads(leads);
     const list = document.createElement("ol");
     list.className = "client-lead-list";
     for (const lead of ordered) {
       const item = document.createElement("li");
+      item.dataset.clientLead = lead.lead_id;
+      item.dataset.search = `${lead.lead_identity.name} ${lead.lead_identity.company} ${lead.lead_identity.title} ${lead.crm_context.owner ?? ""}`.toLowerCase();
+      item.dataset.band = lead.priority_band;
       const heading = document.createElement("div");
       heading.append(
         textElement("strong", lead.lead_identity.company),
@@ -477,6 +475,7 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
       noSelection.querySelector("h2")!.textContent = ordered.length ? "Live HubSpot results" : "Waiting for HubSpot";
       noSelection.querySelector("p")!.textContent = ordered.length ? "The current analyzed contacts are shown in the queue." : "Refresh the queue to analyze current CRM contacts.";
     }
+    applyFilters();
   };
   const emit = (events: PilotEvent[]) => events.forEach((event) => window.dispatchEvent(new CustomEvent("contextai:pilot-event", { detail: event })));
   const emitView = (leadId: string) => {
@@ -540,20 +539,24 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
     announce(`${panel.querySelector("h2")?.textContent ?? "Lead"} selected.`);
     updateHash();
   };
-  const visibleLeadIds = () => desktopRows.filter((row) => !row.hidden).map((row) => row.dataset.leadRow ?? "");
+  const clientRows = () => [...document.querySelectorAll<HTMLElement>("[data-client-lead]")];
+  const activeQueueRows = () => clientQueueActive ? clientRows() : desktopRows;
+  const visibleLeadIds = () => activeQueueRows().filter((row) => !row.hidden).map((row) => row.dataset.clientLead ?? row.dataset.leadRow ?? "");
   const applyFilters = () => {
     const query = search?.value.trim().toLowerCase() ?? "";
     const selectedBand = band?.value ?? "all";
     const matches = (item: HTMLElement) => (!query || item.dataset.search?.includes(query)) && (selectedBand === "all" || item.dataset.band === selectedBand);
-    desktopRows.forEach((row) => row.hidden = !matches(row));
-    mobileRows.forEach((row) => row.hidden = !matches(row));
+    const liveRows = clientRows();
+    desktopRows.forEach((row) => row.hidden = clientQueueActive || !matches(row));
+    mobileRows.forEach((row) => row.hidden = clientQueueActive || !matches(row));
+    liveRows.forEach((row) => row.hidden = !matches(row));
     const visible = visibleLeadIds();
     const count = document.querySelector<HTMLElement>("[data-result-count]");
     if (count) count.textContent = String(visible.length);
     const filtered = Boolean(query || selectedBand !== "all");
     document.querySelectorAll<HTMLElement>("[data-clear-filters]").forEach((button) => button.hidden = !filtered);
     const empty = document.querySelector<HTMLElement>("[data-empty-state]");
-    if (empty) empty.hidden = visible.length > 0;
+    if (empty) empty.hidden = clientQueueActive ? false : visible.length > 0;
     if (selectedId && !visible.includes(selectedId)) showNoSelection();
     announce(`${visible.length} ${visible.length === 1 ? "lead" : "leads"} shown.`);
   };

@@ -6,7 +6,8 @@ import {
   dashboardOutcomeEvents,
   hubSpotDashboardPackets,
   dashboardPromptVersion,
-  dashboardViewEvents
+  dashboardViewEvents,
+  rankDashboardLeads
 } from "../src/lib/dashboard.ts";
 import { defaultConfigVersion } from "../src/lib/config.ts";
 import { assertPilotEvent } from "../src/lib/instrumentation.ts";
@@ -126,6 +127,12 @@ test("live dashboard excludes evaluations that are not current HubSpot contacts"
   store.close();
 });
 
+test("dashboard ranking keeps manual review above numeric lower bands", () => {
+  assert.deepEqual(rankDashboardLeads(leads).map(({ lead_id }) => lead_id), [
+    "golden-normal", "no-public-signal", "no-usable-data", "stale-writeback", "weak-opens", "small-high-intent"
+  ]);
+});
+
 test("dashboard runtime keeps refresh secure, bounded, auditable, and current", () => {
   const server = readFileSync(new URL("../src/server.ts", import.meta.url), "utf8");
   const page = readFileSync(new URL("../src/pages/index.astro", import.meta.url), "utf8");
@@ -136,5 +143,7 @@ test("dashboard runtime keeps refresh secure, bounded, auditable, and current", 
   assert.match(server, /result\.value\.packet/);
   assert.match(page, /fetchDashboard\("\/dashboard"\)/);
   assert.match(page, /renderClientLeads/);
+  assert.match(page, /dataset\.clientLead/);
+  assert.match(page, /leads = fixtureLeads/);
   assert.doesNotMatch(page, /location\.reload\(\)/);
 });

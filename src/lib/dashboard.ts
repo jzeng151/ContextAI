@@ -5,6 +5,18 @@ import type { RequestIdentity } from "./security.ts";
 
 export const dashboardPromptVersion = "grounding-v1";
 
+const bandRank: Record<LeadPacket["priority_band"], number> = {
+  Hot: 4,
+  "Needs Manual Review": 3,
+  Warm: 2,
+  Cold: 1
+};
+
+export const rankDashboardLeads = (leads: readonly LeadPacket[]) => [...leads].sort((left, right) =>
+  bandRank[right.priority_band] - bandRank[left.priority_band] ||
+  (right.priority_score ?? -1) - (left.priority_score ?? -1)
+);
+
 export type DashboardOutcomePacket = Readonly<Pick<
   LeadPacket,
   "request_id" | "evaluation_id" | "lead_id" | "account_id" | "score_version"
