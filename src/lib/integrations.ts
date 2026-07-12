@@ -11,6 +11,7 @@ import type { ScoringRunContext } from "./config.ts";
 import type { RuntimeStore } from "./persistence.ts";
 import type { RequestIdentity } from "./security.ts";
 import { executeWriteback, type WritebackPlan, type WritebackPolicy } from "./writeback.ts";
+import type { HubSpotLeadRecord } from "./orchestration.ts";
 
 type Env = Record<string, string | undefined>;
 
@@ -42,6 +43,7 @@ export type HubSpotContact = {
   id: string;
   properties: Record<string, string | null>;
   archived?: boolean;
+  updatedAt?: string;
 };
 
 export type HubSpotContactList = {
@@ -246,23 +248,22 @@ const contactProperties = [
   "jobtitle",
   "hubspot_owner_id",
   "lifecyclestage",
-  "hs_analytics_source"
+  "hs_analytics_source",
+  "hs_lead_status"
 ].join(",");
 
 export const listHubSpotContacts = async (
   limit = 10,
-  config = hubSpotConfigFromEnv()
+  config = hubSpotConfigFromEnv(),
+  after?: string,
 ) => {
   const url = new URL("https://api.hubapi.com/crm/v3/objects/contacts");
   url.searchParams.set("limit", String(limit));
   url.searchParams.set("properties", contactProperties);
   url.searchParams.set("archived", "false");
+  if (after) url.searchParams.set("after", after);
 
-  const response = await fetch(url, {
-    headers: { "Authorization": `Bearer ${config.accessToken}` },
-    signal: AbortSignal.timeout(timeoutMs)
-  });
-  return readJson<HubSpotContactList>(response);
+  return hubSpotRequest<HubSpotContactList>(url.toString(), config);
 };
 
 export const getHubSpotContact = async (
@@ -273,11 +274,63 @@ export const getHubSpotContact = async (
   url.searchParams.set("properties", contactProperties);
   url.searchParams.set("archived", "false");
 
-  const response = await fetch(url, {
-    headers: { "Authorization": `Bearer ${config.accessToken}` },
-    signal: AbortSignal.timeout(timeoutMs)
-  });
-  return readJson<HubSpotContact>(response);
+  return hubSpotRequest<HubSpotContact>(url.toString(), config);
+};
+
+type HubSpotAssociation = { toObjectId: number; associationTypes: Array<{ typeId: number; label: string | null }> };
+type HubSpotCompanyRecord = { id: string; properties: { name?: string | null; domain?: string | null }; archived?: boolean };
+
+const hubSpotRequest = async <T>(url: string, config: HubSpotConfig, init?: RequestInit) => {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await readJson<T>(await fetch(url, {
+        ...init,
+        headers: { "Authorization": `Bearer ${config.accessToken}`, ...(init?.headers ?? {}) },
+        signal: AbortSignal.timeout(timeoutMs),
+      }));
+    } catch (error) {
+      if (attempt >= 2 || !/429|5\d\d|timeout|aborted/i.test(error instanceof Error ? error.message : String(error))) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 150 * 2 ** attempt));
+    }
+  }
+};
+
+export const getHubSpotLeadRecord = async (contactId: string, config = hubSpotConfigFromEnv()): Promise<HubSpotLeadRecord> => {
+  const contact = await getHubSpotContact(contactId, config);
+  const associations = await hubSpotRequest<{ results: HubSpotAssociation[] }>(`https://api.hubapi.com/crm/v4/objects/contact/${contactId}/associations/company?limit=100`, config);
+  const companies = await Promise.all(associations.results.map(async (association) => {
+    const company = await hubSpotRequest<HubSpotCompanyRecord>(`https://api.hubapi.com/crm/v3/objects/companies/${association.toObjectId}?properties=name,domain&archived=false`, config);
+    return { id: company.id, name: company.properties.name || "Unknown company", domain: company.properties.domain ?? null, archived: company.archived, primary: association.associationTypes.some(({ typeId }) => typeId === 1) };
+  }));
+  const properties = contact.properties;
+  return {
+    id: contact.id,
+    firstname: properties.firstname,
+    lastname: properties.lastname,
+    email: properties.email,
+    jobtitle: properties.jobtitle,
+    company: properties.company,
+    owner: properties.hubspot_owner_id,
+    source: properties.hs_analytics_source,
+    lifecycleStage: properties.lifecyclestage,
+    routingStatus: properties.hs_lead_status?.toLowerCase() ?? null,
+    openOpportunityStatus: "unknown",
+    duplicateStatus: "clear",
+    companies,
+    updatedAt: contact.updatedAt,
+    archived: contact.archived,
+  };
+};
+
+export const listAssignedOpenHubSpotLeads = async (ownerId: string, config = hubSpotConfigFromEnv()) => {
+  const assigned: HubSpotContact[] = [];
+  let after: string | undefined;
+  do {
+    const contacts = await listHubSpotContacts(100, config, after);
+    assigned.push(...contacts.results.filter(({ archived, properties }) => !archived && properties.hubspot_owner_id === ownerId && properties.hs_lead_status?.toLowerCase() !== "closed"));
+    after = contacts.paging?.next?.after;
+  } while (after);
+  return Promise.all(assigned.map(({ id }) => getHubSpotLeadRecord(id, config)));
 };
 
 export const writeHubSpotEnrichment = async (

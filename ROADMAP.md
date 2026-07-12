@@ -93,21 +93,21 @@ Poor-fit v0 segments:
 - [x] Implement OpenRouter-backed LLM explanation client foundation
 - [x] Implement HubSpot writeback client foundation
 - [x] Validate grounded LLM output against the required schema and evidence IDs
-- [ ] Wire the full agent flow end-to-end
+- [x] Wire the full agent flow end-to-end
 
 The LLM must never calculate scores, change bands, decide writeback, draft full emails, route leads, disqualify leads, or enroll prospects in sequences.
 
 ### Runtime, Persistence, and Evaluation Lifecycle
 
 - [x] Establish the server runtime, durable schemas, migrations, and append-only audit/event storage in #13
-- [ ] Run a configured morning evaluation for each rep's assigned open records in #15
-- [ ] Handle new-owner and reassignment events through an authenticated, deduplicated HubSpot trigger in #15
+- [x] Run a configured morning evaluation for each rep's assigned open records in #15
+- [x] Handle new-owner and reassignment events through an authenticated, deduplicated HubSpot trigger in #15
 - [x] Define contact/company eligibility, CRM-authoritative fields, association failure, duplicate risk, and manual-review behavior in #11
-- [ ] Implement the locked HubSpot mapping and failure behavior in #15
+- [x] Implement the locked HubSpot mapping and failure behavior in #15
 - [x] Add evaluation/request IDs and persistence idempotency in #13
-- [ ] Add orchestration concurrency limits, timeouts, retry/backoff, rate-limit handling, and recovery in #15
+- [x] Add orchestration concurrency limits, timeouts, retry/backoff, rate-limit handling, and recovery in #15
 - [x] Persist every required step's terminal status and allow partial source failure without invented data
-- [ ] Exercise one successful and one graceful-failure path from trigger through validated output and audit record
+- [x] Exercise one successful and one graceful-failure path from trigger through validated output and audit record
 
 ### Deterministic Scoring Model v0
 
@@ -514,7 +514,7 @@ Data access principles:
 Permissions:
 
 - [x] RevOps Admin for v0: configure scoring, writeback, sources, freshness, audit logs, and rollback
-- [ ] Rep for v0: view assigned lead scores, reasons, hooks, and missing/stale data
+- [x] Rep for v0: view assigned lead scores, reasons, hooks, and missing/stale data
 - [ ] Sales Manager after v0: view team scores, adoption, outcomes, and flagged leads
 - [ ] Viewer after v0: read-only dashboard and audit access
 
@@ -532,7 +532,7 @@ Data retention defaults:
 
 - [x] Normalized lead evaluation records retained for 12 months unless configured otherwise
 - [x] Raw source responses avoided by default
-- [ ] Writeback audit logs retained for at least 24 months or customer policy
+- [x] Writeback audit logs retained for at least 24 months or customer policy
 - [ ] Prompt/response logs retained only when needed and scrubbed of unnecessary sensitive data
 
 Sensitive data rules:
@@ -550,16 +550,16 @@ Sensitive data rules:
 Security requirements:
 
 - [x] Secure API token environment config for HubSpot and OpenRouter in local development
-- [ ] OAuth or secure API authentication for production CRM/source systems
-- [ ] Least-privilege access scopes
-- [ ] Encryption in transit and at rest
-- [ ] Tenant isolation
-- [ ] Request-level audit logs
+- [x] OAuth or secure API authentication for production CRM/source systems
+- [x] Least-privilege access scopes
+- [x] Encryption in transit and at rest
+- [x] Tenant isolation
+- [x] Request-level audit logs
 - [x] Admin-visible integration status
 - [x] Source failure handling in the provider-adapter boundary; orchestration recovery remains in #13/#15
 - [x] Basic outbound request timeout handling
 - [x] Bounded retry and rate-limit terminal handling in the provider-adapter boundary; orchestration-wide handling remains in #13/#15
-- [ ] Manual disconnect/revoke controls
+- [x] Manual disconnect/revoke controls
 - [x] No prospect-facing autonomous actions in current implementation
 
 Governance questions ContextAI must answer:
@@ -641,8 +641,8 @@ Recommended sequencing:
 
 ### Phase 2: End-to-End Alpha and Production Boundary
 
-1. [ ] #14 establishes the production authentication, tenant, role, retention, health, and revoke boundary after #13.
-2. [ ] #15 maps HubSpot records, implements morning and assignment/reassignment triggers, and orchestrates the complete ordered flow in parallel with #14 where contracts permit.
+1. [x] #14 establishes the production authentication, tenant, role, retention, health, and revoke boundary after #13.
+2. [x] #15 maps HubSpot records, implements morning and assignment/reassignment triggers, and orchestrates the complete ordered flow in parallel with #14 where contracts permit.
 3. [ ] #17 embeds the rep experience in HubSpot after #7, #14, and #15 expose stable authorized APIs.
 4. [x] Keep live CRM writes disabled by default while #4's audit and rollback gate completes review.
 

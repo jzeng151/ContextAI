@@ -27,6 +27,7 @@ The current implementation includes:
 - HubSpot contact list/read and guarded PATCH client foundations.
 - A native Node server boundary with SQLite migrations, fixture seeding, and durable evaluation/audit/event records.
 - A RevOps governance workspace with validated config publishing, immutable history, manual-review decisions, audit tracing, rollback access, and integration health.
+- Ordered HubSpot lead evaluation with bounded morning runs, authenticated assignment triggers, replay protection, manual-review routing, and dry-run writeback.
 - A typed, PII-rejecting pilot telemetry contract with idempotent append-only recording.
 - Secret-optional integration smoke checks and native Node tests.
 
@@ -83,6 +84,10 @@ Live integration credentials are optional for local UI development and automated
 | `OPENROUTER_MODEL` | No | Overrides the default model, `openai/gpt-4.1-mini`. |
 | `CONTEXTAI_APP_URL` | No | Sets the application URL sent with OpenRouter requests. |
 | `HUBSPOT_ACCESS_TOKEN` | No | Enables live HubSpot contact checks. |
+| `HUBSPOT_WEBHOOK_SECRET` | No | Authenticates `POST /webhooks/hubspot/assignments`. |
+| `HUBSPOT_INTEGRATION_ID` | No | Selects the encrypted HubSpot OAuth integration used by server-triggered evaluations. |
+| `SESSION_SECRET` | No | Verifies signed bearer sessions for `POST /internal/morning-run`. |
+| `CONTEXTAI_TENANT_ID` | No | Selects the configured tenant for server-triggered evaluations; defaults to `local`. |
 | `DATABASE_PATH` | No | SQLite file used by the server; defaults to `.contextai/contextai.sqlite`. |
 | `HOST` / `PORT` | No | Server bind address and port; defaults to `127.0.0.1:4000`. |
 
@@ -119,6 +124,7 @@ src/
   lib/instrumentation.ts  Pilot event contract and failure-isolated recorder
   lib/integrations.ts     HubSpot and OpenRouter client foundations
   lib/governance.ts       Governance review reason codes
+  lib/orchestration.ts    Ordered evaluation and HubSpot trigger handling
   pages/index.astro       Current rep and RevOps dashboard
   pages/admin.astro       RevOps governance and manual-review workspace
   server.ts               Minimal Node runtime and health endpoint

@@ -481,6 +481,40 @@ export class RuntimeStore {
     return { outcome: run.outcome_status, packet, steps } as const;
   }
 
+  getEvaluationByIdempotencyKey(identity: RequestIdentity, idempotencyKey: string) {
+    assertRequestIdentity(identity);
+    const row = this.database.prepare("SELECT evaluation_id FROM evaluation_runs WHERE tenant_id = ? AND idempotency_key = ? AND purged_at IS NULL")
+      .get(identity.tenantId, nonEmpty(idempotencyKey, "idempotencyKey")) as { evaluation_id: string } | undefined;
+    return row ? this.getEvaluation(identity, row.evaluation_id) : null;
+  }
+
+  appendReviewItem(identity: RequestIdentity, evaluationId: string, reason: string, payload: unknown) {
+    assertRequestIdentity(identity);
+    if (identity.role === "rep") {
+      this.recordAccess(identity, "review.create", "evaluation", evaluationId, "denied");
+      throw new Error("Rep access denied");
+    }
+    const activeEvaluation = this.database.prepare("SELECT 1 FROM evaluation_runs WHERE tenant_id = ? AND evaluation_id = ? AND purged_at IS NULL")
+      .get(identity.tenantId, evaluationId);
+    if (!activeEvaluation) {
+      this.recordAccess(identity, "review.create", "evaluation", evaluationId, "denied");
+      throw new Error("Review evaluation is purged or unavailable");
+    }
+    const existing = this.database.prepare("SELECT review_id FROM review_items WHERE tenant_id = ? AND evaluation_id = ? ORDER BY review_id LIMIT 1")
+      .get(identity.tenantId, evaluationId) as { review_id: string } | undefined;
+    if (existing) {
+      this.recordAccess(identity, "review.create", "evaluation", evaluationId, "allowed");
+      return existing.review_id;
+    }
+    const reviewId = `evaluation:${evaluationId}`;
+    this.database.prepare(`
+      INSERT INTO review_items (review_id, tenant_id, evaluation_id, reason, status, payload_json, created_at)
+      VALUES (?, ?, ?, ?, 'open', ?, ?)
+    `).run(reviewId, identity.tenantId, evaluationId, nonEmpty(reason, "reason"), json(payload), new Date().toISOString());
+    this.recordAccess(identity, "review.create", "evaluation", evaluationId, "allowed");
+    return reviewId;
+  }
+
   listReviewItems(identity: RequestIdentity, status: "open" | "resolved" | "dismissed" = "open") {
     this.requireAdmin(identity, "review.read", "tenant", identity.tenantId);
     const items = this.database.prepare(`
