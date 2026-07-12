@@ -9,6 +9,7 @@ import {
 import type { ScoredLeadPacket } from "./scoring.ts";
 import type { ScoringRunContext } from "./config.ts";
 import type { RuntimeStore } from "./persistence.ts";
+import type { RequestIdentity } from "./security.ts";
 import { executeWriteback, type WritebackPlan, type WritebackPolicy } from "./writeback.ts";
 
 type Env = Record<string, string | undefined>;
@@ -21,6 +22,20 @@ export type OpenRouterConfig = {
 
 export type HubSpotConfig = {
   accessToken: string;
+};
+
+export type HubSpotOAuthConfig = {
+  clientId: string;
+  clientSecret: string;
+  redirectUri: string;
+};
+
+export type HubSpotOAuthTokens = {
+  access_token: string;
+  refresh_token: string;
+  expires_in: number;
+  hub_id?: number;
+  scopes?: string[];
 };
 
 export type HubSpotContact = {
@@ -43,6 +58,8 @@ export type OpenRouterKeyStatus = {
 };
 
 const timeoutMs = 15000;
+const hubSpotOAuthEndpoint = "https://api.hubapi.com/oauth/2026-03/token";
+export const hubSpotRequiredScopes = ["oauth", "crm.objects.contacts.read", "crm.objects.contacts.write"] as const;
 
 const requireEnv = (env: Env, name: string) => {
   const value = env[name];
@@ -60,14 +77,80 @@ export const hubSpotConfigFromEnv = (env: Env = process.env): HubSpotConfig => (
   accessToken: requireEnv(env, "HUBSPOT_ACCESS_TOKEN")
 });
 
+export const hubSpotOAuthConfigFromEnv = (env: Env = process.env): HubSpotOAuthConfig => ({
+  clientId: requireEnv(env, "HUBSPOT_CLIENT_ID"),
+  clientSecret: requireEnv(env, "HUBSPOT_CLIENT_SECRET"),
+  redirectUri: requireEnv(env, "HUBSPOT_REDIRECT_URI"),
+});
+
 const readJson = async <T>(response: Response): Promise<T> => {
   const text = await response.text();
-  const body = text ? JSON.parse(text) : {};
-  if (!response.ok) {
-    const message = typeof body.message === "string" ? body.message : response.statusText;
-    throw new Error(`${response.status} ${message}`);
+  if (!response.ok) throw new Error(`Provider request failed (${response.status})`);
+  return (text ? JSON.parse(text) : {}) as T;
+};
+
+export const hubSpotAuthorizationUrl = (config: Omit<HubSpotOAuthConfig, "clientSecret">, state: string) => {
+  const url = new URL("https://app.hubspot.com/oauth/authorize");
+  url.searchParams.set("client_id", config.clientId);
+  url.searchParams.set("redirect_uri", config.redirectUri);
+  url.searchParams.set("scope", hubSpotRequiredScopes.join(" "));
+  url.searchParams.set("state", state);
+  return url.toString();
+};
+
+const validateHubSpotTokens = (tokens: HubSpotOAuthTokens, requireMetadata = false) => {
+  if (!tokens.access_token || !tokens.refresh_token || !Number.isSafeInteger(tokens.expires_in) || tokens.expires_in <= 0 ||
+    (requireMetadata && (!Number.isSafeInteger(tokens.hub_id) || !Array.isArray(tokens.scopes))) ||
+    (tokens.scopes && hubSpotRequiredScopes.some((scope) => !tokens.scopes!.includes(scope)))) {
+    throw new Error("HubSpot returned invalid or insufficiently scoped OAuth tokens");
   }
-  return body as T;
+  return tokens;
+};
+
+export const exchangeHubSpotAuthorizationCode = async (code: string, config: HubSpotOAuthConfig) => {
+  const response = await fetch(hubSpotOAuthEndpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    signal: AbortSignal.timeout(timeoutMs),
+    body: new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: config.redirectUri,
+      client_id: config.clientId,
+      client_secret: config.clientSecret,
+    }),
+  });
+  return validateHubSpotTokens(await readJson<HubSpotOAuthTokens>(response), true);
+};
+
+export const refreshHubSpotAccessToken = async (refreshToken: string, config = hubSpotOAuthConfigFromEnv()) => {
+  const response = await fetch(hubSpotOAuthEndpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    signal: AbortSignal.timeout(timeoutMs),
+    body: new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+      client_id: config.clientId,
+      client_secret: config.clientSecret,
+    }),
+  });
+  return validateHubSpotTokens(await readJson<HubSpotOAuthTokens>(response));
+};
+
+export const revokeHubSpotRefreshToken = async (refreshToken: string, config: HubSpotOAuthConfig) => {
+  const response = await fetch(`${hubSpotOAuthEndpoint}/revoke`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    signal: AbortSignal.timeout(timeoutMs),
+    body: new URLSearchParams({
+      client_id: config.clientId,
+      client_secret: config.clientSecret,
+      token: refreshToken,
+      token_type_hint: "refresh_token",
+    }),
+  });
+  if (!response.ok) throw new Error(`HubSpot token revocation failed (${response.status})`);
 };
 
 export const explainLeadWithOpenRouter = async (
@@ -109,6 +192,7 @@ export const explainLeadWithOpenRouter = async (
       signal: AbortSignal.timeout(timeoutMs),
       body: JSON.stringify({
         model: providerConfig.model,
+        provider: { data_collection: "deny", zdr: true },
         messages: [
           {
             role: "system",
@@ -198,7 +282,7 @@ export const getHubSpotContact = async (
 
 export const writeHubSpotEnrichment = async (
   plan: WritebackPlan,
-  options: Readonly<{ store: RuntimeStore; tenantId: string; actorType: string; actorId: string; policy: WritebackPolicy; mode?: "dry-run" | "live"; authorizedLiveWrite?: boolean }>,
+  options: Readonly<{ store: RuntimeStore; tenantId: string; actorType: string; actorId: string; identity: RequestIdentity; policy: WritebackPolicy; mode?: "dry-run" | "live"; authorizedLiveWrite?: boolean }>,
   config?: HubSpotConfig
 ) => executeWriteback(plan, {
   ...options,

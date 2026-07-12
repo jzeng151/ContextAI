@@ -8,11 +8,12 @@ import { executeWriteback, hubSpotWritebackPolicy, planWriteback, rollbackLeadWr
 
 const packet = () => structuredClone(leads.find(({ lead_id }) => lead_id === "golden-normal")!);
 const packetById = (leadId: string) => structuredClone(leads.find(({ lead_id }) => lead_id === leadId)!);
+const admin = (requestId = "writeback-test") => ({ requestId, tenantId: "tenant-1", actorId: "admin-1", role: "revops_admin" as const });
 
 const storeFor = (lead = packet()) => {
   const store = new RuntimeStore(":memory:");
   store.saveTenant("tenant-1", "Pilot tenant");
-  store.saveConfigVersion("tenant-1", defaultConfigVersion);
+  store.saveConfigVersion(admin(), defaultConfigVersion);
   store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: lead.evaluation_id, packet: lead });
   return store;
 };
@@ -75,7 +76,7 @@ test("manual-review packets cannot write otherwise eligible fields", async () =>
   try {
     assert.ok(plan.fields.every(({ outcome }) => outcome === "Flagged for Review"));
     const audits = await executeWriteback(plan, {
-      store, tenantId: "tenant-1", actorType: "system", actorId: "writeback-service", policy,
+      store, tenantId: "tenant-1", actorType: "system", actorId: "writeback-service", identity: admin(), policy,
       mode: "live", authorizedLiveWrite: true, write: async () => { writes += 1; }
     });
     assert.ok(audits.every(({ outcome }) => outcome === "Flagged for Review"));
@@ -92,14 +93,14 @@ test("execution is dry-run-first and retries do not repeat writes", async () => 
   const writtenFields: string[] = [];
   try {
     const plan = planWriteback(lead, hubSpotWritebackPolicy);
-    const dryRun = await executeWriteback(plan, { store, tenantId: "tenant-1", actorType: "system", actorId: "writeback-service", policy: hubSpotWritebackPolicy, write: async () => { writes += 1; } });
+    const dryRun = await executeWriteback(plan, { store, tenantId: "tenant-1", actorType: "system", actorId: "writeback-service", identity: admin(), policy: hubSpotWritebackPolicy, write: async () => { writes += 1; } });
     assert.ok(dryRun.every(({ outcome }) => outcome === "Skipped"));
     assert.equal(writes, 0);
-    await assert.rejects(executeWriteback(plan, { store, tenantId: "tenant-1", actorType: "system", actorId: "writeback-service", policy: hubSpotWritebackPolicy, mode: "live", authorizedLiveWrite: true, write: async () => { writes += 1; } }), /not explicitly enabled/i);
+    await assert.rejects(executeWriteback(plan, { store, tenantId: "tenant-1", actorType: "system", actorId: "writeback-service", identity: admin(), policy: hubSpotWritebackPolicy, mode: "live", authorizedLiveWrite: true, write: async () => { writes += 1; } }), /not explicitly enabled/i);
 
     const livePolicy = { ...hubSpotWritebackPolicy, liveWritesEnabled: true };
     const livePlan = planWriteback(lead, livePolicy);
-    const options = { store, tenantId: "tenant-1", actorType: "system", actorId: "writeback-service", policy: livePolicy, mode: "live" as const, authorizedLiveWrite: true, write: async ({ properties }: { properties: Readonly<Record<string, unknown>> }) => {
+    const options = { store, tenantId: "tenant-1", actorType: "system", actorId: "writeback-service", identity: admin(), policy: livePolicy, mode: "live" as const, authorizedLiveWrite: true, write: async ({ properties }: { properties: Readonly<Record<string, unknown>> }) => {
       const pending = (store.database.prepare("SELECT count(*) AS count FROM writeback_audit_records WHERE outcome = 'Pending'").get() as { count: number }).count;
       assert.equal(pending, writes + 1);
       writes += 1;
@@ -130,7 +131,7 @@ test("execution is dry-run-first and retries do not repeat writes", async () => 
 
     const missingEvaluation = new RuntimeStore(":memory:");
     missingEvaluation.saveTenant("tenant-1", "Pilot tenant");
-    missingEvaluation.saveConfigVersion("tenant-1", defaultConfigVersion);
+    missingEvaluation.saveConfigVersion(admin(), defaultConfigVersion);
     let unauditedWrites = 0;
     await assert.rejects(executeWriteback(livePlan, { ...options, store: missingEvaluation, write: async () => { unauditedWrites += 1; } }), /stored evaluation packet/i);
     assert.equal(unauditedWrites, 0);
@@ -154,13 +155,13 @@ test("field rollback writes the previous value and preserves an immutable audit 
   try {
     const policy = { ...hubSpotWritebackPolicy, liveWritesEnabled: true, sourcePrecedence: ["enrichment", "crm", "public_signal"] as const };
     const written = await executeWriteback(planWriteback(lead, policy), {
-      store, tenantId: "tenant-1", actorType: "system", actorId: "writeback-service", policy, mode: "live", authorizedLiveWrite: true,
+      store, tenantId: "tenant-1", actorType: "system", actorId: "writeback-service", identity: admin(), policy, mode: "live", authorizedLiveWrite: true,
       write: async (call) => { calls.push(call); }
     });
     const audit = written.find(({ field_name }) => field_name === "numberofemployees")!;
     assert.equal(audit.actor_id, "writeback-service");
     const rollbackOptions = {
-      store, tenantId: "tenant-1", actorType: "admin", actorId: "admin-1", policy, authorizedLiveWrite: true,
+      store, tenantId: "tenant-1", actorType: "admin", actorId: "admin-1", identity: admin(), policy, authorizedLiveWrite: true,
       write: async (call) => { calls.push(call); }
     } as const;
     await rollbackWriteback([audit.audit_id], rollbackOptions);
@@ -176,8 +177,8 @@ test("field rollback writes the previous value and preserves an immutable audit 
     const emptyPrevious = written.find(({ previous_value_json }) => previous_value_json === null)!;
     await rollbackWriteback([emptyPrevious.audit_id], rollbackOptions);
     assert.equal(calls.length, written.length * 2);
-    store.appendAuditRecord({
-      auditId: "forged-owner", tenantId: "tenant-1", evaluationId: lead.evaluation_id, requestId: lead.request_id,
+    store.appendAuditRecord(admin(lead.request_id), {
+      auditId: "forged-owner", evaluationId: lead.evaluation_id, requestId: lead.request_id,
       crmObjectType: "company", crmObjectId: lead.account_id!, fieldName: "owner", sourceName: "test", sourceRef: "test",
       sourceUpdatedAt: lead.evaluation_timestamp, confidence: "High", outcome: "Written", reason: "forged",
       scoreVersion: lead.score_version, policyVersion: policy.version, actorType: "system"

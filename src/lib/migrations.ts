@@ -272,6 +272,99 @@ export const migrations: readonly Migration[] = [
   },
   {
     version: 7,
+    name: "request identity and pilot access controls",
+    sql: `
+      ALTER TABLE evaluation_runs ADD COLUMN assigned_rep_id TEXT;
+      ALTER TABLE writeback_audit_records ADD COLUMN access_request_id TEXT;
+
+      CREATE TABLE access_audit_records (
+        access_audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tenant_id TEXT NOT NULL REFERENCES tenants(tenant_id),
+        request_id TEXT NOT NULL,
+        actor_id TEXT NOT NULL,
+        actor_role TEXT NOT NULL CHECK (actor_role IN ('revops_admin', 'rep', 'system', 'integration')),
+        action TEXT NOT NULL,
+        resource_type TEXT NOT NULL,
+        resource_id TEXT NOT NULL,
+        outcome TEXT NOT NULL CHECK (outcome IN ('allowed', 'denied')),
+        recorded_at TEXT NOT NULL
+      );
+
+      CREATE INDEX access_audits_tenant_recorded ON access_audit_records (tenant_id, recorded_at);
+      CREATE TRIGGER access_audit_records_no_update
+      BEFORE UPDATE ON access_audit_records BEGIN SELECT RAISE(ABORT, 'access audit records are append-only'); END;
+      CREATE TRIGGER access_audit_records_no_delete
+      BEFORE DELETE ON access_audit_records BEGIN SELECT RAISE(ABORT, 'access audit records are append-only'); END;
+      CREATE TRIGGER access_audit_records_no_duplicate
+      BEFORE INSERT ON access_audit_records
+      WHEN EXISTS (SELECT 1 FROM access_audit_records WHERE access_audit_id = NEW.access_audit_id)
+      BEGIN SELECT RAISE(ABORT, 'access audit records are append-only'); END;
+    `
+  },
+  {
+    version: 8,
+    name: "encrypted integration credentials and operations",
+    sql: `
+      ALTER TABLE integrations ADD COLUMN access_token_ciphertext TEXT;
+      ALTER TABLE integrations ADD COLUMN refresh_token_ciphertext TEXT;
+      ALTER TABLE integrations ADD COLUMN scopes_json TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE integrations ADD COLUMN token_expires_at TEXT;
+      ALTER TABLE integrations ADD COLUMN last_health_at TEXT;
+      ALTER TABLE integrations ADD COLUMN last_error TEXT;
+      ALTER TABLE integrations ADD COLUMN rate_limited_until TEXT;
+      ALTER TABLE integrations ADD COLUMN revoked_at TEXT;
+
+      UPDATE integrations SET status = 'disabled', last_error = 'oauth_reconnect_required'
+      WHERE status = 'active' AND access_token_ciphertext IS NULL;
+    `
+  },
+  {
+    version: 9,
+    name: "retention purge controls",
+    sql: `
+      ALTER TABLE evaluation_runs ADD COLUMN purged_at TEXT;
+      UPDATE evaluation_runs
+      SET retention_after = strftime('%Y-%m-%dT%H:%M:%fZ', completed_at, '+365 days')
+      WHERE retention_after IS NULL;
+      CREATE TABLE retention_job_guard (active INTEGER PRIMARY KEY CHECK (active = 1));
+
+      DROP TRIGGER events_no_delete;
+      CREATE TRIGGER events_no_delete
+      BEFORE DELETE ON events
+      WHEN OLD.retention_class = 'writeback_audit_24_months'
+        OR NOT EXISTS (SELECT 1 FROM retention_job_guard WHERE active = 1)
+      BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
+
+      DROP TRIGGER grounding_audit_records_no_update;
+      CREATE TRIGGER grounding_audit_records_no_update
+      BEFORE UPDATE ON grounding_audit_records
+      WHEN NOT EXISTS (SELECT 1 FROM retention_job_guard WHERE active = 1)
+      BEGIN SELECT RAISE(ABORT, 'grounding audit records are append-only'); END;
+    `
+  },
+  {
+    version: 10,
+    name: "access audit replacement guard",
+    sql: `
+      CREATE TRIGGER IF NOT EXISTS access_audit_records_no_duplicate
+      BEFORE INSERT ON access_audit_records
+      WHEN EXISTS (SELECT 1 FROM access_audit_records WHERE access_audit_id = NEW.access_audit_id)
+      BEGIN SELECT RAISE(ABORT, 'access audit records are append-only'); END;
+    `
+  },
+  {
+    version: 11,
+    name: "legacy security backfills",
+    sql: `
+      UPDATE integrations SET status = 'disabled', last_error = 'oauth_reconnect_required'
+      WHERE status = 'active' AND access_token_ciphertext IS NULL;
+      UPDATE evaluation_runs
+      SET retention_after = strftime('%Y-%m-%dT%H:%M:%fZ', completed_at, '+365 days')
+      WHERE retention_after IS NULL;
+    `
+  },
+  {
+    version: 12,
     name: "frozen pilot reporting context",
     sql: `
       CREATE TABLE pilot_participants (

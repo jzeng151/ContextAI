@@ -1,6 +1,7 @@
 import { assertLeadPacket, type Evidence, type LeadPacket, type WritebackOutcomeStatus } from "./contextai.ts";
 import { defaultScoringConfig, permanentlyBlockedWritebackFields } from "./config.ts";
 import type { RuntimeStore, StoredAuditRecord } from "./persistence.ts";
+import type { RequestIdentity } from "./security.ts";
 
 export type WritebackFieldType = "string" | "number" | "string[]";
 export type PlannedWritebackOutcome = "Eligible" | Exclude<WritebackOutcomeStatus, "Written" | "Data unavailable">;
@@ -180,6 +181,7 @@ export const executeWriteback = async (
     tenantId: string;
     actorType: string;
     actorId: string;
+    identity: RequestIdentity;
     policy: WritebackPolicy;
     mode?: "dry-run" | "live";
     authorizedLiveWrite?: boolean;
@@ -187,7 +189,7 @@ export const executeWriteback = async (
   }>
 ) => {
   if (![options.tenantId, options.actorType, options.actorId].every((value) => value.trim())) throw new Error("Tenant and actor identity are required");
-  const stored = options.store.getEvaluation(options.tenantId, plan.packet.evaluation_id);
+  const stored = options.store.getEvaluation(options.identity, plan.packet.evaluation_id);
   if (!stored || JSON.stringify(stored.packet) !== JSON.stringify(plan.packet)) throw new Error("Writeback plan does not match the stored evaluation packet");
   const verifiedPlan = planWriteback(stored.packet, options.policy);
   if (plan.policyVersion !== verifiedPlan.policyVersion) throw new Error("Writeback plan policy version does not match the trusted policy");
@@ -207,8 +209,8 @@ export const executeWriteback = async (
       record.crm_object_type === field.crmObjectType && record.crm_object_id === field.crmObjectId &&
       record.field_name === field.crmField && record.new_value_json === expectedValue &&
       record.outcome === expectedOutcome && record.reason === expectedReason && record.policy_version === verifiedPlan.policyVersion;
-    const record = (id: string, auditOutcome: string, auditReason: string) => options.store.appendAuditRecord({
-      auditId: id, tenantId: options.tenantId, evaluationId: verifiedPlan.packet.evaluation_id, requestId: verifiedPlan.packet.request_id,
+    const record = (id: string, auditOutcome: string, auditReason: string) => options.store.appendAuditRecord(options.identity, {
+      auditId: id, evaluationId: verifiedPlan.packet.evaluation_id, requestId: verifiedPlan.packet.request_id,
       crmObjectType: field.crmObjectType, crmObjectId: field.crmObjectId, fieldName: field.crmField,
       previousValue: field.previousValue, newValue: field.newValue, sourceName: field.evidence.source_name,
       sourceRef: field.evidence.source_url ?? field.evidence.source_record_id ?? field.evidence.evidence_id,
@@ -239,7 +241,7 @@ export const executeWriteback = async (
 
 export const rollbackWriteback = async (
   auditIds: readonly string[],
-  options: Readonly<{ store: RuntimeStore; tenantId: string; actorType: string; actorId: string; policy: WritebackPolicy; authorizedLiveWrite: true; write: Writer }>
+  options: Readonly<{ store: RuntimeStore; tenantId: string; actorType: string; actorId: string; identity: RequestIdentity; policy: WritebackPolicy; authorizedLiveWrite: true; write: Writer }>
 ) => {
   if (![options.tenantId, options.actorType, options.actorId].every((value) => value.trim())) throw new Error("Tenant and actor identity are required");
   assertWritebackPolicy(options.policy);
@@ -272,8 +274,8 @@ export const rollbackWriteback = async (
       throw new Error("Rollback reservation does not match the original write");
     }
     if (reservation) throw new Error("Rollback has a pending reservation and requires manual reconciliation");
-    if (!reservation) options.store.appendAuditRecord({
-      auditId: reservationId, tenantId: original.tenant_id, evaluationId: original.evaluation_id, requestId: original.request_id,
+    if (!reservation) options.store.appendAuditRecord(options.identity, {
+      auditId: reservationId, evaluationId: original.evaluation_id, requestId: original.request_id,
       crmObjectType: original.crm_object_type, crmObjectId: original.crm_object_id, fieldName: original.field_name,
       previousValue: original.new_value_json === null ? undefined : JSON.parse(original.new_value_json), newValue: rollbackValue,
       sourceName: original.source_name, sourceRef: original.source_ref, sourceUpdatedAt: original.source_updated_at,
@@ -281,8 +283,8 @@ export const rollbackWriteback = async (
       scoreVersion: original.score_version, policyVersion: original.policy_version, actorType: options.actorType, actorId: options.actorId
     });
     await options.write({ object: original.crm_object_type as "contact" | "company", objectId: original.crm_object_id, properties: { [original.field_name]: rollbackValue } });
-    options.store.appendAuditRecord({
-      auditId: rollbackId, tenantId: original.tenant_id, evaluationId: original.evaluation_id, requestId: original.request_id,
+    options.store.appendAuditRecord(options.identity, {
+      auditId: rollbackId, evaluationId: original.evaluation_id, requestId: original.request_id,
       crmObjectType: original.crm_object_type, crmObjectId: original.crm_object_id, fieldName: original.field_name,
       previousValue: original.new_value_json === null ? undefined : JSON.parse(original.new_value_json),
       newValue: rollbackValue,

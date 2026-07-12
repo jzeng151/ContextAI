@@ -6,14 +6,16 @@ import type { PilotEvent } from "../src/lib/instrumentation.ts";
 import { RuntimeStore } from "../src/lib/persistence.ts";
 import { createPilotReport, exportPilotReport } from "../src/lib/reporting.ts";
 
+const admin = (tenantId: string) => ({ requestId: `request-${tenantId}`, tenantId, actorId: "admin-1", role: "revops_admin" as const });
+
 test("pilot reports reconcile tenant-scoped events, filters, duplicates, windows, and caveats", () => {
   const store = new RuntimeStore(":memory:");
   try {
     const packet = leads[0]!;
     store.saveTenant("tenant-1", "Pilot tenant");
     store.saveTenant("tenant-2", "Other tenant");
-    store.saveConfigVersion("tenant-1", defaultConfigVersion);
-    store.saveConfigVersion("tenant-2", defaultConfigVersion);
+    store.saveConfigVersion(admin("tenant-1"), defaultConfigVersion);
+    store.saveConfigVersion(admin("tenant-2"), defaultConfigVersion);
     store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "pilot-eval", packet });
     store.registerPilotParticipant({
       tenantId: "tenant-1", repId: "rep-1", cohort: "contextai", teamId: "team-1",
@@ -92,7 +94,7 @@ test("zero denominators and incomplete telemetry are unavailable rather than val
   const store = new RuntimeStore(":memory:");
   try {
     store.saveTenant("tenant-1", "Pilot tenant");
-    store.saveConfigVersion("tenant-1", defaultConfigVersion);
+    store.saveConfigVersion(admin("tenant-1"), defaultConfigVersion);
     store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "missing-events", packet: leads[1]! });
     const report = createPilotReport(store.database, "tenant-1", {}, "2026-10-01T00:00:00.000Z");
     assert.equal(report.leads.processed, 0);
@@ -112,7 +114,7 @@ test("pilot metric denominators honor index runs, active enrollment, attribution
     const rescore = { ...structuredClone(index), evaluation_id: "eval-z-rescore", request_id: "request-rescore" };
     const outsideEnrollment = structuredClone(leads[1]!);
     store.saveTenant("tenant-1", "Pilot tenant");
-    store.saveConfigVersion("tenant-1", defaultConfigVersion);
+    store.saveConfigVersion(admin("tenant-1"), defaultConfigVersion);
     store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "index", packet: index });
     store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "rescore", packet: rescore });
     store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "outside", packet: outsideEnrollment });
@@ -173,7 +175,7 @@ test("band filters cannot promote a later rescore to the contact index", () => {
     const coldIndex = { ...structuredClone(leads[1]!), evaluation_id: "eval-band-a-index", request_id: "request-band-index", lead_id: "lead-band" };
     const hotRescore = { ...structuredClone(leads[0]!), evaluation_id: "eval-band-z-rescore", request_id: "request-band-rescore", lead_id: "lead-band" };
     store.saveTenant("tenant-1", "Pilot tenant");
-    store.saveConfigVersion("tenant-1", defaultConfigVersion);
+    store.saveConfigVersion(admin("tenant-1"), defaultConfigVersion);
     store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "band-index", packet: coldIndex });
     store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "band-rescore", packet: hotRescore });
     const event = <T extends PilotEvent>(value: T) => store.recordEvent(value);
@@ -203,7 +205,7 @@ test("contact indexes preserve their original cohort and ownerless meetings stay
     const contextRescore = { ...structuredClone(leads[0]!), evaluation_id: "eval-transfer-z-context", request_id: "request-transfer-context", lead_id: "lead-transfer" };
     const ownerless = { ...structuredClone(leads[1]!), evaluation_id: "eval-ownerless", request_id: "request-ownerless", lead_id: "lead-ownerless" };
     store.saveTenant("tenant-1", "Pilot tenant");
-    store.saveConfigVersion("tenant-1", defaultConfigVersion);
+    store.saveConfigVersion(admin("tenant-1"), defaultConfigVersion);
     for (const [idempotencyKey, packet] of [["control", controlIndex], ["context", contextRescore], ["ownerless", ownerless]] as const) {
       store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey, packet });
     }
