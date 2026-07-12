@@ -7,6 +7,7 @@ import { RuntimeStore } from "../src/lib/persistence.ts";
 import { createPilotReport, exportPilotReport } from "../src/lib/reporting.ts";
 
 const admin = (tenantId: string) => ({ requestId: `request-${tenantId}`, tenantId, actorId: "admin-1", role: "revops_admin" as const });
+const day = 24 * 60 * 60 * 1000;
 const csvRow = (csv: string, metric: string) => {
   const line = csv.split("\n").find((row) => row.includes(`"${metric}"`));
   assert.ok(line);
@@ -316,6 +317,85 @@ test("contact indexes preserve their original cohort and ownerless meetings stay
     assert.equal(report.recommendations.coverage.denominator, 0);
     assert.match(report.dataQuality.caveats.join(" "), /cohort leakage/i);
     assert.match(report.dataQuality.caveats.join(" "), /lack a frozen owner snapshot/i);
+  } finally {
+    store.close();
+  }
+});
+
+test("CRM completeness compares index and end snapshots without future-dated evidence", () => {
+  const store = new RuntimeStore(":memory:");
+  try {
+    const index = { ...structuredClone(leads[0]!), evaluation_id: "eval-completeness-index", request_id: "request-completeness-index", lead_id: "lead-completeness" };
+    const source = index.crm_context.evidence[0]!;
+    index.crm_context.evidence.push({
+      ...source, evidence_id: "future-seniority", field_name: "contact_seniority", field_value: "VP",
+      field_values: { contact_seniority: "VP" }, source_updated_at: "2027-01-01T00:00:00.000Z"
+    });
+    const end = { ...structuredClone(index), evaluation_id: "eval-completeness-end", request_id: "request-completeness-end" };
+    end.crm_context.evidence.push({
+      ...source, evidence_id: "end-department", field_name: "contact_department", field_value: "Operations",
+      field_values: { contact_department: "Operations" }, source_updated_at: end.evaluation_timestamp
+    });
+    store.saveTenant("tenant-1", "Pilot tenant");
+    store.saveConfigVersion(admin("tenant-1"), defaultConfigVersion);
+    store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "completeness-index", packet: index });
+    store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "completeness-end", packet: end });
+    store.registerPilotParticipant({ tenantId: "tenant-1", repId: "rep-1", cohort: "contextai", teamId: "team-1", activeFrom: "2026-01-01T00:00:00.000Z" });
+    store.recordEvaluationOwner({ tenantId: "tenant-1", evaluationId: index.evaluation_id, repId: "rep-1", evaluationKind: "exposure_index" });
+    store.recordEvaluationOwner({ tenantId: "tenant-1", evaluationId: end.evaluation_id, repId: "rep-1", evaluationKind: "rescore" });
+    store.database.prepare("UPDATE evaluation_runs SET completed_at = ? WHERE evaluation_id = ?").run("2026-01-01T09:00:00.000Z", index.evaluation_id);
+    store.database.prepare("UPDATE evaluation_runs SET completed_at = ? WHERE evaluation_id = ?").run("2026-02-01T09:00:00.000Z", end.evaluation_id);
+    store.recordEvent({
+      tenantId: "tenant-1", requestId: index.request_id, evaluationId: index.evaluation_id, leadId: index.lead_id,
+      accountId: index.account_id, actorType: "system", actorId: "system-1", scoreVersion: index.score_version,
+      configVersion: index.score_version, evidenceRefs: [], retentionClass: "pilot_analytics_12_months",
+      idempotencyKey: "completeness-run", occurredAt: "2026-01-01T09:00:00.000Z", name: "evaluation.run",
+      data: { outcome: "complete", priorityScore: index.priority_score, priorityBand: index.priority_band }
+    });
+
+    const report = createPilotReport(store.database, "tenant-1", {}, "2026-04-01T00:00:00.000Z");
+    assert.equal(report.crmCompleteness.index.fieldCoverage.contact_department, 0);
+    assert.equal(report.crmCompleteness.fieldCoverage.contact_department, 1);
+    assert.equal(report.crmCompleteness.index.fieldCoverage.contact_seniority, 0);
+    assert.equal(report.crmCompleteness.fieldCoverage.contact_seniority, 0);
+  } finally {
+    store.close();
+  }
+});
+
+test("live writeback audits and rollback links feed rollback metrics", () => {
+  const store = new RuntimeStore(":memory:");
+  try {
+    const packet = { ...structuredClone(leads[0]!), evaluation_id: "eval-live-audit", request_id: "request-live-audit", lead_id: "lead-live-audit" };
+    const now = Date.now();
+    const originalAt = new Date(now - day).toISOString();
+    const generatedAt = new Date(now + 40 * day).toISOString();
+    store.saveTenant("tenant-1", "Pilot tenant");
+    store.saveConfigVersion(admin("tenant-1"), defaultConfigVersion);
+    store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "live-audit", packet });
+    store.registerPilotParticipant({ tenantId: "tenant-1", repId: "rep-1", cohort: "contextai", teamId: "team-1", activeFrom: "2026-01-01T00:00:00.000Z" });
+    store.recordEvaluationOwner({ tenantId: "tenant-1", evaluationId: packet.evaluation_id, repId: "rep-1", evaluationKind: "exposure_index" });
+    store.recordEvent({
+      tenantId: "tenant-1", requestId: packet.request_id, evaluationId: packet.evaluation_id, leadId: packet.lead_id,
+      accountId: packet.account_id, actorType: "system", actorId: "system-1", scoreVersion: packet.score_version,
+      configVersion: packet.score_version, evidenceRefs: [], retentionClass: "pilot_analytics_12_months",
+      idempotencyKey: "live-audit-run", occurredAt: originalAt, name: "evaluation.run",
+      data: { outcome: "complete", priorityScore: packet.priority_score, priorityBand: packet.priority_band }
+    });
+    const identity = { ...admin("tenant-1"), requestId: packet.request_id };
+    const audit = {
+      evaluationId: packet.evaluation_id, requestId: packet.request_id, crmObjectType: "contact", crmObjectId: packet.lead_id,
+      fieldName: "contact_title", sourceName: "Provider", sourceRef: "record-1", sourceUpdatedAt: packet.evaluation_timestamp,
+      confidence: "High", outcome: "Written", reason: "Live write", scoreVersion: packet.score_version
+    };
+    store.appendAuditRecord(identity, { ...audit, auditId: "live-write", recordedAt: originalAt });
+    store.appendAuditRecord(identity, { ...audit, auditId: "rollback:live-write", reason: "Rollback of live-write" });
+    store.appendRollbackLink("rollback:live-write", "tenant-1", packet.evaluation_id, "live-write", "rollback:live-write");
+
+    const report = createPilotReport(store.database, "tenant-1", {}, generatedAt);
+    assert.equal(report.writebacks.written, 1);
+    assert.equal(report.writebacks.rolledBack, 1);
+    assert.equal(report.writebacks.rate, 1);
   } finally {
     store.close();
   }

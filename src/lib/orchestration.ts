@@ -57,6 +57,7 @@ type EvaluationOptions = Readonly<{
   scoringContext?: ScoringRunContext;
   requestId?: string;
   evaluatedAt?: string;
+  evaluationKind?: "baseline_anchor" | "exposure_index" | "rescore";
 }>;
 
 const zeroBreakdown = { icp_fit: 0, high_intent_actions: 0, engagement_quality: 0, public_timing_signals: 0, crm_process_context: 0, data_confidence: 0 } as const;
@@ -296,6 +297,10 @@ export const evaluateLead = async (options: EvaluationOptions) => {
   };
   const saved = options.store.saveEvaluation({ tenantId: options.identity.tenantId, idempotencyKey: options.idempotencyKey, packet: finalPacket, assignedRepId: assignedUserId });
   if (!saved.created) return { ...options.store.getEvaluation(options.identity, saved.evaluationId)!, replayed: true as const };
+  if (assignedUserId) options.store.recordEvaluationOwner({
+    tenantId: options.identity.tenantId, evaluationId: saved.evaluationId, repId: assignedUserId,
+    evaluationKind: options.evaluationKind ?? "exposure_index", recordedAt: at
+  });
   if (finalPacket.tool_status.evaluate_crm_writeback.status === "success" && options.identity.role === "revops_admin") {
     await executeWriteback(planWriteback(finalPacket, writebackPolicy), { store: options.store, tenantId: options.identity.tenantId, actorType: options.identity.role, actorId: options.identity.actorId, identity: options.identity, policy: writebackPolicy, mode: "dry-run" });
   }

@@ -58,6 +58,18 @@ const packetEvidence = (packet: LeadPacket): Evidence[] => [
   ...packet.public_signals.flatMap(({ evidence }) => evidence),
   ...packet.validation_evidence
 ];
+const currentFields = (packet: LeadPacket) => {
+  const current = new Set<string>();
+  for (const evidence of packetEvidence(packet)) {
+    const sourceAt = evidence.source_updated_at ?? evidence.source_published_at;
+    const age = sourceAt ? Date.parse(packet.evaluation_timestamp) - Date.parse(sourceAt) : NaN;
+    if (!Number.isFinite(age) || age < 0 || age > 90 * day) continue;
+    if (evidence.field_name) current.add(evidence.field_name);
+    for (const field of Object.keys(evidence.field_values ?? {})) current.add(field);
+  }
+  if (current.has("employees") || current.has("numberofemployees")) current.add("company_size_band");
+  return current;
+};
 
 export function createPilotReport(
   database: DatabaseSync,
@@ -128,6 +140,8 @@ export function createPilotReport(
       (!filters.source || evaluation.packet.crm_context.source === filters.source) &&
       (!filters.configVersion || allRunByEvaluation.get(evaluation.evaluationId)?.configVersion === filters.configVersion);
   const candidateEvaluations = windowEvaluations.filter(matchesSegments);
+  const endEvaluations = new Map<string, Evaluation>();
+  for (const evaluation of candidateEvaluations) endEvaluations.set(evaluation.leadId, evaluation);
   const evaluations = candidateEvaluations.filter((evaluation) => !filters.band || evaluation.packet.priority_band === filters.band);
 
   const evaluationIds = new Set(evaluations.map(({ evaluationId }) => evaluationId));
@@ -234,18 +248,40 @@ export function createPilotReport(
   const falsePositiveLeads = new Set(maturedHot.filter(({ evaluationId }) => ["bad_fit", "disqualified"].includes(firstOutcomes.get(evaluationId)?.data.outcomeType ?? "")).map(({ leadId }) => leadId));
   const hotLeads = new Set(maturedHot.map(({ leadId }) => leadId));
 
-  const treatmentWritebackEvents = events.filter((event) => byEvaluation.get(event.evaluationId)?.cohort === "contextai");
+  const treatmentEvaluationIds = new Set(evaluations.filter(({ cohort }) => cohort === "contextai").map(({ evaluationId }) => evaluationId));
+  const auditRows = (database.prepare(`
+    SELECT audit_id, evaluation_id, field_name, outcome, recorded_at FROM writeback_audit_records WHERE tenant_id = ?
+  `).all(tenantId) as Array<{ audit_id: string; evaluation_id: string; field_name: string; outcome: string; recorded_at: string }>)
+    .filter(({ evaluation_id }) => treatmentEvaluationIds.has(evaluation_id));
+  const originalAudits = auditRows.filter(({ audit_id }) => !audit_id.startsWith("pending:") && !audit_id.startsWith("rollback:"));
+  const auditedEvaluationIds = new Set(originalAudits.map(({ evaluation_id }) => evaluation_id));
+  const treatmentWritebackEvents = events.filter((event) => byEvaluation.get(event.evaluationId)?.cohort === "contextai" && !auditedEvaluationIds.has(event.evaluationId));
   const writeEvents = treatmentWritebackEvents.filter((event): event is Extract<PilotEvent, { name: "writeback.outcome" }> => event.name === "writeback.outcome");
   const written = firstBy(writeEvents.filter(({ data }) => data.outcome === "Written"), ({ data }) => data.writebackId);
-  const pendingWrites = [...written.values()].filter((event) => generated - eventAt(event) < 30 * day);
+  const auditWritten = firstBy(originalAudits.filter(({ outcome }) => outcome === "Written"), ({ audit_id }) => audit_id);
+  const pendingWrites = [
+    ...[...written.values()].filter((event) => generated - eventAt(event) < 30 * day),
+    ...[...auditWritten.values()].filter(({ recorded_at }) => generated - Date.parse(recorded_at) < 30 * day)
+  ];
   const maturedWritten = firstBy([...written.values()].filter((event) => generated - eventAt(event) >= 30 * day), ({ data }) => data.writebackId);
-  const writtenIds = new Set(maturedWritten.keys());
+  const maturedAuditWritten = firstBy([...auditWritten.values()].filter(({ recorded_at }) => generated - Date.parse(recorded_at) >= 30 * day), ({ audit_id }) => audit_id);
+  const writtenIds = new Set([...maturedWritten.keys()].map((id) => `event:${id}`).concat([...maturedAuditWritten.keys()].map((id) => `audit:${id}`)));
   const rollbackIds = new Set(treatmentWritebackEvents.filter((event): event is Extract<PilotEvent, { name: "writeback.rollback" }> => {
     if (event.name !== "writeback.rollback") return false;
     const write = maturedWritten.get(event.data.writebackId);
     return write !== undefined && eventAt(event) >= eventAt(write) && eventAt(event) - eventAt(write) <= 30 * day;
-  }).map(({ data }) => data.writebackId));
-  const writebacksByOutcome = Object.fromEntries(writebackOutcomes.map((outcome) => [outcome, new Set(writeEvents.filter(({ data }) => data.outcome === outcome).map(({ data }) => data.writebackId)).size]));
+  }).map(({ data }) => `event:${data.writebackId}`));
+  const rollbackLinks = database.prepare(`
+    SELECT original_audit_id, created_at FROM rollback_links WHERE tenant_id = ?
+  `).all(tenantId) as Array<{ original_audit_id: string; created_at: string }>;
+  for (const link of rollbackLinks) {
+    const write = maturedAuditWritten.get(link.original_audit_id);
+    if (write && Date.parse(link.created_at) >= Date.parse(write.recorded_at) && Date.parse(link.created_at) - Date.parse(write.recorded_at) <= 30 * day) rollbackIds.add(`audit:${link.original_audit_id}`);
+  }
+  const writebacksByOutcome = Object.fromEntries(writebackOutcomes.map((outcome) => [outcome, new Set([
+    ...writeEvents.filter(({ data }) => data.outcome === outcome).map(({ data }) => `event:${data.writebackId}`),
+    ...originalAudits.filter((audit) => audit.outcome === outcome).map(({ audit_id }) => `audit:${audit_id}`)
+  ]).size]));
   const writebacksByField: Record<string, Record<string, number>> = {};
   const fieldWritebacks = firstBy(writeEvents.filter(({ data }) => data.fieldName), ({ data }) => `${data.writebackId}\0${data.fieldName}\0${data.outcome}`);
   for (const { data } of fieldWritebacks.values()) {
@@ -253,26 +289,30 @@ export function createPilotReport(
     const field = writebacksByField[data.fieldName] ??= {};
     field[data.outcome] = (field[data.outcome] ?? 0) + 1;
   }
+  for (const audit of originalAudits) {
+    const field = writebacksByField[audit.field_name] ??= {};
+    field[audit.outcome] = (field[audit.outcome] ?? 0) + 1;
+  }
 
   const driverTotals: Record<string, number> = {};
   const missingFields: Record<string, number> = {};
   const staleFields: Record<string, number> = {};
-  const coreFieldCoverage = Object.fromEntries(coreFields.map((field) => [field, 0])) as Record<typeof coreFields[number], number>;
-  let completeRecords = 0;
-  for (const { packet } of indexEvaluations.values()) {
+  const indexFieldCoverage = Object.fromEntries(coreFields.map((field) => [field, 0])) as Record<typeof coreFields[number], number>;
+  const endFieldCoverage = Object.fromEntries(coreFields.map((field) => [field, 0])) as Record<typeof coreFields[number], number>;
+  let indexCompleteRecords = 0;
+  let endCompleteRecords = 0;
+  for (const [leadId, { packet }] of indexEvaluations) {
     for (const [driver, points] of Object.entries(packet.score_breakdown)) driverTotals[driver] = (driverTotals[driver] ?? 0) + points;
     for (const field of packet.missing_fields) missingFields[field] = (missingFields[field] ?? 0) + 1;
     for (const field of packet.stale_fields) staleFields[field] = (staleFields[field] ?? 0) + 1;
-    const current = new Set<string>();
-    for (const evidence of packetEvidence(packet)) {
-      const sourceAt = evidence.source_updated_at ?? evidence.source_published_at;
-      if (!sourceAt || Date.parse(packet.evaluation_timestamp) - Date.parse(sourceAt) > 90 * day) continue;
-      if (evidence.field_name) current.add(evidence.field_name);
-      for (const field of Object.keys(evidence.field_values ?? {})) current.add(field);
+    const indexCurrent = currentFields(packet);
+    const endCurrent = currentFields(endEvaluations.get(leadId)?.packet ?? packet);
+    for (const field of coreFields) {
+      if (indexCurrent.has(field)) indexFieldCoverage[field]++;
+      if (endCurrent.has(field)) endFieldCoverage[field]++;
     }
-    if (current.has("employees") || current.has("numberofemployees")) current.add("company_size_band");
-    for (const field of coreFields) if (current.has(field)) coreFieldCoverage[field]++;
-    if (coreFields.every((field) => current.has(field))) completeRecords++;
+    if (coreFields.every((field) => indexCurrent.has(field))) indexCompleteRecords++;
+    if (coreFields.every((field) => endCurrent.has(field))) endCompleteRecords++;
   }
 
   const weakHotEvaluations = new Set(events.filter((event): event is Extract<PilotEvent, { name: "source.contribution" }> => {
@@ -314,7 +354,10 @@ export function createPilotReport(
     meetings: { total: attributedMeetings, enrolledReps: enrolledReps.size, activeRepWeeks, perRep: ratio(attributedMeetings, enrolledReps.size), perActiveRepWeek: ratio(attributedMeetings, activeRepWeeks), byRep: meetingsByRep },
     conversion: conversions,
     hotFalsePositives: { numerator: falsePositiveLeads.size, denominator: hotLeads.size, rate: ratio(falsePositiveLeads.size, hotLeads.size), missingOutcomes: maturedHot.filter(({ evaluationId }) => !firstOutcomes.has(evaluationId)).length },
-    crmCompleteness: { numerator: completeRecords, denominator: indexEvaluations.size, rate: ratio(completeRecords, indexEvaluations.size), fieldCoverage: coreFieldCoverage },
+    crmCompleteness: {
+      numerator: endCompleteRecords, denominator: indexEvaluations.size, rate: ratio(endCompleteRecords, indexEvaluations.size), fieldCoverage: endFieldCoverage,
+      index: { numerator: indexCompleteRecords, denominator: indexEvaluations.size, rate: ratio(indexCompleteRecords, indexEvaluations.size), fieldCoverage: indexFieldCoverage }
+    },
     writebacks: { rolledBack: rollbackIds.size, written: writtenIds.size, rate: ratio(rollbackIds.size, writtenIds.size), byOutcome: writebacksByOutcome, byField: writebacksByField },
     topScoreDrivers: Object.entries(driverTotals).sort((left, right) => right[1] - left[1]).map(([driver, points]) => ({ driver, points })),
     missingFields,
@@ -353,6 +396,7 @@ export function exportPilotReport(report: ReturnType<typeof createPilotReport>) 
   add("hot_conversion", report.conversion.Hot.numerator, report.conversion.Hot.denominator, report.conversion.Hot.rate, true);
   add("warm_conversion", report.conversion.Warm.numerator, report.conversion.Warm.denominator, report.conversion.Warm.rate, true);
   add("hot_false_positive", report.hotFalsePositives.numerator, report.hotFalsePositives.denominator, report.hotFalsePositives.rate, true);
+  add("crm_completeness_index", report.crmCompleteness.index.numerator, report.crmCompleteness.index.denominator, report.crmCompleteness.index.rate);
   add("crm_completeness", report.crmCompleteness.numerator, report.crmCompleteness.denominator, report.crmCompleteness.rate);
   add("writeback_rollback", report.writebacks.rolledBack, report.writebacks.written, report.writebacks.rate);
   for (const [outcome, count] of Object.entries(report.writebacks.byOutcome)) add(`writeback_outcome:${outcome}`, count, report.leads.processed, count);

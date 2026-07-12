@@ -80,6 +80,7 @@ const server = createServer(async (request, response) => {
       if (!identity) return;
       const url = new URL(request.url ?? path, `http://${request.headers.host ?? "localhost"}`);
       const report = createPilotReport(store.database, identity.tenantId, reportFiltersFrom(url.searchParams));
+      store.recordReportAccess(identity, path.endsWith(".csv") ? "csv" : "json");
       if (path === "/reports/pilot.csv") {
         response.writeHead(200, { "content-type": "text/csv; charset=utf-8" });
         response.end(exportPilotReport(report));

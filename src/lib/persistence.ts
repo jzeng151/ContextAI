@@ -356,13 +356,22 @@ export class RuntimeStore {
     evaluationKind: "baseline_anchor" | "exposure_index" | "rescore";
     recordedAt?: string;
   }>) {
-    this.database.prepare(`
-      INSERT INTO pilot_evaluation_owners (tenant_id, evaluation_id, rep_id, evaluation_kind, recorded_at) VALUES (?, ?, ?, ?, ?)
+    const result = this.database.prepare(`
+      INSERT INTO pilot_evaluation_owners (tenant_id, evaluation_id, rep_id, evaluation_kind, recorded_at)
+      SELECT ?, ?, ?, ?, ? WHERE EXISTS (
+        SELECT 1 FROM pilot_participants WHERE tenant_id = ? AND rep_id = ?
+      )
     `).run(
       nonEmpty(input.tenantId, "tenantId"), nonEmpty(input.evaluationId, "evaluationId"),
       nonEmpty(input.repId, "repId"), input.evaluationKind,
-      isoDate(input.recordedAt ?? new Date().toISOString(), "recordedAt")
+      isoDate(input.recordedAt ?? new Date().toISOString(), "recordedAt"), input.tenantId, input.repId
     );
+    return result.changes === 1;
+  }
+
+  recordReportAccess(identity: RequestIdentity, format: "json" | "csv") {
+    this.requireAdmin(identity, "report.read", "pilot_report", format);
+    this.recordAccess(identity, "report.read", "pilot_report", format, "allowed");
   }
 
   listConfigVersions(identity: RequestIdentity) {
