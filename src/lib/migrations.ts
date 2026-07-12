@@ -240,6 +240,10 @@ export const migrations: readonly Migration[] = [
       BEFORE UPDATE ON grounding_audit_records BEGIN SELECT RAISE(ABORT, 'grounding audit records are append-only'); END;
       CREATE TRIGGER grounding_audit_records_no_delete
       BEFORE DELETE ON grounding_audit_records BEGIN SELECT RAISE(ABORT, 'grounding audit records are append-only'); END;
+      CREATE TRIGGER grounding_audit_records_no_duplicate
+      BEFORE INSERT ON grounding_audit_records
+      WHEN EXISTS (SELECT 1 FROM grounding_audit_records WHERE grounding_audit_id = NEW.grounding_audit_id)
+      BEGIN SELECT RAISE(ABORT, 'grounding audit records are append-only'); END;
     `
   }
 ];

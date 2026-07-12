@@ -166,6 +166,7 @@ test("audit records are append-only and retention is only surfaced as a hook", (
     assert.equal(groundingAuditId, 1);
     assert.throws(() => store.database.prepare("UPDATE writeback_audit_records SET reason = 'changed' WHERE audit_id = 'audit-1'").run(), /append-only/i);
     assert.throws(() => store.database.prepare("DELETE FROM grounding_audit_records WHERE grounding_audit_id = 1").run(), /append-only/i);
+    assert.throws(() => store.database.prepare("INSERT OR REPLACE INTO grounding_audit_records SELECT * FROM grounding_audit_records WHERE grounding_audit_id = 1").run(), /append-only/i);
     assert.throws(() => store.database.prepare("INSERT OR REPLACE INTO writeback_audit_records SELECT * FROM writeback_audit_records WHERE audit_id = 'audit-1'").run(), /append-only/i);
     assert.equal(store.listRetentionCandidates("2027-07-01T04:00:00.000Z").length, 0);
     const retentionCandidates = store.listRetentionCandidates("2027-07-01T06:00:00.000Z") as Array<{ retention_after: string }>;

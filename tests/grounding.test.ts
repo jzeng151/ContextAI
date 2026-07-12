@@ -204,11 +204,22 @@ test("fallback without claims does not require OpenRouter configuration", async 
 });
 
 test("missing OpenRouter configuration returns an audited fallback", async () => {
-  const result = await explainLeadWithOpenRouter(byId("golden-normal"), defaultContext);
-  assert.equal(result.audit.outcome, "fallback");
-  assert.equal(result.audit.failure, "provider_failure");
-  assert.equal(result.audit.model_id, "not-configured");
-  assert.equal(result.explanation.hook_recommendation, fallbackHook);
+  const originalKey = process.env.OPENROUTER_API_KEY;
+  const originalModel = process.env.OPENROUTER_MODEL;
+  delete process.env.OPENROUTER_API_KEY;
+  delete process.env.OPENROUTER_MODEL;
+  try {
+    const result = await explainLeadWithOpenRouter(byId("golden-normal"), defaultContext);
+    assert.equal(result.audit.outcome, "fallback");
+    assert.equal(result.audit.failure, "provider_failure");
+    assert.equal(result.audit.model_id, "not-configured");
+    assert.equal(result.explanation.hook_recommendation, fallbackHook);
+  } finally {
+    if (originalKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = originalKey;
+    if (originalModel === undefined) delete process.env.OPENROUTER_MODEL;
+    else process.env.OPENROUTER_MODEL = originalModel;
+  }
 });
 
 test("approved intent signals produce hooks while weak opens do not", () => {
