@@ -173,6 +173,21 @@ test("valid model selection produces the exact PRD display format", async () => 
   }
 });
 
+test("OpenAI display text is derived from its approved claim IDs", async () => {
+  const originalFetch = globalThis.fetch;
+  const { output } = validOutput();
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ ...output, reason: "unsupported summary" }) } }] }), { status: 200 });
+  try {
+    const result = await explainLeadWithOpenRouter(byId("golden-normal"), defaultContext, {
+      apiKey: "test", model: "test", endpoint: "https://api.openai.com/v1/chat/completions", enforceZdr: false,
+    });
+    assert.equal(result.audit.outcome, "validated");
+    assert.notEqual(result.explanation.reason, "unsupported summary");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("OpenRouter rejects a scoring context that does not match the packet version", async () => {
   const originalFetch = globalThis.fetch;
   let called = false;
