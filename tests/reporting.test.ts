@@ -61,12 +61,12 @@ test("pilot reports reconcile tenant-scoped events, filters, duplicates, windows
     assert.deepEqual(report.recommendations.accepted, { numerator: 1, denominator: 1, rate: 1 });
     assert.deepEqual(report.recommendations.overridden, { numerator: 0, denominator: 1, rate: 0 });
     assert.equal(report.researchTime.medianMinutes, 60);
-    assert.deepEqual(report.meetings, { total: 1, enrolledReps: 1, perRep: 1, byRep: { "rep-1": 1 } });
+    assert.deepEqual(report.meetings, { total: 1, enrolledReps: 1, activeRepWeeks: 121 / 7, perRep: 1, perActiveRepWeek: 7 / 121, byRep: { "rep-1": 1 } });
     assert.deepEqual(report.conversion.Hot, { numerator: 1, denominator: 1, rate: 1 });
     assert.equal(report.hotFalsePositives.rate, 1);
     assert.equal(report.writebacks.rate, 1);
     assert.equal(report.writebacks.byOutcome.Written, 1);
-    assert.equal(report.weakSignalContribution.rate, 1);
+    assert.equal(report.weakSignalContribution.rate, 0);
     assert.equal(report.dataQuality.duplicateDispositionEvents, 2);
     assert.equal(report.dataQuality.duplicateMeetingEvents, 1);
     const promptV2 = createPilotReport(store.database, "tenant-1", { promptVersion: "grounding-v2" }, "2026-04-01T00:00:00.000Z");
@@ -85,6 +85,7 @@ test("pilot reports reconcile tenant-scoped events, filters, duplicates, windows
     const csv = exportPilotReport(report);
     assert.match(csv, /"pilot-v1","tenant-1","contextai"/);
     assert.match(csv, /"recommendation_acceptance","1","1","1"/);
+    assert.match(csv, /"meetings_per_active_rep_week"/);
   } finally {
     store.close();
   }
@@ -139,11 +140,13 @@ test("pilot metric denominators honor index runs, active enrollment, attribution
     event({ ...base(index), idempotencyKey: "index-meeting", occurredAt: "2026-01-20T09:00:00.000Z", name: "meeting.attribution", data: { meetingId: "meeting-index", attribution: "crm_association" } });
     event({ ...base(index), idempotencyKey: "outcome-rep", occurredAt: "2026-01-20T09:00:00.000Z", name: "outcome.attribution", data: { outcomeId: "outcome-1", outcomeType: "bad_fit", attribution: "rep_reported" } });
     event({ ...base(index), idempotencyKey: "outcome-crm", occurredAt: "2026-01-21T09:00:00.000Z", name: "outcome.attribution", data: { outcomeId: "outcome-1", outcomeType: "opportunity_created", attribution: "crm_association" } });
+    event({ ...base(index), idempotencyKey: "outcome-later-bad-fit", occurredAt: "2026-01-22T09:00:00.000Z", name: "outcome.attribution", data: { outcomeId: "outcome-2", outcomeType: "bad_fit", attribution: "crm_association" } });
     event({ ...base(index), retentionClass: "writeback_audit_24_months", idempotencyKey: "write-1", occurredAt: "2026-01-02T09:00:00.000Z", name: "writeback.outcome", data: { writebackId: "write-1", outcome: "Written", fieldName: "contact_title" } });
     event({ ...base(index), retentionClass: "writeback_audit_24_months", idempotencyKey: "write-1-retry", occurredAt: "2026-01-02T09:00:01.000Z", name: "writeback.outcome", data: { writebackId: "write-1", outcome: "Written", fieldName: "contact_title" } });
     event({ ...base(index), retentionClass: "writeback_audit_24_months", idempotencyKey: "rollback-1", occurredAt: "2026-01-03T09:00:00.000Z", name: "writeback.rollback", data: { writebackId: "write-1", rollbackId: "rollback-1", fieldName: "contact_title" } });
     event({ ...base(index), retentionClass: "writeback_audit_24_months", idempotencyKey: "write-2", occurredAt: "2026-01-02T09:00:00.000Z", name: "writeback.outcome", data: { writebackId: "write-2", outcome: "Written", fieldName: "contact_title" } });
     event({ ...base(index), retentionClass: "writeback_audit_24_months", idempotencyKey: "rollback-late", occurredAt: "2026-02-05T09:00:00.000Z", name: "writeback.rollback", data: { writebackId: "write-2", rollbackId: "rollback-2", fieldName: "contact_title" } });
+    event({ ...base(index), retentionClass: "writeback_audit_24_months", idempotencyKey: "write-pending", occurredAt: "2026-03-20T09:00:00.000Z", name: "writeback.outcome", data: { writebackId: "write-pending", outcome: "Written", fieldName: "contact_title" } });
 
     event({ ...base(rescore), idempotencyKey: "rescore-run", occurredAt: "2026-01-02T09:00:00.000Z", name: "evaluation.run", data: { outcome: "complete", priorityScore: 94, priorityBand: "Hot" } });
     event({ ...base(rescore), idempotencyKey: "rescore-view", occurredAt: "2026-01-02T09:01:00.000Z", name: "lead.viewed", data: { surface: "dashboard" } });
@@ -160,10 +163,14 @@ test("pilot metric denominators honor index runs, active enrollment, attribution
     assert.equal(report.researchTime.eligibleViews, 1);
     assert.equal(report.meetings.total, 1);
     assert.equal(report.meetings.enrolledReps, 1);
+    assert.equal(report.meetings.activeRepWeeks, 90 / 7);
+    assert.equal(report.meetings.perActiveRepWeek, 7 / 90);
     assert.equal(report.hotFalsePositives.rate, 0);
     assert.equal(report.writebacks.rate, 0.5);
-    assert.equal(report.writebacks.byField.contact_title!.Written, 2);
+    assert.equal(report.writebacks.written, 2);
+    assert.equal(report.writebacks.byField.contact_title!.Written, 3);
     assert.equal(report.weakSignalContribution.rate, 0);
+    assert.match(report.dataQuality.caveats.join(" "), /30-day rollback window/i);
   } finally {
     store.close();
   }
@@ -178,6 +185,8 @@ test("band filters cannot promote a later rescore to the contact index", () => {
     store.saveConfigVersion(admin("tenant-1"), defaultConfigVersion);
     store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "band-index", packet: coldIndex });
     store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "band-rescore", packet: hotRescore });
+    store.database.prepare("UPDATE evaluation_runs SET completed_at = ? WHERE evaluation_id = ?").run("2026-01-01T09:00:00.000Z", coldIndex.evaluation_id);
+    store.database.prepare("UPDATE evaluation_runs SET completed_at = ? WHERE evaluation_id = ?").run("2026-01-02T09:00:00.000Z", hotRescore.evaluation_id);
     const event = <T extends PilotEvent>(value: T) => store.recordEvent(value);
     const base = (packet: typeof coldIndex) => ({
       tenantId: "tenant-1", requestId: packet.request_id, evaluationId: packet.evaluation_id, leadId: packet.lead_id,
@@ -193,6 +202,7 @@ test("band filters cannot promote a later rescore to the contact index", () => {
     assert.equal(report.weakSignalContribution.denominator, 0);
     assert.equal(report.weakSignalContribution.rate, null);
     assert.equal(report.conversion.Hot.denominator, 0);
+    assert.equal(createPilotReport(store.database, "tenant-1", { from: "2026-01-02T00:00:00.000Z" }, "2026-04-01T00:00:00.000Z").leads.processed, 0);
   } finally {
     store.close();
   }
@@ -223,6 +233,8 @@ test("contact indexes preserve their original cohort and ownerless meetings stay
     event({ ...base(controlIndex), idempotencyKey: "control-shown", occurredAt: "2026-01-01T09:01:00.000Z", name: "score.shown", data: { priorityScore: 94, priorityBand: "Hot", surface: "dashboard" } });
     event({ ...base(contextRescore), idempotencyKey: "context-run", occurredAt: "2026-01-02T09:00:00.000Z", name: "evaluation.run", data: { outcome: "complete", priorityScore: 94, priorityBand: "Hot" } });
     event({ ...base(ownerless), idempotencyKey: "ownerless-run", occurredAt: "2026-01-01T09:00:00.000Z", name: "evaluation.run", data: { outcome: "complete", priorityScore: ownerless.priority_score, priorityBand: ownerless.priority_band } });
+    event({ ...base(ownerless), idempotencyKey: "ownerless-shown", occurredAt: "2026-01-01T09:01:00.000Z", name: "score.shown", data: { priorityScore: ownerless.priority_score, priorityBand: ownerless.priority_band, surface: "dashboard" } });
+    event({ ...base(ownerless), idempotencyKey: "ownerless-accepted", occurredAt: "2026-01-01T09:02:00.000Z", name: "recommendation.disposition", data: { disposition: "accepted" } });
     event({ ...base(ownerless), idempotencyKey: "ownerless-meeting", occurredAt: "2026-01-20T09:00:00.000Z", name: "meeting.attribution", data: { meetingId: "meeting-ownerless", attribution: "crm_association" } });
 
     const contextReport = createPilotReport(store.database, "tenant-1", { cohort: "contextai" }, "2026-04-01T00:00:00.000Z");
@@ -236,6 +248,34 @@ test("contact indexes preserve their original cohort and ownerless meetings stay
     assert.equal(report.recommendations.coverage.denominator, 0);
     assert.match(report.dataQuality.caveats.join(" "), /cohort leakage/i);
     assert.match(report.dataQuality.caveats.join(" "), /lack a frozen owner snapshot/i);
+  } finally {
+    store.close();
+  }
+});
+
+test("purged evaluations are excluded and only open-only evidence counts as weak-signal contribution", () => {
+  const store = new RuntimeStore(":memory:");
+  try {
+    const weak = structuredClone(leads.find(({ lead_id }) => lead_id === "weak-opens")!);
+    const purged = { ...structuredClone(leads[1]!), evaluation_id: "eval-purged", request_id: "request-purged", lead_id: "lead-purged" };
+    store.saveTenant("tenant-1", "Pilot tenant");
+    store.saveConfigVersion(admin("tenant-1"), defaultConfigVersion);
+    store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "weak", packet: weak });
+    store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "purged", packet: purged, retentionAfter: "2026-01-02T00:00:00.000Z" });
+    store.registerPilotParticipant({ tenantId: "tenant-1", repId: "rep-1", cohort: "contextai", teamId: "team-1", activeFrom: "2026-01-01T00:00:00.000Z" });
+    store.recordEvaluationOwner({ tenantId: "tenant-1", evaluationId: weak.evaluation_id, repId: "rep-1" });
+    const base = {
+      tenantId: "tenant-1", requestId: weak.request_id, evaluationId: weak.evaluation_id, leadId: weak.lead_id,
+      accountId: weak.account_id, actorType: "system" as const, actorId: "system-1", scoreVersion: weak.score_version,
+      configVersion: weak.score_version, evidenceRefs: [] as string[], retentionClass: "pilot_analytics_12_months" as const
+    };
+    store.recordEvent({ ...base, idempotencyKey: "weak-run", occurredAt: "2026-01-01T09:00:00.000Z", name: "evaluation.run", data: { outcome: "complete", priorityScore: 90, priorityBand: "Hot" } });
+    store.recordEvent({ ...base, evidenceRefs: ["wo-intent"], idempotencyKey: "weak-open", occurredAt: "2026-01-01T09:01:00.000Z", name: "source.contribution", data: { sourceType: "engagement", contribution: "supporting", weakSignal: true, hotMaking: true } });
+    assert.equal(store.purgeExpiredEvaluations(admin("tenant-1"), "2026-01-03T00:00:00.000Z"), 1);
+
+    const report = createPilotReport(store.database, "tenant-1", {}, "2026-04-01T00:00:00.000Z");
+    assert.equal(report.leads.processed, 1);
+    assert.deepEqual(report.weakSignalContribution, { numerator: 1, denominator: 1, rate: 1 });
   } finally {
     store.close();
   }

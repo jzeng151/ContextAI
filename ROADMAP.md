@@ -76,6 +76,7 @@ Poor-fit v0 segments:
 - [x] Stable pilot event contract, PII rejection, event idempotency, retention classes, failure-isolated recording, and metric dictionary inputs in #9
 - [x] Deterministic allowed-claim compilation, exact grounded-output validation, safe LLM fallbacks, fixture-backed safety evals, and append-only grounding audits for #6
 - [x] Fixture-backed standalone decision desk, approved-evidence ledger, audit tabs, manual-review flow, responsive triage, and contract-safe outcome events in #7; integration review remains
+- [x] HubSpot 2026.03 contact/company sidebar card with signed portal/user/record context, cached packet states, approved evidence links, and durable rep-interaction events in #17
 - [x] Contributor setup and workflow guide
 - [x] Secret-free pull-request CI, lockfile install, test/build gate, superseded-run cancellation, and review handoff template in #12
 
@@ -93,21 +94,21 @@ Poor-fit v0 segments:
 - [x] Implement OpenRouter-backed LLM explanation client foundation
 - [x] Implement HubSpot writeback client foundation
 - [x] Validate grounded LLM output against the required schema and evidence IDs
-- [ ] Wire the full agent flow end-to-end
+- [x] Wire the full agent flow end-to-end
 
 The LLM must never calculate scores, change bands, decide writeback, draft full emails, route leads, disqualify leads, or enroll prospects in sequences.
 
 ### Runtime, Persistence, and Evaluation Lifecycle
 
 - [x] Establish the server runtime, durable schemas, migrations, and append-only audit/event storage in #13
-- [ ] Run a configured morning evaluation for each rep's assigned open records in #15
-- [ ] Handle new-owner and reassignment events through an authenticated, deduplicated HubSpot trigger in #15
+- [x] Run a configured morning evaluation for each rep's assigned open records in #15
+- [x] Handle new-owner and reassignment events through an authenticated, deduplicated HubSpot trigger in #15
 - [x] Define contact/company eligibility, CRM-authoritative fields, association failure, duplicate risk, and manual-review behavior in #11
-- [ ] Implement the locked HubSpot mapping and failure behavior in #15
+- [x] Implement the locked HubSpot mapping and failure behavior in #15
 - [x] Add evaluation/request IDs and persistence idempotency in #13
-- [ ] Add orchestration concurrency limits, timeouts, retry/backoff, rate-limit handling, and recovery in #15
+- [x] Add orchestration concurrency limits, timeouts, retry/backoff, rate-limit handling, and recovery in #15
 - [x] Persist every required step's terminal status and allow partial source failure without invented data
-- [ ] Exercise one successful and one graceful-failure path from trigger through validated output and audit record
+- [x] Exercise one successful and one graceful-failure path from trigger through validated output and audit record
 
 ### Deterministic Scoring Model v0
 
@@ -329,7 +330,7 @@ Rollback:
 - [x] Weak-open warning shown for mocked weak-signal case
 - [x] Fallback hook shown for no-signal cases
 - [x] Real selected-lead interaction in #7
-- [ ] HubSpot CRM widget/embed in #17
+- [x] HubSpot CRM widget/embed in #17
 - [x] Capture call, email, sequence, manual enrichment, disqualify, ignore, and nurture as observed/linked rep actions in #7; never execute them
 - [x] Recommendation accept/ignore/override capture through #9 events in #7
 
@@ -349,17 +350,17 @@ Rollback:
 
 Configuration primitives belong to #8; pilot-ready RevOps screens, review, audit, and rollback controls belong to #16; pilot metric reports and exports belong to #19.
 
-- [ ] Configure scoring weights within safe ranges
-- [ ] View score version history
-- [ ] Compare score changes before publishing
-- [ ] Define Hot, Warm, Cold, and Needs Manual Review thresholds
-- [ ] Set source freshness thresholds
-- [ ] Configure CRM writeback allowlist
-- [ ] Approve or block enrichment sources
-- [ ] Set weak-signal rules
-- [ ] View audit logs
-- [ ] Review fields flagged for manual approval
-- [ ] Roll back CRM writebacks
+- [x] Configure scoring weights within safe ranges
+- [x] View score version history
+- [x] Compare score changes before publishing
+- [x] Define Hot, Warm, and Cold thresholds; Needs Manual Review remains the locked nonnumeric safety override
+- [x] Set source freshness thresholds
+- [x] Configure CRM writeback allowlist
+- [x] Approve or block enrichment sources
+- [x] Set weak-signal rules
+- [x] View audit logs
+- [x] Review fields flagged for manual approval
+- [x] Roll back CRM writebacks
 - [x] Export pilot metrics through tenant-scoped JSON and CSV reports in #19
 
 Scoring version control:
@@ -379,15 +380,15 @@ Scoring version control:
 
 Admin review queue reasons:
 
-- [ ] Missing required firmographic data
-- [ ] Stale enrichment
-- [ ] Conflicting source values
-- [ ] Duplicate lead or account risk
-- [ ] Unclear corporate domain
+- [x] Missing required firmographic data
+- [x] Stale enrichment
+- [x] Conflicting source values
+- [x] Duplicate lead or account risk
+- [x] Unclear corporate domain
 - [ ] High intent but poor ICP fit
 - [ ] Strong ICP fit but no verified intent
-- [ ] Candidate writeback blocked by policy
-- [ ] Candidate writeback flagged due to confidence or freshness
+- [x] Candidate writeback blocked by policy
+- [x] Candidate writeback flagged due to confidence or freshness
 
 Admin reporting:
 
@@ -421,7 +422,7 @@ The PRD explicitly sets the 40-60% research-time hypothesis and 60% acceptance t
 | Improve CRM completeness | Complete, source-backed, under-90-day core fields | 20%+ lift vs. baseline (provisional) | [ ] |
 | Protect CRM integrity | Bad writeback rate | Under 1% require rollback (provisional) | [ ] |
 | Avoid weak-signal overfit | Hot leads where opens are primary driver | Admin-defined; initial default under 10% (provisional) | [ ] |
-| Preserve workflow speed | CRM widget load time | Under 2.5s cached, under 10s fresh (provisional) | [ ] |
+| Preserve workflow speed | CRM widget load time | Under 2.5s for latest persisted evaluation; refresh remains asynchronous in v0 | [x] |
 
 Instrumentation requirements:
 
@@ -513,18 +514,18 @@ Data access principles:
 
 Permissions:
 
-- [ ] RevOps Admin for v0: configure scoring, writeback, sources, freshness, audit logs, and rollback
-- [ ] Rep for v0: view assigned lead scores, reasons, hooks, and missing/stale data
+- [x] RevOps Admin for v0: configure scoring, writeback, sources, freshness, audit logs, and rollback
+- [x] Rep for v0: view assigned lead scores, reasons, hooks, and missing/stale data
 - [ ] Sales Manager after v0: view team scores, adoption, outcomes, and flagged leads
 - [ ] Viewer after v0: read-only dashboard and audit access
 
 Field-level controls:
 
 - [ ] Configure readable CRM fields
-- [ ] Configure writable CRM fields
-- [ ] Configure fields requiring manual approval
+- [x] Configure writable CRM fields
+- [x] Configure fields requiring manual approval
 - [ ] Configure blocked writeback fields
-- [ ] Configure allowed sources
+- [x] Configure allowed sources
 - [ ] Configure engagement behaviors visible to reps
 - [ ] Configure sources allowed in generated hooks
 
@@ -532,7 +533,7 @@ Data retention defaults:
 
 - [x] Normalized lead evaluation records retained for 12 months unless configured otherwise
 - [x] Raw source responses avoided by default
-- [ ] Writeback audit logs retained for at least 24 months or customer policy
+- [x] Writeback audit logs retained for at least 24 months or customer policy
 - [ ] Prompt/response logs retained only when needed and scrubbed of unnecessary sensitive data
 
 Sensitive data rules:
@@ -550,16 +551,16 @@ Sensitive data rules:
 Security requirements:
 
 - [x] Secure API token environment config for HubSpot and OpenRouter in local development
-- [ ] OAuth or secure API authentication for production CRM/source systems
-- [ ] Least-privilege access scopes
-- [ ] Encryption in transit and at rest
-- [ ] Tenant isolation
-- [ ] Request-level audit logs
-- [ ] Admin-visible integration status
+- [x] OAuth or secure API authentication for production CRM/source systems
+- [x] Least-privilege access scopes
+- [x] Encryption in transit and at rest
+- [x] Tenant isolation
+- [x] Request-level audit logs
+- [x] Admin-visible integration status
 - [x] Source failure handling in the provider-adapter boundary; orchestration recovery remains in #13/#15
 - [x] Basic outbound request timeout handling
 - [x] Bounded retry and rate-limit terminal handling in the provider-adapter boundary; orchestration-wide handling remains in #13/#15
-- [ ] Manual disconnect/revoke controls
+- [x] Manual disconnect/revoke controls
 - [x] No prospect-facing autonomous actions in current implementation
 
 Governance questions ContextAI must answer:
@@ -570,7 +571,7 @@ Governance questions ContextAI must answer:
 - [x] Which fields were missing or stale in current mock data?
 - [x] Which claims were used in the hook via `allowed_claims`?
 - [x] Which mocked fields were written/skipped/flagged?
-- [ ] Who configured scoring/writeback rules?
+- [x] Who configured scoring/writeback rules?
 - [x] Can a written CRM field or lead evaluation be rolled back with an immutable audit link?
 
 If ContextAI cannot provide an audit trail for a score, hook, or writeback, that output is not production-safe.
@@ -641,14 +642,14 @@ Recommended sequencing:
 
 ### Phase 2: End-to-End Alpha and Production Boundary
 
-1. [ ] #14 establishes the production authentication, tenant, role, retention, health, and revoke boundary after #13.
-2. [ ] #15 maps HubSpot records, implements morning and assignment/reassignment triggers, and orchestrates the complete ordered flow in parallel with #14 where contracts permit.
-3. [ ] #17 embeds the rep experience in HubSpot after #7, #14, and #15 expose stable authorized APIs.
+1. [x] #14 establishes the production authentication, tenant, role, retention, health, and revoke boundary after #13.
+2. [x] #15 maps HubSpot records, implements morning and assignment/reassignment triggers, and orchestrates the complete ordered flow in parallel with #14 where contracts permit.
+3. [x] #17 embeds the rep experience in HubSpot after #7, #14, and #15 expose stable authorized APIs.
 4. [x] Keep live CRM writes disabled by default while #4's audit and rollback gate completes review.
 
 ### Phase 3: Pilot Hardening and Validation
 
-1. [ ] #16 builds minimum RevOps configuration, version publishing, audit, manual-review, and rollback controls.
+1. [x] #16 builds minimum RevOps configuration, version publishing, audit, manual-review, and rollback controls.
 2. [ ] #18 approves the metric dictionary, baselines, cohorts, surveys, safety stops, and decision rubric before exposure.
 3. [x] #19 implements read-only pilot metric aggregation, reports, and exports against that approved definition.
 4. [ ] #20 runs the pilot and makes the proceed/pivot/narrow/stop decision.

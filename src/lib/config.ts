@@ -80,6 +80,7 @@ export type ScoringConfig = Readonly<{
     minimumConfidence: "High";
     approvedSourceTypes: readonly WritebackSourceType[];
     allowlist: Readonly<Record<WritebackObject, readonly CanonicalWritebackField[]>>;
+    manualApprovalFields: Readonly<Record<WritebackObject, readonly CanonicalWritebackField[]>>;
     blockedFields: readonly string[];
   }>;
 }>;
@@ -180,17 +181,20 @@ export function assertScoringConfig(value: unknown): asserts value is ScoringCon
 
   if (!isRecord(value.weakSignals) || !sameKeys(value.weakSignals, ["emailOpens"]) || !isRecord(value.weakSignals.emailOpens) || !sameKeys(value.weakSignals.emailOpens, ["sourceType", "countsAsBuyingIntent", "canProduceHotAlone"]) || value.weakSignals.emailOpens.sourceType !== "engagement" || value.weakSignals.emailOpens.countsAsBuyingIntent !== false || value.weakSignals.emailOpens.canProduceHotAlone !== false) fail("email opens must remain weak engagement and cannot produce Hot alone");
 
-  if (!isRecord(value.writeback) || !sameKeys(value.writeback, ["minimumConfidence", "approvedSourceTypes", "allowlist", "blockedFields"]) || value.writeback.minimumConfidence !== "High") fail("writeback safety rules are incomplete");
+  if (!isRecord(value.writeback) || !sameKeys(value.writeback, ["minimumConfidence", "approvedSourceTypes", "allowlist", "manualApprovalFields", "blockedFields"]) || value.writeback.minimumConfidence !== "High") fail("writeback safety rules are incomplete");
   const writeback = value.writeback;
   if (!uniqueStrings(writeback.approvedSourceTypes) || writeback.approvedSourceTypes.length === 0 || writeback.approvedSourceTypes.some((source) => !approvedSourceTypes.includes(source) || !writebackSourceTypes.includes(source as WritebackSourceType))) fail("writeback safety rules are incomplete");
   const blockedFields = writeback.blockedFields;
   if (!uniqueStrings(blockedFields) || permanentlyBlockedWritebackFields.some((field) => !blockedFields.includes(field))) fail("writeback safety rules are incomplete");
   if (!isRecord(writeback.allowlist) || !sameKeys(writeback.allowlist, ["contact", "company"])) fail("writeback allowlist must be grouped by contact and company");
+  if (!isRecord(writeback.manualApprovalFields) || !sameKeys(writeback.manualApprovalFields, ["contact", "company"])) fail("manual approval fields must be grouped by contact and company");
   const allowlistByObject = writeback.allowlist;
   for (const object of ["contact", "company"] as const) {
     const allowlist = allowlistByObject[object];
     const canonical = canonicalWritebackFields[object] as readonly string[];
     if (!uniqueStrings(allowlist) || allowlist.some((field) => !canonical.includes(field) || blockedFields.includes(field))) fail(`${object} writeback allowlist contains an unsafe field`);
+    const manualApproval = writeback.manualApprovalFields[object];
+    if (!uniqueStrings(manualApproval) || manualApproval.some((field) => !allowlist.includes(field as CanonicalWritebackField))) fail(`${object} manual approval fields must be allowlisted`);
   }
 }
 
@@ -284,6 +288,7 @@ export const defaultScoringConfig: ScoringConfig = immutable({
     minimumConfidence: "High",
     approvedSourceTypes: ["enrichment", "public_signal"],
     allowlist: { contact: [...canonicalWritebackFields.contact], company: [...canonicalWritebackFields.company] },
+    manualApprovalFields: { contact: [], company: [] },
     blockedFields: [...permanentlyBlockedWritebackFields]
   }
 });

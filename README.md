@@ -26,6 +26,9 @@ The current implementation includes:
 - OpenRouter configuration, key validation, and grounded explanation client foundations.
 - HubSpot contact list/read and guarded PATCH client foundations.
 - A native Node server boundary with SQLite migrations, fixture seeding, and durable evaluation/audit/event records.
+- A RevOps governance workspace with validated config publishing, immutable history, manual-review decisions, audit tracing, rollback access, and integration health.
+- Ordered HubSpot lead evaluation with bounded morning runs, authenticated assignment triggers, replay protection, manual-review routing, and dry-run writeback.
+- A HubSpot Developer Platform 2026.03 contact/company sidebar card backed by signed, tenant- and assignment-scoped APIs.
 - A typed, PII-rejecting pilot telemetry contract with idempotent append-only recording.
 - Secret-optional integration smoke checks and native Node tests.
 
@@ -81,7 +84,14 @@ Live integration credentials are optional for local UI development and automated
 | `OPENROUTER_API_KEY` | No | Enables OpenRouter key checks and optional live explanation calls. |
 | `OPENROUTER_MODEL` | No | Overrides the default model, `openai/gpt-4.1-mini`. |
 | `CONTEXTAI_APP_URL` | No | Sets the application URL sent with OpenRouter requests. |
+| `CONTEXTAI_API_URL` | Required for CRM card | Public HTTPS origin used to validate signed HubSpot card requests. |
+| `PUBLIC_CONTEXTAI_API_URL` | No | Sets the runtime API origin used by the Astro governance page. |
+| `CONTEXTAI_ADMIN_ORIGIN` | No | Allows the Astro governance origin to call the runtime API; defaults to `http://127.0.0.1:4321`. |
 | `HUBSPOT_ACCESS_TOKEN` | No | Enables live HubSpot contact checks. |
+| `HUBSPOT_WEBHOOK_SECRET` | No | Authenticates `POST /webhooks/hubspot/assignments`. |
+| `HUBSPOT_INTEGRATION_ID` | No | Selects the encrypted HubSpot OAuth integration used by server-triggered evaluations. |
+| `SESSION_SECRET` | No | Verifies signed bearer sessions for `POST /internal/morning-run`. |
+| `CONTEXTAI_TENANT_ID` | No | Selects the configured tenant for server-triggered evaluations; defaults to `local`. |
 | `DATABASE_PATH` | No | SQLite file used by the server; defaults to `.contextai/contextai.sqlite`. |
 | `HOST` / `PORT` | No | Server bind address and port; defaults to `127.0.0.1:4000`. |
 
@@ -117,7 +127,10 @@ src/
   lib/persistence.ts      Durable runtime storage boundary
   lib/instrumentation.ts  Pilot event contract and failure-isolated recorder
   lib/integrations.ts     HubSpot and OpenRouter client foundations
+  lib/governance.ts       Governance review reason codes
+  lib/orchestration.ts    Ordered evaluation and HubSpot trigger handling
   pages/index.astro       Current rep and RevOps dashboard
+  pages/admin.astro       RevOps governance and manual-review workspace
   server.ts               Minimal Node runtime and health endpoint
 scripts/
   database.ts             Local migration and fixture-seed command
@@ -126,6 +139,7 @@ tests/
   contextai.test.ts       Contract, fixture, grounding, and helper tests
   grounding.test.ts       Grounded-output validation and safety evals
   security.test.ts        Authentication, encryption, tenant, and role controls
+hubspot/                   HubSpot 2026.03 CRM sidebar card project
 PRD.md                     Product and safety requirements
 SECURITY.md                Threat model and pilot operations runbook
 CONTRIBUTING.md            Local setup and collaboration workflow
@@ -142,7 +156,9 @@ Production security responsibilities, OAuth operations, disconnect/status comman
 
 Telemetry producers use the recorder in `instrumentation.ts`; they do not import metric aggregation or reporting. Event names, required linkage, PII exclusions, retention classes, and metric inputs are documented in [TELEMETRY.md](TELEMETRY.md).
 
-Pilot reports are read-only: `GET /reports/pilot` returns JSON and `GET /reports/pilot.csv` returns an export. Both require the opaque tenant scope in `x-contextai-tenant-id` and accept `from`, `to`, `cohort`, `teamId`, `repId`, `scoreVersion`, `configVersion`, `promptVersion`, `source`, and `band` query filters. Reports include metric/window metadata and explicit data-quality caveats; missing telemetry is never presented as a valid zero.
+The HubSpot card project and deployment steps live in [hubspot/README.md](hubspot/README.md). It renders the latest cached evaluation and records views, score display, recommendation disposition, and observed rep actions without executing prospect-facing automation.
+
+Pilot reports are read-only: `GET /reports/pilot` returns JSON and `GET /reports/pilot.csv` returns an export. Both require a RevOps Admin bearer token and accept `from`, `to`, `cohort`, `teamId`, `repId`, `scoreVersion`, `configVersion`, `promptVersion`, `source`, and `band` query filters. Reports include metric/window metadata and explicit data-quality caveats; missing telemetry is never presented as a valid zero.
 
 ## Contributing
 

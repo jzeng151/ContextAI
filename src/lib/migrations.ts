@@ -365,6 +365,54 @@ export const migrations: readonly Migration[] = [
   },
   {
     version: 12,
+    name: "governance review and immutable config controls",
+    sql: `
+      ALTER TABLE review_items ADD COLUMN resolved_by TEXT;
+      ALTER TABLE review_items ADD COLUMN resolution_note TEXT;
+
+      UPDATE config_versions
+      SET config_json = json_set(
+        config_json,
+        '$.config.writeback.manualApprovalFields',
+        json('{"contact":[],"company":[]}')
+      )
+      WHERE json_type(config_json, '$.config.writeback.manualApprovalFields') IS NULL;
+
+      CREATE TRIGGER config_versions_no_delete
+      BEFORE DELETE ON config_versions BEGIN SELECT RAISE(ABORT, 'config versions are immutable'); END;
+      CREATE TRIGGER config_versions_content_immutable
+      BEFORE UPDATE ON config_versions
+      WHEN OLD.tenant_id != NEW.tenant_id
+        OR OLD.version_id != NEW.version_id
+        OR OLD.created_by != NEW.created_by
+        OR OLD.created_at != NEW.created_at
+        OR OLD.config_json != NEW.config_json
+      BEGIN SELECT RAISE(ABORT, 'config versions are immutable'); END;
+    `
+  },
+  {
+    version: 13,
+    name: "tenant-scoped claim evidence links",
+    sql: `
+      ALTER TABLE claim_evidence RENAME TO claim_evidence_legacy;
+      CREATE TABLE claim_evidence (
+        tenant_id TEXT NOT NULL,
+        claim_id INTEGER NOT NULL,
+        evaluation_id TEXT NOT NULL,
+        evidence_id TEXT NOT NULL,
+        PRIMARY KEY (claim_id, evidence_id),
+        FOREIGN KEY (claim_id) REFERENCES claims(claim_id),
+        FOREIGN KEY (evaluation_id, evidence_id) REFERENCES evidence(evaluation_id, evidence_id)
+      );
+      INSERT INTO claim_evidence (tenant_id, claim_id, evaluation_id, evidence_id)
+      SELECT claims.tenant_id, legacy.claim_id, legacy.evaluation_id, legacy.evidence_id
+      FROM claim_evidence_legacy legacy
+      JOIN claims ON claims.claim_id = legacy.claim_id AND claims.evaluation_id = legacy.evaluation_id;
+      DROP TABLE claim_evidence_legacy;
+    `
+  },
+  {
+    version: 14,
     name: "frozen pilot reporting context",
     sql: `
       CREATE TABLE pilot_participants (

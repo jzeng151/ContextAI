@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
-import { assertConfigVersion, type ScoringConfigVersion } from "./config.ts";
+import { assertConfigVersion, compareConfigs, publishConfigDraft as publishDraft, type ScoringConfigVersion } from "./config.ts";
 import { assertLeadPacket, type Evidence, type LeadPacket } from "./contextai.ts";
 import { assertPilotEvent, type PilotEvent } from "./instrumentation.ts";
 import { migrateDatabase } from "./migrations.ts";
@@ -11,6 +11,7 @@ import { hubSpotRequiredScopes, refreshHubSpotAccessToken, type HubSpotOAuthToke
 import { assertAdminAccess, assertRequestIdentity, assertTenantAccess, canReadAssignedEvaluation, type RequestIdentity } from "./security.ts";
 import { decryptSecret, encryptSecret } from "./secrets.ts";
 import type { GroundedClaim, GroundedExplanation, GroundingAudit } from "./grounding.ts";
+import { governanceReviewReasons } from "./governance.ts";
 
 export type EvaluationOutcome = "complete" | "partial_failure";
 
@@ -309,6 +310,17 @@ export class RuntimeStore {
     return status ?? null;
   }
 
+  listIntegrationStatuses(identity: RequestIdentity) {
+    this.requireAdmin(identity, "integration.status", "tenant", identity.tenantId);
+    const statuses = this.database.prepare(`
+      SELECT integration_id, provider, external_account_id, status, scopes_json, token_expires_at, last_health_at,
+        last_error, rate_limited_until, revoked_at
+      FROM integrations WHERE tenant_id = ? ORDER BY provider, integration_id
+    `).all(identity.tenantId);
+    this.recordAccess(identity, "integration.status", "tenant", identity.tenantId, "allowed");
+    return statuses;
+  }
+
   saveConfigVersion(identity: RequestIdentity, version: ScoringConfigVersion) {
     this.requireAdmin(identity, "config.write", "config_version", version.id);
     assertConfigVersion(version);
@@ -344,6 +356,74 @@ export class RuntimeStore {
       nonEmpty(input.tenantId, "tenantId"), nonEmpty(input.evaluationId, "evaluationId"),
       nonEmpty(input.repId, "repId"), isoDate(input.recordedAt ?? new Date().toISOString(), "recordedAt")
     );
+  }
+
+  listConfigVersions(identity: RequestIdentity) {
+    this.requireAdmin(identity, "config.read", "tenant", identity.tenantId);
+    const versions = (this.database.prepare(`
+      SELECT status, config_json FROM config_versions WHERE tenant_id = ? ORDER BY created_at DESC, version_id DESC
+    `).all(identity.tenantId) as Array<{ status: ScoringConfigVersion["status"]; config_json: string }>).map(({ status, config_json }) => {
+      const version = { ...parse<ScoringConfigVersion>(config_json), status };
+      assertConfigVersion(version);
+      return version;
+    });
+    this.recordAccess(identity, "config.read", "tenant", identity.tenantId, "allowed");
+    return versions;
+  }
+
+  getActiveConfigVersion(identity: RequestIdentity) {
+    assertRequestIdentity(identity);
+    if (identity.role === "rep") {
+      this.recordAccess(identity, "config.active", "tenant", identity.tenantId, "denied");
+      throw new Error("Rep access denied");
+    }
+    const row = this.database.prepare(`
+      SELECT status, config_json FROM config_versions WHERE tenant_id = ? AND status = 'active'
+    `).get(identity.tenantId) as { status: ScoringConfigVersion["status"]; config_json: string } | undefined;
+    if (!row) {
+      this.recordAccess(identity, "config.active", "tenant", identity.tenantId, "denied");
+      throw new Error("Active config version not found");
+    }
+    const version = { ...parse<ScoringConfigVersion>(row.config_json), status: row.status };
+    assertConfigVersion(version);
+    this.recordAccess(identity, "config.active", "config_version", version.id, "allowed");
+    return version;
+  }
+
+  publishConfigDraft(identity: RequestIdentity, draftId: string) {
+    this.requireAdmin(identity, "config.publish", "config_version", draftId);
+    nonEmpty(draftId, "draftId");
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const versions = (this.database.prepare(`
+        SELECT status, config_json FROM config_versions WHERE tenant_id = ? ORDER BY created_at, version_id
+      `).all(identity.tenantId) as Array<{ status: ScoringConfigVersion["status"]; config_json: string }>).map(({ status, config_json }) => ({
+        ...parse<ScoringConfigVersion>(config_json), status
+      }));
+      const draft = versions.find(({ id }) => id === draftId);
+      if (!draft) throw new Error("Config draft not found");
+      if (draft.status === "active") {
+        this.recordAccess(identity, "config.publish", "config_version", draftId, "allowed");
+        this.database.exec("COMMIT");
+        return { version: draft, changedSections: [] as const, published: false };
+      }
+      if (draft.status !== "draft") throw new Error("Only a draft can be published");
+      const active = versions.find(({ status }) => status === "active");
+      const published = publishDraft(versions.filter(({ status }) => status !== "draft"), draft);
+      this.database.prepare("UPDATE config_versions SET status = 'inactive' WHERE tenant_id = ? AND status = 'active'")
+        .run(identity.tenantId);
+      this.database.prepare("UPDATE config_versions SET status = 'active' WHERE tenant_id = ? AND version_id = ? AND status = 'draft'")
+        .run(identity.tenantId, draftId);
+      const version = published.find(({ id }) => id === draftId)!;
+      const changedSections = active ? compareConfigs(active.config, version.config) : [];
+      this.recordAccess(identity, "config.publish", "config_version", draftId, "allowed");
+      this.database.exec("COMMIT");
+      return { version, changedSections, published: true };
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      this.recordAccess(identity, "config.publish", "config_version", draftId, "denied");
+      throw error;
+    }
   }
 
   saveEvaluation(input: EvaluationInput): Readonly<{ created: boolean; evaluationId: string }> {
@@ -411,6 +491,17 @@ export class RuntimeStore {
       this.database.prepare(`
         INSERT INTO writeback_outcomes (tenant_id, evaluation_id, status, reason, recorded_at) VALUES (?, ?, ?, ?, ?)
       `).run(tenantId, packet.evaluation_id, packet.writeback_outcome.status, packet.writeback_outcome.reason, packet.writeback_outcome.recorded_at);
+      const insertReview = this.database.prepare(`
+        INSERT INTO review_items (review_id, tenant_id, evaluation_id, reason, status, payload_json, created_at)
+        VALUES (?, ?, ?, ?, 'open', ?, ?)
+      `);
+      for (const reason of governanceReviewReasons(packet)) {
+        insertReview.run(
+          `${packet.evaluation_id}:${reason}`, tenantId, packet.evaluation_id, reason,
+          json({ leadId: packet.lead_id, accountId: packet.account_id, leadName: packet.lead_identity.name, company: packet.lead_identity.company, missingFields: packet.missing_fields, staleFields: packet.stale_fields, sourceConflicts: packet.source_conflicts }),
+          packet.evaluation_timestamp
+        );
+      }
       this.database.exec("COMMIT");
       return { created: true, evaluationId: packet.evaluation_id };
     } catch (error) {
@@ -435,6 +526,169 @@ export class RuntimeStore {
     `).all(identity.tenantId, evaluationId);
     this.recordAccess(identity, "evaluation.read", "evaluation", evaluationId, "allowed");
     return { outcome: run.outcome_status, packet, steps } as const;
+  }
+
+  getEvaluationByIdempotencyKey(identity: RequestIdentity, idempotencyKey: string) {
+    assertRequestIdentity(identity);
+    const row = this.database.prepare("SELECT evaluation_id FROM evaluation_runs WHERE tenant_id = ? AND idempotency_key = ? AND purged_at IS NULL")
+      .get(identity.tenantId, nonEmpty(idempotencyKey, "idempotencyKey")) as { evaluation_id: string } | undefined;
+    return row ? this.getEvaluation(identity, row.evaluation_id) : null;
+  }
+
+  tenantForHubSpotAccount(accountId: string) {
+    const rows = this.database.prepare(`
+      SELECT tenant_id FROM integrations
+      WHERE provider = 'hubspot' AND external_account_id = ? AND status = 'active' AND revoked_at IS NULL
+    `).all(nonEmpty(accountId, "HubSpot account ID")) as Array<{ tenant_id: string }>;
+    return rows.length === 1 ? rows[0]!.tenant_id : null;
+  }
+
+  getLatestEvaluationForCrmRecord(identity: RequestIdentity, objectTypeId: "0-1" | "0-2", objectId: string) {
+    assertRequestIdentity(identity);
+    const column = objectTypeId === "0-1" ? "lead_id" : "account_id";
+    const row = this.database.prepare(`
+      SELECT evaluation_id FROM evaluation_runs
+      WHERE tenant_id = ? AND ${column} = ? AND purged_at IS NULL
+      ORDER BY completed_at DESC, evaluation_id DESC LIMIT 1
+    `).get(identity.tenantId, nonEmpty(objectId, "CRM record ID")) as { evaluation_id: string } | undefined;
+    return row ? this.getEvaluation(identity, row.evaluation_id) : null;
+  }
+
+  appendReviewItem(identity: RequestIdentity, evaluationId: string, reason: string, payload: unknown) {
+    assertRequestIdentity(identity);
+    if (identity.role === "rep") {
+      this.recordAccess(identity, "review.create", "evaluation", evaluationId, "denied");
+      throw new Error("Rep access denied");
+    }
+    const activeEvaluation = this.database.prepare("SELECT 1 FROM evaluation_runs WHERE tenant_id = ? AND evaluation_id = ? AND purged_at IS NULL")
+      .get(identity.tenantId, evaluationId);
+    if (!activeEvaluation) {
+      this.recordAccess(identity, "review.create", "evaluation", evaluationId, "denied");
+      throw new Error("Review evaluation is purged or unavailable");
+    }
+    const existing = this.database.prepare("SELECT review_id FROM review_items WHERE tenant_id = ? AND evaluation_id = ? ORDER BY review_id LIMIT 1")
+      .get(identity.tenantId, evaluationId) as { review_id: string } | undefined;
+    if (existing) {
+      this.recordAccess(identity, "review.create", "evaluation", evaluationId, "allowed");
+      return existing.review_id;
+    }
+    const reviewId = `evaluation:${evaluationId}`;
+    this.database.prepare(`
+      INSERT INTO review_items (review_id, tenant_id, evaluation_id, reason, status, payload_json, created_at)
+      VALUES (?, ?, ?, ?, 'open', ?, ?)
+    `).run(reviewId, identity.tenantId, evaluationId, nonEmpty(reason, "reason"), json(payload), new Date().toISOString());
+    this.recordAccess(identity, "review.create", "evaluation", evaluationId, "allowed");
+    return reviewId;
+  }
+
+  listReviewItems(identity: RequestIdentity, status: "open" | "resolved" | "dismissed" = "open") {
+    this.requireAdmin(identity, "review.read", "tenant", identity.tenantId);
+    const items = this.database.prepare(`
+      SELECT review_id, evaluation_id, reason, status, payload_json, created_at, resolved_at, resolved_by, resolution_note
+      FROM review_items WHERE tenant_id = ? AND status = ? ORDER BY created_at, review_id
+    `).all(identity.tenantId, status);
+    this.recordAccess(identity, "review.read", "tenant", identity.tenantId, "allowed");
+    return items;
+  }
+
+  decideReviewItem(identity: RequestIdentity, reviewId: string, decision: "resolved" | "dismissed", note: string) {
+    this.requireAdmin(identity, "review.decide", "review_item", reviewId);
+    nonEmpty(reviewId, "reviewId");
+    nonEmpty(note, "resolution note");
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const item = this.database.prepare(`
+        SELECT status, resolved_by, resolution_note FROM review_items WHERE tenant_id = ? AND review_id = ?
+      `).get(identity.tenantId, reviewId) as { status: string; resolved_by: string | null; resolution_note: string | null } | undefined;
+      if (!item) throw new Error("Review item not found");
+      if (item.status !== "open") {
+        if (item.status !== decision || item.resolved_by !== identity.actorId || item.resolution_note !== note) {
+          throw new Error("Review item is already closed");
+        }
+        this.recordAccess(identity, "review.decide", "review_item", reviewId, "allowed");
+        this.database.exec("COMMIT");
+        return { changed: false, reviewId, status: decision } as const;
+      }
+      this.database.prepare(`
+        UPDATE review_items SET status = ?, resolved_at = ?, resolved_by = ?, resolution_note = ?
+        WHERE tenant_id = ? AND review_id = ? AND status = 'open'
+      `).run(decision, new Date().toISOString(), identity.actorId, note, identity.tenantId, reviewId);
+      this.recordAccess(identity, "review.decide", "review_item", reviewId, "allowed");
+      this.database.exec("COMMIT");
+      return { changed: true, reviewId, status: decision } as const;
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      this.recordAccess(identity, "review.decide", "review_item", reviewId, "denied");
+      throw error;
+    }
+  }
+
+  getGovernanceAudit(identity: RequestIdentity, evaluationId: string) {
+    this.requireAdmin(identity, "audit.read", "evaluation", evaluationId);
+    const evaluation = this.database.prepare(`
+      SELECT request_id, lead_id, account_id, score_version, outcome_status, packet_json, completed_at
+      FROM evaluation_runs WHERE tenant_id = ? AND evaluation_id = ? AND purged_at IS NULL
+    `).get(identity.tenantId, evaluationId) as { score_version: string } | undefined;
+    if (!evaluation) {
+      this.recordAccess(identity, "audit.read", "evaluation", evaluationId, "denied");
+      return null;
+    }
+    const configRow = this.database.prepare(`
+      SELECT status, config_json
+      FROM config_versions WHERE tenant_id = ? AND version_id = ?
+    `).get(identity.tenantId, evaluation.score_version) as { status: ScoringConfigVersion["status"]; config_json: string } | undefined;
+    const configVersion = configRow ? { ...parse<ScoringConfigVersion>(configRow.config_json), status: configRow.status } : null;
+    const evidence = this.database.prepare(`
+      SELECT evidence_id, source_type, source_name, payload_json FROM evidence WHERE tenant_id = ? AND evaluation_id = ? ORDER BY evidence_id
+    `).all(identity.tenantId, evaluationId);
+    const claims = this.database.prepare(`
+      SELECT claim_id, kind, text FROM claims WHERE tenant_id = ? AND evaluation_id = ? ORDER BY claim_id
+    `).all(identity.tenantId, evaluationId);
+    const claimEvidence = this.database.prepare(`
+      SELECT claim_id, evidence_id FROM claim_evidence WHERE tenant_id = ? AND evaluation_id = ? ORDER BY claim_id, evidence_id
+    `).all(identity.tenantId, evaluationId);
+    const grounding = this.database.prepare(`
+      SELECT prompt_version, model_id, outcome, failure, evidence_ids_json, output_json, recorded_at
+      FROM grounding_audit_records WHERE tenant_id = ? AND evaluation_id = ? ORDER BY grounding_audit_id
+    `).all(identity.tenantId, evaluationId);
+    const writeback = this.database.prepare(`
+      SELECT * FROM writeback_audit_records WHERE tenant_id = ? AND evaluation_id = ? ORDER BY recorded_at, audit_id
+    `).all(identity.tenantId, evaluationId);
+    const rollbacks = this.database.prepare(`
+      SELECT * FROM rollback_links WHERE tenant_id = ? AND evaluation_id = ? ORDER BY created_at, rollback_id
+    `).all(identity.tenantId, evaluationId);
+    this.recordAccess(identity, "audit.read", "evaluation", evaluationId, "allowed");
+    return { evaluation, configVersion, evidence, claims, claimEvidence, grounding, writeback, rollbacks } as const;
+  }
+
+  listRollbackCandidates(identity: RequestIdentity) {
+    this.requireAdmin(identity, "audit.read", "tenant", identity.tenantId);
+    const records = this.database.prepare(`
+      SELECT audit.*, run.lead_id, link.rollback_id
+      FROM writeback_audit_records audit
+      JOIN evaluation_runs run ON run.tenant_id = audit.tenant_id AND run.evaluation_id = audit.evaluation_id
+      LEFT JOIN rollback_links link ON link.original_audit_id = audit.audit_id
+      WHERE audit.tenant_id = ? AND audit.outcome = 'Written'
+        AND audit.audit_id NOT LIKE 'rollback:%' AND audit.audit_id NOT LIKE 'pending:%'
+        AND audit.policy_version != 'legacy'
+      ORDER BY audit.recorded_at DESC, audit.audit_id
+    `).all(identity.tenantId);
+    this.recordAccess(identity, "audit.read", "tenant", identity.tenantId, "allowed");
+    return records;
+  }
+
+  listWritebackAudits(identity: RequestIdentity) {
+    this.requireAdmin(identity, "audit.read", "tenant", identity.tenantId);
+    const records = this.database.prepare(`
+      SELECT audit.*, run.lead_id, link.rollback_id
+      FROM writeback_audit_records audit
+      JOIN evaluation_runs run ON run.tenant_id = audit.tenant_id AND run.evaluation_id = audit.evaluation_id
+      LEFT JOIN rollback_links link ON link.original_audit_id = audit.audit_id
+      WHERE audit.tenant_id = ?
+      ORDER BY audit.recorded_at DESC, audit.audit_id
+    `).all(identity.tenantId);
+    this.recordAccess(identity, "audit.read", "tenant", identity.tenantId, "allowed");
+    return records;
   }
 
   appendAuditRecord(identity: RequestIdentity, input: AuditRecord) {

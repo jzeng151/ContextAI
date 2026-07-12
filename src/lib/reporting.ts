@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
-import type { Band, Evidence, LeadPacket } from "./contextai.ts";
+import { hasOnlyWeakOpenIntent, type Band, type Evidence, type LeadPacket } from "./contextai.ts";
 import { assertPilotEvent, coreFields, type PilotEvent } from "./instrumentation.ts";
 
 export const pilotMetricVersion = "pilot-v1";
@@ -89,7 +89,7 @@ export function createPilotReport(
     ? new Set(allEvents.filter(({ configVersion }) => configVersion === filters.configVersion).map(({ evaluationId }) => evaluationId))
     : null;
 
-  const windowEvaluations = (database.prepare(`
+  const allEvaluations = (database.prepare(`
     SELECT er.evaluation_id, er.lead_id, er.packet_json, er.completed_at,
       pp.rep_id, pp.cohort, pp.team_id
     FROM evaluation_runs er
@@ -99,7 +99,7 @@ export function createPilotReport(
       ON pp.tenant_id = po.tenant_id AND pp.rep_id = po.rep_id
       AND julianday(er.completed_at) >= julianday(pp.active_from)
       AND (pp.active_to IS NULL OR julianday(er.completed_at) <= julianday(pp.active_to))
-    WHERE er.tenant_id = ?
+    WHERE er.tenant_id = ? AND er.purged_at IS NULL
     ORDER BY er.completed_at, er.evaluation_id
   `).all(tenantId) as Array<Record<string, string | null>>).map((row): Evaluation => ({
     evaluationId: row.evaluation_id!,
@@ -109,11 +109,13 @@ export function createPilotReport(
     repId: row.rep_id,
     cohort: row.cohort as Evaluation["cohort"],
     teamId: row.team_id
-  })).sort((left, right) => Date.parse(left.completedAt) - Date.parse(right.completedAt) || left.evaluationId.localeCompare(right.evaluationId)).filter((evaluation) => {
+  })).sort((left, right) => Date.parse(left.completedAt) - Date.parse(right.completedAt) || left.evaluationId.localeCompare(right.evaluationId));
+  const inWindow = (evaluation: Evaluation) => {
     const at = Date.parse(evaluation.completedAt);
     return (from === undefined || at >= from) && (to === undefined || at <= to);
-  });
-  const allIndexes = firstBy(windowEvaluations, ({ leadId }) => leadId);
+  };
+  const allIndexes = firstBy(allEvaluations, ({ leadId }) => leadId);
+  const windowEvaluations = allEvaluations.filter(inWindow);
   const matchesSegments = (evaluation: Evaluation) =>
       (!filters.cohort || evaluation.cohort === filters.cohort) &&
       (!filters.teamId || evaluation.teamId === filters.teamId) &&
@@ -128,7 +130,7 @@ export function createPilotReport(
   const events = allEvents.filter((event) => evaluationIds.has(event.evaluationId) &&
     (!filters.configVersion || event.configVersion === filters.configVersion));
   const byEvaluation = new Map(evaluations.map((evaluation) => [evaluation.evaluationId, evaluation]));
-  const indexEvaluations = new Map([...allIndexes].filter(([, evaluation]) => matchesSegments(evaluation) && (!filters.band || evaluation.packet.priority_band === filters.band)));
+  const indexEvaluations = new Map([...allIndexes].filter(([, evaluation]) => inWindow(evaluation) && matchesSegments(evaluation) && (!filters.band || evaluation.packet.priority_band === filters.band)));
   const indexEvaluationIds = new Set([...indexEvaluations.values()].map(({ evaluationId }) => evaluationId));
   const eventRuns = events.filter((event): event is Extract<PilotEvent, { name: "evaluation.run" }> => event.name === "evaluation.run");
   const runByEvaluation = firstBy(eventRuns, ({ evaluationId }) => evaluationId);
@@ -139,7 +141,7 @@ export function createPilotReport(
   const leadsByBand = Object.fromEntries(bands.map((band) => [band, [...indexRuns.values()].filter(({ data }) => data.priorityBand === band).length]));
 
   const controlRecommendationExposure = new Set(events.filter((event) => ["score.shown", "recommendation.disposition"].includes(event.name) && byEvaluation.get(event.evaluationId)?.cohort === "control").map(({ evaluationId }) => evaluationId));
-  const recommendationEvents = events.filter((event) => byEvaluation.get(event.evaluationId)?.cohort !== "control");
+  const recommendationEvents = events.filter((event) => byEvaluation.get(event.evaluationId)?.cohort === "contextai");
   const shown = firstBy(recommendationEvents.filter((event): event is Extract<PilotEvent, { name: "score.shown" }> => event.name === "score.shown" && (!filters.promptVersion || event.promptVersion === filters.promptVersion)), ({ evaluationId }) => evaluationId);
   const allDispositionEvents = recommendationEvents.filter((event): event is Extract<PilotEvent, { name: "recommendation.disposition" }> => event.name === "recommendation.disposition" && (!filters.promptVersion || event.promptVersion === filters.promptVersion));
   const dispositionEvents = allDispositionEvents.filter((event) => {
@@ -182,6 +184,11 @@ export function createPilotReport(
     (from === undefined || participant.active_to === null || Date.parse(participant.active_to) >= from)
   );
   const enrolledReps = new Set(participants.map(({ rep_id }) => rep_id!));
+  const activeRepWeeks = participants.reduce((total, participant) => {
+    const start = Math.max(Date.parse(participant.active_from!), from ?? Date.parse(participant.active_from!));
+    const end = Math.min(participant.active_to === null ? (to ?? generated) : Date.parse(participant.active_to), to ?? generated);
+    return total + Math.max(0, end - start) / (7 * day);
+  }, 0);
   const meetingsByRep: Record<string, number> = Object.fromEntries([...enrolledReps].map((repId) => [repId, 0]));
   let meetingsMissingOwner = 0;
   let attributedMeetings = 0;
@@ -213,16 +220,19 @@ export function createPilotReport(
     const existing = outcomes.get(event.data.outcomeId);
     if (!existing || (existing.data.attribution === "rep_reported" && event.data.attribution === "crm_association")) outcomes.set(event.data.outcomeId, event);
   }
+  const firstOutcomes = firstBy([...outcomes.values()].sort((left, right) => eventAt(left) - eventAt(right)), ({ evaluationId }) => evaluationId);
   const maturedHot = matured.filter(({ evaluationId }) => shown.get(evaluationId)?.data.priorityBand === "Hot");
-  const falsePositiveLeads = new Set(maturedHot.filter(({ evaluationId }) => [...outcomes.values()].some((event) => event.evaluationId === evaluationId && ["bad_fit", "disqualified"].includes(event.data.outcomeType))).map(({ leadId }) => leadId));
+  const falsePositiveLeads = new Set(maturedHot.filter(({ evaluationId }) => ["bad_fit", "disqualified"].includes(firstOutcomes.get(evaluationId)?.data.outcomeType ?? "")).map(({ leadId }) => leadId));
   const hotLeads = new Set(maturedHot.map(({ leadId }) => leadId));
 
   const writeEvents = events.filter((event): event is Extract<PilotEvent, { name: "writeback.outcome" }> => event.name === "writeback.outcome");
   const written = firstBy(writeEvents.filter(({ data }) => data.outcome === "Written"), ({ data }) => data.writebackId);
-  const writtenIds = new Set(written.keys());
+  const pendingWrites = [...written.values()].filter((event) => generated - eventAt(event) < 30 * day);
+  const maturedWritten = firstBy([...written.values()].filter((event) => generated - eventAt(event) >= 30 * day), ({ data }) => data.writebackId);
+  const writtenIds = new Set(maturedWritten.keys());
   const rollbackIds = new Set(events.filter((event): event is Extract<PilotEvent, { name: "writeback.rollback" }> => {
     if (event.name !== "writeback.rollback") return false;
-    const write = written.get(event.data.writebackId);
+    const write = maturedWritten.get(event.data.writebackId);
     return write !== undefined && eventAt(event) >= eventAt(write) && eventAt(event) - eventAt(write) <= 30 * day;
   }).map(({ data }) => data.writebackId));
   const writebacksByOutcome = Object.fromEntries(writebackOutcomes.map((outcome) => [outcome, new Set(writeEvents.filter(({ data }) => data.outcome === outcome).map(({ data }) => data.writebackId)).size]));
@@ -258,9 +268,12 @@ export function createPilotReport(
   const weakHotEvaluations = new Set(events.filter((event): event is Extract<PilotEvent, { name: "source.contribution" }> => {
     if (event.name !== "source.contribution" || !indexEvaluationIds.has(event.evaluationId) || !event.data.weakSignal || !event.data.hotMaking || event.data.sourceType !== "engagement") return false;
     const packet = byEvaluation.get(event.evaluationId)?.packet;
-    return packet !== undefined && event.evidenceRefs.some((ref) => {
+    return packet !== undefined && hasOnlyWeakOpenIntent(packet) && event.evidenceRefs.some((ref) => {
       const evidence = packetEvidence(packet).find(({ evidence_id }) => evidence_id === ref);
-      return evidence?.source_type === "engagement" && Number(evidence.field_values?.opens ?? 0) > 0;
+      const fields = evidence?.field_values;
+      return evidence?.source_type === "engagement" && Number(fields?.opens ?? 0) > 0 &&
+        Number(fields?.clicks ?? 0) === 0 && Number(fields?.replies ?? 0) === 0 &&
+        !fields?.demo_request && !fields?.pricing_page_visit;
     });
   }).map(({ evaluationId }) => evaluationId));
   const hotRuns = new Set([...indexEvaluations.values()].filter(({ evaluationId }) => runByEvaluation.get(evaluationId)?.data.priorityBand === "Hot").map(({ evaluationId }) => evaluationId));
@@ -273,6 +286,7 @@ export function createPilotReport(
     ...(controlRecommendationExposure.size ? [`${controlRecommendationExposure.size} control evaluation(s) emitted recommendation exposure; cohort leakage requires review.`] : []),
     ...(lateActions ? [`${lateActions} first action(s) occurred outside the approved 24-hour research window.`] : []),
     ...(invalidEvents ? [`${invalidEvents} invalid stored event(s) were excluded.`] : []),
+    ...(pendingWrites.length ? [`${pendingWrites.length} written writeback(s) lack a complete 30-day rollback window and were excluded.`] : []),
     ...(!evaluations.length ? ["No evaluations match this tenant and filter window; metrics are unavailable, not zero."] : []),
     ...(matured.length < indexEvaluations.size ? ["Outcome metrics exclude index evaluations without a complete 60-day maturation window."] : [])
   ];
@@ -286,9 +300,9 @@ export function createPilotReport(
       coverage: { numerator: dispositions.size, denominator: shown.size, rate: ratio(dispositions.size, shown.size) }
     },
     researchTime: { observed: researchMinutes.length, eligibleViews: views.size, censored: views.size - researchMinutes.length, coverage: ratio(researchMinutes.length, views.size), medianMinutes: median(researchMinutes) },
-    meetings: { total: attributedMeetings, enrolledReps: enrolledReps.size, perRep: ratio(attributedMeetings, enrolledReps.size), byRep: meetingsByRep },
+    meetings: { total: attributedMeetings, enrolledReps: enrolledReps.size, activeRepWeeks, perRep: ratio(attributedMeetings, enrolledReps.size), perActiveRepWeek: ratio(attributedMeetings, activeRepWeeks), byRep: meetingsByRep },
     conversion: conversions,
-    hotFalsePositives: { numerator: falsePositiveLeads.size, denominator: hotLeads.size, rate: ratio(falsePositiveLeads.size, hotLeads.size), missingOutcomes: maturedHot.filter(({ evaluationId }) => ![...outcomes.values()].some((event) => event.evaluationId === evaluationId)).length },
+    hotFalsePositives: { numerator: falsePositiveLeads.size, denominator: hotLeads.size, rate: ratio(falsePositiveLeads.size, hotLeads.size), missingOutcomes: maturedHot.filter(({ evaluationId }) => !firstOutcomes.has(evaluationId)).length },
     crmCompleteness: { numerator: completeRecords, denominator: indexEvaluations.size, rate: ratio(completeRecords, indexEvaluations.size), fieldCoverage: coreFieldCoverage },
     writebacks: { rolledBack: rollbackIds.size, written: writtenIds.size, rate: ratio(rollbackIds.size, writtenIds.size), byOutcome: writebacksByOutcome, byField: writebacksByField },
     topScoreDrivers: Object.entries(driverTotals).sort((left, right) => right[1] - left[1]).map(([driver, points]) => ({ driver, points })),
@@ -323,6 +337,7 @@ export function exportPilotReport(report: ReturnType<typeof createPilotReport>) 
   add("recommendation_override", report.recommendations.overridden.numerator, report.recommendations.overridden.denominator, report.recommendations.overridden.rate);
   add("research_time_median_minutes", report.researchTime.observed, report.researchTime.eligibleViews, report.researchTime.medianMinutes);
   add("meetings_per_rep", report.meetings.total, report.meetings.enrolledReps, report.meetings.perRep);
+  add("meetings_per_active_rep_week", report.meetings.total, report.meetings.activeRepWeeks, report.meetings.perActiveRepWeek);
   add("hot_conversion", report.conversion.Hot.numerator, report.conversion.Hot.denominator, report.conversion.Hot.rate);
   add("warm_conversion", report.conversion.Warm.numerator, report.conversion.Warm.denominator, report.conversion.Warm.rate);
   add("hot_false_positive", report.hotFalsePositives.numerator, report.hotFalsePositives.denominator, report.hotFalsePositives.rate);

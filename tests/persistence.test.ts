@@ -52,20 +52,21 @@ test("persistence rejects control characters before writing JSON payloads", () =
   }
 });
 
-test("a clean store upgrades from schema v1 and failed migrations roll back", () => {
-  const store = new RuntimeStore(":memory:", 1);
+test("a clean store upgrades from a legacy schema and failed migrations roll back", () => {
+  const store = new RuntimeStore(":memory:", 2);
   try {
-    assert.equal((store.database.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 1);
-    assert.throws(() => store.database.prepare("SELECT * FROM events").all(), /no such table/i);
+    assert.equal((store.database.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 2);
     store.saveTenant("legacy-tenant", "Legacy tenant");
     store.database.prepare(`
       INSERT INTO integrations (integration_id, tenant_id, provider, external_account_id, status, created_at)
       VALUES ('legacy-hubspot', 'legacy-tenant', 'hubspot', 'legacy-portal', 'active', '2026-07-01T00:00:00.000Z')
     `).run();
+    const legacyConfigVersion = structuredClone(defaultConfigVersion) as unknown as { config: { writeback: Record<string, unknown> } };
+    delete legacyConfigVersion.config.writeback.manualApprovalFields;
     store.database.prepare(`
       INSERT INTO config_versions (tenant_id, version_id, status, created_by, created_at, config_json)
       VALUES (?, ?, ?, ?, ?, ?)
-    `).run("legacy-tenant", defaultConfigVersion.id, defaultConfigVersion.status, defaultConfigVersion.author, defaultConfigVersion.createdAt, JSON.stringify(defaultConfigVersion));
+    `).run("legacy-tenant", defaultConfigVersion.id, defaultConfigVersion.status, defaultConfigVersion.author, defaultConfigVersion.createdAt, JSON.stringify(legacyConfigVersion));
     const legacyPacket = lead("golden-normal");
     store.database.prepare(`
       INSERT INTO evaluation_runs (
@@ -76,6 +77,15 @@ test("a clean store upgrades from schema v1 and failed migrations roll back", ()
       "legacy-evaluation", "legacy-tenant", legacyPacket.request_id, "legacy", legacyPacket.lead_id, legacyPacket.account_id,
       legacyPacket.score_version, "complete", JSON.stringify(legacyPacket), "2026-07-01T00:00:00.000Z", "2026-07-01T00:00:00.000Z"
     );
+    store.database.exec(`
+      DROP TABLE claim_evidence;
+      CREATE TABLE claim_evidence (
+        claim_id INTEGER NOT NULL,
+        evaluation_id TEXT NOT NULL,
+        evidence_id TEXT NOT NULL,
+        PRIMARY KEY (claim_id, evidence_id)
+      );
+    `);
 
     migrateDatabase(store.database);
     assert.equal((store.database.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, migrations.at(-1)!.version);
@@ -87,6 +97,9 @@ test("a clean store upgrades from schema v1 and failed migrations roll back", ()
       (store.database.prepare("SELECT retention_after FROM evaluation_runs WHERE evaluation_id = 'legacy-evaluation'").get() as { retention_after: string }).retention_after,
       "2027-07-01T00:00:00.000Z"
     );
+    assert.deepEqual(store.listConfigVersions(admin("legacy-tenant"))[0]?.config.writeback.manualApprovalFields, { contact: [], company: [] });
+    assert.ok(store.database.prepare("PRAGMA table_info(claim_evidence)").all().some((column) => (column as { name: string }).name === "tenant_id"));
+    store.saveEvaluation({ tenantId: "legacy-tenant", idempotencyKey: "post-upgrade", packet: legacyPacket });
 
     const brokenVersion = migrations.at(-1)!.version + 1;
     assert.throws(() => migrateDatabase(store.database, [
@@ -261,7 +274,7 @@ test("integration credentials are encrypted, rate limited, and revoked on discon
     store.activateHubSpotIntegration(identity, "hubspot-1", {
       accessToken: "access-secret",
       refreshToken: "refresh-secret",
-      scopes: ["oauth", "crm.objects.contacts.read", "crm.objects.contacts.write"],
+      scopes: [...hubSpotRequiredScopes],
       expiresAt: "2026-07-12T00:00:00.000Z",
       externalAccountId: "123",
     }, key);
@@ -301,7 +314,7 @@ test("integration credentials are encrypted, rate limited, and revoked on discon
           refresh_token: "refresh-rotated",
           expires_in: 1800,
           hub_id: 123,
-          scopes: ["oauth", "crm.objects.contacts.read", "crm.objects.contacts.write"],
+          scopes: [...hubSpotRequiredScopes],
         };
       }
     ), "access-rotated");
@@ -327,14 +340,14 @@ test("integration credentials are encrypted, rate limited, and revoked on discon
     );
     const status = store.getIntegrationStatus(identity, "hubspot-1") as { revoked_at: string; scopes_json: string };
     assert.ok(status.revoked_at);
-    assert.deepEqual(JSON.parse(status.scopes_json), ["oauth", "crm.objects.contacts.read", "crm.objects.contacts.write"]);
+    assert.deepEqual(JSON.parse(status.scopes_json), [...hubSpotRequiredScopes]);
     assert.equal("access_token_ciphertext" in status, false);
 
     store.saveIntegration(identity, { integrationId: "hubspot-fail", provider: "hubspot", externalAccountId: "portal-2", status: "disabled" });
     store.activateHubSpotIntegration(identity, "hubspot-fail", {
       accessToken: "access-fail",
       refreshToken: "refresh-fail",
-      scopes: ["oauth", "crm.objects.contacts.read", "crm.objects.contacts.write"],
+      scopes: [...hubSpotRequiredScopes],
       expiresAt: "2026-07-12T00:00:00.000Z",
       externalAccountId: "portal-2",
     }, key);
