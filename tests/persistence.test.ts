@@ -5,6 +5,7 @@ import { defaultConfigVersion } from "../src/lib/config.ts";
 import { assertPilotEvent, createEventRecorder, pilotEventNames, type PilotEvent } from "../src/lib/instrumentation.ts";
 import { migrateDatabase, migrations } from "../src/lib/migrations.ts";
 import { createEvaluationIdentifiers, RuntimeStore } from "../src/lib/persistence.ts";
+import { compileAllowedClaims, fallbackGroundedExplanation } from "../src/lib/grounding.ts";
 
 const lead = (id: string) => {
   const packet = leads.find(({ lead_id }) => lead_id === id);
@@ -27,13 +28,13 @@ test("a clean store upgrades from schema v1 and failed migrations roll back", ()
     assert.throws(() => store.database.prepare("SELECT * FROM events").all(), /no such table/i);
 
     migrateDatabase(store.database);
-    assert.equal((store.database.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 3);
+    assert.equal((store.database.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 4);
 
     assert.throws(() => migrateDatabase(store.database, [
       ...migrations,
-      { version: 4, name: "broken", sql: "CREATE TABLE should_rollback (id TEXT); INVALID SQL;" }
-    ]), /Migration 4.*failed/);
-    assert.equal((store.database.prepare("SELECT count(*) AS count FROM schema_migrations WHERE version = 4").get() as { count: number }).count, 0);
+      { version: 5, name: "broken", sql: "CREATE TABLE should_rollback (id TEXT); INVALID SQL;" }
+    ]), /Migration 5.*failed/);
+    assert.equal((store.database.prepare("SELECT count(*) AS count FROM schema_migrations WHERE version = 5").get() as { count: number }).count, 0);
     assert.throws(() => store.database.prepare("SELECT * FROM should_rollback").all(), /no such table/i);
   } finally {
     store.close();
@@ -138,13 +139,42 @@ test("audit records are append-only and retention is only surfaced as a hook", (
       previousValue: "Manager",
       newValue: "Director of IT"
     });
+    const claims = compileAllowedClaims(packet);
+    const explanation = fallbackGroundedExplanation(packet);
+    const hookClaim = claims.find((claim) => claim.hook);
+    assert.ok(hookClaim);
+    explanation.hook_recommendation = hookClaim.hook;
+    explanation.hook_claim_ids = [hookClaim.claim_id];
+    const groundingAudit = {
+      prompt_version: "grounding-v1",
+      model_id: "test-model",
+      evaluation_id: packet.evaluation_id,
+      allowed_claim_ids: claims.map((claim) => claim.claim_id),
+      evidence_ids: [...new Set(claims.flatMap((claim) => claim.evidence_ids))],
+    };
+    const groundingAuditId = store.appendGroundingAudit("tenant-1", explanation, claims, { ...groundingAudit, outcome: "validated" });
+    store.appendGroundingAudit("tenant-1", fallbackGroundedExplanation(packet), claims, { ...groundingAudit, outcome: "fallback", failure: "invalid_output" });
+    assert.doesNotThrow(() => store.appendGroundingAudit("tenant-1", fallbackGroundedExplanation(packet), claims, { ...groundingAudit, outcome: "fallback" }));
+    assert.throws(
+      () => store.appendGroundingAudit("tenant-1", explanation, claims, { ...groundingAudit, outcome: "validated", failure: "invalid_output" }),
+      /CHECK constraint failed/i,
+    );
     assert.equal(auditId, "audit-1");
+    assert.equal(groundingAuditId, 1);
     assert.throws(() => store.database.prepare("UPDATE writeback_audit_records SET reason = 'changed' WHERE audit_id = 'audit-1'").run(), /append-only/i);
+    assert.throws(() => store.database.prepare("DELETE FROM grounding_audit_records WHERE grounding_audit_id = 1").run(), /append-only/i);
+    assert.throws(() => store.database.prepare("INSERT OR REPLACE INTO grounding_audit_records SELECT * FROM grounding_audit_records WHERE grounding_audit_id = 1").run(), /append-only/i);
     assert.throws(() => store.database.prepare("INSERT OR REPLACE INTO writeback_audit_records SELECT * FROM writeback_audit_records WHERE audit_id = 'audit-1'").run(), /append-only/i);
     assert.equal(store.listRetentionCandidates("2027-07-01T04:00:00.000Z").length, 0);
     const retentionCandidates = store.listRetentionCandidates("2027-07-01T06:00:00.000Z") as Array<{ retention_after: string }>;
     assert.equal(retentionCandidates[0]?.retention_after, "2027-07-01T05:00:00.000Z");
     assert.equal(store.getEvaluation("tenant-1", packet.evaluation_id)?.packet.lead_id, packet.lead_id);
+    const grounding = store.database.prepare("SELECT * FROM grounding_audit_records WHERE grounding_audit_id = 1").get() as Record<string, string>;
+    assert.deepEqual(JSON.parse(grounding.allowed_claim_ids_json), claims.map((claim) => claim.claim_id));
+    assert.deepEqual(JSON.parse(grounding.compiled_claims_json).map((claim: { driver: string }) => claim.driver), claims.map((claim) => claim.driver));
+    assert.deepEqual(JSON.parse(grounding.hook_claim_ids_json), [hookClaim.claim_id]);
+    assert.deepEqual(JSON.parse(grounding.output_json), explanation);
+    assert.equal((store.database.prepare("SELECT failure FROM grounding_audit_records WHERE grounding_audit_id = 2").get() as { failure: string }).failure, "invalid_output");
   } finally {
     store.close();
   }

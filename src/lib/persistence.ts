@@ -7,6 +7,7 @@ import { assertConfigVersion, type ScoringConfigVersion } from "./config.ts";
 import { assertLeadPacket, type Evidence, type LeadPacket } from "./contextai.ts";
 import { assertPilotEvent, type PilotEvent } from "./instrumentation.ts";
 import { migrateDatabase } from "./migrations.ts";
+import type { GroundedClaim, GroundedExplanation, GroundingAudit } from "./grounding.ts";
 
 export type EvaluationOutcome = "complete" | "partial_failure";
 
@@ -201,6 +202,20 @@ export class RuntimeStore {
       input.recordedAt ?? new Date().toISOString()
     );
     return auditId;
+  }
+
+  appendGroundingAudit(tenantId: string, explanation: GroundedExplanation, claims: GroundedClaim[], audit: GroundingAudit) {
+    const result = this.database.prepare(`
+      INSERT INTO grounding_audit_records (
+        tenant_id, evaluation_id, prompt_version, model_id, allowed_claim_ids_json,
+        evidence_ids_json, compiled_claims_json, hook_claim_ids_json, output_json, outcome, failure, recorded_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING grounding_audit_id
+    `).get(
+      nonEmpty(tenantId, "tenantId"), audit.evaluation_id, audit.prompt_version, audit.model_id,
+      json(audit.allowed_claim_ids), json(audit.evidence_ids), json(claims), json(explanation.hook_claim_ids), json(explanation), audit.outcome,
+      audit.failure ?? null, new Date().toISOString()
+    ) as { grounding_audit_id: number };
+    return result.grounding_audit_id;
   }
 
   recordEvent(input: PilotEvent) {

@@ -152,6 +152,7 @@ test("validator accepts only exact authoritative fields, claim text, citations, 
     { ...output, reason: lowerDriver.text, reason_claim_ids: [lowerDriver.claim_id] },
     { ...output, hook_recommendation: "Reference an invented acquisition." },
     { ...output, hook_claim_ids: ["unknown"] },
+    { ...output, hook_recommendation: fallbackHook, hook_claim_ids: [] },
     { ...output, owner: "not allowed" },
   ]) assert.throws(() => validateGroundedExplanation(lead, claims, invalid), /invalid grounded explanation/i);
 });
@@ -202,6 +203,71 @@ test("fallback without claims does not require OpenRouter configuration", async 
   }
 });
 
+test("missing OpenRouter configuration returns an audited fallback", async () => {
+  const originalKey = process.env.OPENROUTER_API_KEY;
+  const originalModel = process.env.OPENROUTER_MODEL;
+  delete process.env.OPENROUTER_API_KEY;
+  delete process.env.OPENROUTER_MODEL;
+  try {
+    const result = await explainLeadWithOpenRouter(byId("golden-normal"), defaultContext);
+    assert.equal(result.audit.outcome, "fallback");
+    assert.equal(result.audit.failure, "provider_failure");
+    assert.equal(result.audit.model_id, "not-configured");
+    assert.equal(result.explanation.hook_recommendation, fallbackHook);
+  } finally {
+    if (originalKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = originalKey;
+    if (originalModel === undefined) delete process.env.OPENROUTER_MODEL;
+    else process.env.OPENROUTER_MODEL = originalModel;
+  }
+});
+
+test("approved intent signals produce hooks while weak opens do not", () => {
+  const small = compileAllowedClaims(byId("small-high-intent"));
+  assert.match(small.map((claim) => claim.text).join(" "), /12 employees|intent surge/i);
+  assert.ok(small.some((claim) => /intent surge/i.test(claim.hook ?? "")));
+
+  const noPublic = compileAllowedClaims(byId("no-public-signal"));
+  assert.match(noPublic.map((claim) => claim.text).join(" "), /demo request/i);
+  assert.ok(noPublic.some((claim) => /demo request/i.test(claim.hook ?? "")));
+  assert.ok(compileAllowedClaims(byId("weak-opens")).every((claim) => claim.hook === null));
+});
+
+test("claim compiler preserves the same evidence for each top-driver category", () => {
+  const lead = byId("golden-normal");
+  const evidenceId = lead.top_drivers[0].evidence_ids[0];
+  const claims = compileAllowedClaims({
+    ...lead,
+    top_drivers: lead.top_drivers.slice(0, 2).map((driver) => ({ ...driver, evidence_ids: [evidenceId] })),
+  });
+  assert.deepEqual(claims.map((claim) => claim.driver), lead.top_drivers.slice(0, 2).map((driver) => driver.category));
+  assert.equal(new Set(claims.map((claim) => claim.text)).size, 1);
+});
+
+test("failed deterministic scoring skips the model", async () => {
+  const source = byId("no-usable-data");
+  const lead = {
+    ...source,
+    manual_review_reasons: [...source.manual_review_reasons, "scoring_unavailable" as const],
+    tool_status: {
+      ...source.tool_status,
+      deterministic_score: { status: "invalid_result" as const, detail: "Scoring failed.", completed_at: source.evaluation_timestamp },
+    },
+  };
+  let called = false;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => { called = true; return new Response(); };
+  try {
+    const result = await explainLeadWithOpenRouter(lead, defaultContext, { apiKey: "test", model: "test" });
+    assert.equal(called, false);
+    assert.deepEqual(result.claims, []);
+    assert.equal(result.audit.model_id, "not-called");
+    assert.equal(result.audit.outcome, "fallback");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("hallucination, unsupported inference, sensitive data, and missing citations fall back safely", async () => {
   const originalFetch = globalThis.fetch;
   const { output } = validOutput();
@@ -241,7 +307,7 @@ test("provider errors, invalid JSON, conflicts, and partial tool failure return 
       called += 1;
       return new Response(JSON.stringify({ choices: [{ message: { content: "{}" } }] }), { status: 200 });
     };
-    for (const id of ["no-usable-data", "stale-writeback"]) {
+    for (const id of ["stale-writeback"]) {
       const result = await explainLeadWithOpenRouter(byId(id), defaultContext, { apiKey: "test", model: "test" });
       assert.equal(result.audit.outcome, "fallback");
       assert.equal(result.audit.failure, "invalid_output");
@@ -249,7 +315,7 @@ test("provider errors, invalid JSON, conflicts, and partial tool failure return 
       assert.ok(result.audit.evidence_ids.length > 0);
       assert.equal(result.explanation.band, "Needs Manual Review");
     }
-    assert.equal(called, 2);
+    assert.equal(called, 1);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -265,6 +331,7 @@ test("the model payload omits blocked CRM decisions and provider prose", async (
   try {
     await explainLeadWithOpenRouter(byId("golden-normal"), defaultContext, { apiKey: "test", model: "test" });
     assert.doesNotMatch(prompt, /writeback_plan|owner|lifecycle_stage|sequence_enrollment|disallowed_claims|likely investing/i);
+    assert.doesNotMatch(prompt, /score_breakdown/i);
   } finally {
     globalThis.fetch = originalFetch;
   }

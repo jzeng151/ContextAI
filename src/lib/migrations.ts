@@ -211,6 +211,41 @@ export const migrations: readonly Migration[] = [
       ALTER TABLE events ADD COLUMN retention_class TEXT NOT NULL DEFAULT 'pilot_analytics_12_months';
       CREATE UNIQUE INDEX events_tenant_idempotency ON events (tenant_id, idempotency_key);
     `
+  },
+  {
+    version: 4,
+    name: "grounding audit records",
+    sql: `
+      CREATE TABLE grounding_audit_records (
+        grounding_audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tenant_id TEXT NOT NULL,
+        evaluation_id TEXT NOT NULL,
+        prompt_version TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        allowed_claim_ids_json TEXT NOT NULL,
+        evidence_ids_json TEXT NOT NULL,
+        compiled_claims_json TEXT NOT NULL,
+        hook_claim_ids_json TEXT NOT NULL,
+        output_json TEXT NOT NULL,
+        outcome TEXT NOT NULL CHECK (outcome IN ('validated', 'fallback')),
+        failure TEXT CHECK (failure IN ('invalid_output', 'provider_failure')),
+        recorded_at TEXT NOT NULL,
+        CHECK (outcome = 'fallback' OR failure IS NULL),
+        FOREIGN KEY (tenant_id, evaluation_id) REFERENCES evaluation_runs(tenant_id, evaluation_id)
+      );
+
+      CREATE INDEX grounding_audits_tenant_evaluation
+      ON grounding_audit_records (tenant_id, evaluation_id);
+
+      CREATE TRIGGER grounding_audit_records_no_update
+      BEFORE UPDATE ON grounding_audit_records BEGIN SELECT RAISE(ABORT, 'grounding audit records are append-only'); END;
+      CREATE TRIGGER grounding_audit_records_no_delete
+      BEFORE DELETE ON grounding_audit_records BEGIN SELECT RAISE(ABORT, 'grounding audit records are append-only'); END;
+      CREATE TRIGGER grounding_audit_records_no_duplicate
+      BEFORE INSERT ON grounding_audit_records
+      WHEN EXISTS (SELECT 1 FROM grounding_audit_records WHERE grounding_audit_id = NEW.grounding_audit_id)
+      BEGIN SELECT RAISE(ABORT, 'grounding audit records are append-only'); END;
+    `
   }
 ];
 
