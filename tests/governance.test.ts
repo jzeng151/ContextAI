@@ -156,4 +156,7 @@ test("admin UI exposes labeled config, review, audit, rollback, and integration 
   assert.match(server, /rollbackWriteback/);
   assert.match(server, /store\.listWritebackAudits/);
   assert.match(server, /store\.listIntegrationStatuses/);
+  assert.match(server, /path === "\/reports\/pilot"[\s\S]*adminIdentity\(request, response\)[\s\S]*identity\.tenantId/);
+  assert.match(server, /store\.recordReportAccess\(identity/);
+  assert.doesNotMatch(server, /x-contextai-tenant-id/);
 });

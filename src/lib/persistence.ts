@@ -331,6 +331,65 @@ export class RuntimeStore {
     this.recordAccess(identity, "config.write", "config_version", version.id, "allowed");
   }
 
+  registerPilotParticipant(input: Readonly<{
+    tenantId: string;
+    repId: string;
+    cohort: "control" | "contextai";
+    teamId: string;
+    activeFrom: string;
+    activeTo?: string;
+  }>) {
+    this.database.prepare(`
+      INSERT INTO pilot_participants (tenant_id, rep_id, cohort, team_id, active_from, active_to)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      nonEmpty(input.tenantId, "tenantId"), nonEmpty(input.repId, "repId"), input.cohort,
+      nonEmpty(input.teamId, "teamId"), isoDate(input.activeFrom, "activeFrom"),
+      input.activeTo === undefined ? null : isoDate(input.activeTo, "activeTo")
+    );
+  }
+
+  endPilotParticipation(tenantId: string, repId: string, activeTo: string) {
+    return this.database.prepare(`
+      UPDATE pilot_participants SET active_to = ? WHERE tenant_id = ? AND rep_id = ?
+    `).run(isoDate(activeTo, "activeTo"), nonEmpty(tenantId, "tenantId"), nonEmpty(repId, "repId")).changes === 1;
+  }
+
+  recordEvaluationOwner(input: Readonly<{
+    tenantId: string;
+    evaluationId: string;
+    repId: string;
+    evaluationKind?: "baseline_anchor" | "exposure_index" | "rescore";
+    recordedAt?: string;
+  }>) {
+    const priorAnchor = this.database.prepare(`
+      SELECT 1
+      FROM evaluation_runs current
+      JOIN evaluation_runs prior ON prior.tenant_id = current.tenant_id AND prior.lead_id = current.lead_id
+      JOIN pilot_evaluation_owners owner ON owner.tenant_id = prior.tenant_id AND owner.evaluation_id = prior.evaluation_id
+      WHERE current.tenant_id = ? AND current.evaluation_id = ? AND owner.evaluation_kind = 'exposure_index'
+        AND (prior.completed_at < current.completed_at OR (prior.completed_at = current.completed_at AND prior.evaluation_id < current.evaluation_id))
+      LIMIT 1
+    `).get(input.tenantId, input.evaluationId);
+    const evaluationKind = input.evaluationKind ?? (priorAnchor ? "rescore" : "exposure_index");
+    const result = this.database.prepare(`
+      INSERT INTO pilot_evaluation_owners (tenant_id, evaluation_id, rep_id, evaluation_kind, recorded_at)
+      SELECT ?, ?, ?, ?, ? WHERE EXISTS (
+        SELECT 1 FROM pilot_participants WHERE tenant_id = ? AND rep_id = ?
+      )
+    `).run(
+      nonEmpty(input.tenantId, "tenantId"), nonEmpty(input.evaluationId, "evaluationId"),
+      nonEmpty(input.repId, "repId"), evaluationKind,
+      isoDate(input.recordedAt ?? new Date().toISOString(), "recordedAt"), input.tenantId, input.repId
+    );
+    return result.changes === 1;
+  }
+
+  recordReportAccess(identity: RequestIdentity, format: "json" | "csv") {
+    this.requireAdmin(identity, "report.read", "pilot_report", format);
+    this.recordAccess(identity, "report.read", "pilot_report", format, "allowed");
+  }
+
   listConfigVersions(identity: RequestIdentity) {
     this.requireAdmin(identity, "config.read", "tenant", identity.tenantId);
     const versions = (this.database.prepare(`
@@ -404,9 +463,10 @@ export class RuntimeStore {
     assertLeadPacket(packet);
     nonEmpty(tenantId, "tenantId");
     nonEmpty(idempotencyKey, "idempotencyKey");
+    const evaluationTimestamp = isoDate(packet.evaluation_timestamp, "evaluation_timestamp");
     const assignedRepId = input.assignedRepId === undefined ? null : nonEmpty(input.assignedRepId, "assignedRepId");
     const retentionAfter = input.retentionAfter === undefined
-      ? new Date(Date.parse(packet.evaluation_timestamp) + this.evaluationRetentionDays * 24 * 60 * 60 * 1000).toISOString()
+      ? new Date(Date.parse(evaluationTimestamp) + this.evaluationRetentionDays * 24 * 60 * 60 * 1000).toISOString()
       : isoDate(input.retentionAfter, "retentionAfter");
     const outcome: EvaluationOutcome = Object.values(packet.tool_status).some(({ status }) => failedStatuses.has(status))
       ? "partial_failure"
@@ -432,7 +492,7 @@ export class RuntimeStore {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         packet.evaluation_id, tenantId, packet.request_id, idempotencyKey, packet.lead_id, packet.account_id,
-        packet.score_version, outcome, json(packet), packet.evaluation_timestamp, packet.evaluation_timestamp,
+        packet.score_version, outcome, json(packet), evaluationTimestamp, evaluationTimestamp,
         retentionAfter, assignedRepId
       );
 
