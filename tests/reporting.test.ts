@@ -24,6 +24,7 @@ test("pilot reports reconcile tenant-scoped events, filters, duplicates, windows
     store.saveConfigVersion(admin("tenant-1"), { ...defaultConfigVersion, id: "wrong", status: "draft" });
     store.saveConfigVersion(admin("tenant-2"), defaultConfigVersion);
     store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "pilot-eval", packet });
+    store.database.prepare("UPDATE evaluation_runs SET completed_at = ? WHERE evaluation_id = ?").run("2026-01-01T09:00:00.000Z", packet.evaluation_id);
     store.registerPilotParticipant({
       tenantId: "tenant-1", repId: "rep-1", cohort: "contextai", teamId: "team-1",
       activeFrom: "2025-12-01T00:00:00.000Z"
@@ -134,6 +135,9 @@ test("pilot metric denominators honor index runs, active enrollment, attribution
     store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "index", packet: index });
     store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "rescore", packet: rescore });
     store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "outside", packet: outsideEnrollment });
+    store.database.prepare("UPDATE evaluation_runs SET completed_at = ? WHERE evaluation_id = ?").run("2026-01-01T09:00:00.000Z", index.evaluation_id);
+    store.database.prepare("UPDATE evaluation_runs SET completed_at = ? WHERE evaluation_id = ?").run("2026-01-02T09:00:00.000Z", rescore.evaluation_id);
+    store.database.prepare("UPDATE evaluation_runs SET completed_at = ? WHERE evaluation_id = ?").run("2026-01-03T09:00:00.000Z", outsideEnrollment.evaluation_id);
     store.registerPilotParticipant({ tenantId: "tenant-1", repId: "rep-1", cohort: "contextai", teamId: "team-1", activeFrom: "2026-01-01T00:00:00.000Z" });
     store.registerPilotParticipant({ tenantId: "tenant-1", repId: "rep-2", cohort: "contextai", teamId: "team-1", activeFrom: "2026-08-01T00:00:00.000Z" });
     store.recordEvaluationOwner({ tenantId: "tenant-1", evaluationId: index.evaluation_id, repId: "rep-1", evaluationKind: "exposure_index" });
@@ -245,9 +249,11 @@ test("conversion uses displayed treatment bands per contact and outcomes stay on
     store.registerPilotParticipant({ tenantId: "tenant-1", repId: "rep-1", cohort: "contextai", teamId: "team-1", activeFrom: "2026-01-01T00:00:00.000Z" });
     for (const [number, packet] of indexes.entries()) {
       store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: `conversion-${number}`, packet });
+      store.database.prepare("UPDATE evaluation_runs SET completed_at = ? WHERE evaluation_id = ?").run(`2026-01-0${number + 1}T09:00:00.000Z`, packet.evaluation_id);
       store.recordEvaluationOwner({ tenantId: "tenant-1", evaluationId: packet.evaluation_id, repId: "rep-1", evaluationKind: "exposure_index" });
     }
     store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "conversion-rescore", packet: rescore });
+    store.database.prepare("UPDATE evaluation_runs SET completed_at = ? WHERE evaluation_id = ?").run("2026-01-02T09:00:00.000Z", rescore.evaluation_id);
     store.recordEvaluationOwner({ tenantId: "tenant-1", evaluationId: rescore.evaluation_id, repId: "rep-1", evaluationKind: "rescore" });
     const base = (packet: typeof indexes[number]) => ({
       tenantId: "tenant-1", requestId: packet.request_id, evaluationId: packet.evaluation_id, leadId: packet.lead_id,
@@ -285,6 +291,9 @@ test("contact indexes preserve their original cohort and ownerless meetings stay
     for (const [idempotencyKey, packet] of [["control", controlIndex], ["context", contextRescore], ["ownerless", ownerless]] as const) {
       store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey, packet });
     }
+    store.database.prepare("UPDATE evaluation_runs SET completed_at = ? WHERE evaluation_id = ?").run("2026-01-01T09:00:00.000Z", controlIndex.evaluation_id);
+    store.database.prepare("UPDATE evaluation_runs SET completed_at = ? WHERE evaluation_id = ?").run("2026-01-02T09:00:00.000Z", contextRescore.evaluation_id);
+    store.database.prepare("UPDATE evaluation_runs SET completed_at = ? WHERE evaluation_id = ?").run("2026-01-01T09:00:00.000Z", ownerless.evaluation_id);
     store.registerPilotParticipant({ tenantId: "tenant-1", repId: "rep-control", cohort: "control", teamId: "team-1", activeFrom: "2026-01-01T00:00:00.000Z" });
     store.registerPilotParticipant({ tenantId: "tenant-1", repId: "rep-context", cohort: "contextai", teamId: "team-1", activeFrom: "2026-01-01T00:00:00.000Z" });
     store.recordEvaluationOwner({ tenantId: "tenant-1", evaluationId: controlIndex.evaluation_id, repId: "rep-control", evaluationKind: "exposure_index" });
@@ -354,10 +363,50 @@ test("CRM completeness compares index and end snapshots without future-dated evi
     });
 
     const report = createPilotReport(store.database, "tenant-1", {}, "2026-04-01T00:00:00.000Z");
+    assert.equal(report.crmCompleteness.fieldCoverage.company_domain, 1);
+    assert.equal(report.crmCompleteness.fieldCoverage.company_name, 1);
+    assert.equal(report.crmCompleteness.fieldCoverage.contact_title, 1);
     assert.equal(report.crmCompleteness.index.fieldCoverage.contact_department, 0);
     assert.equal(report.crmCompleteness.fieldCoverage.contact_department, 1);
     assert.equal(report.crmCompleteness.index.fieldCoverage.contact_seniority, 0);
     assert.equal(report.crmCompleteness.fieldCoverage.contact_seniority, 0);
+  } finally {
+    store.close();
+  }
+});
+
+test("default report window excludes future evaluations and events", () => {
+  const store = new RuntimeStore(":memory:");
+  try {
+    const current = { ...structuredClone(leads[0]!), evaluation_id: "eval-current", request_id: "request-current", lead_id: "lead-current" };
+    const future = { ...structuredClone(leads[0]!), evaluation_id: "eval-future", request_id: "request-future", lead_id: "lead-future" };
+    store.saveTenant("tenant-1", "Pilot tenant");
+    store.saveConfigVersion(admin("tenant-1"), defaultConfigVersion);
+    store.registerPilotParticipant({ tenantId: "tenant-1", repId: "rep-1", cohort: "contextai", teamId: "team-1", activeFrom: "2026-01-01T00:00:00.000Z" });
+    for (const packet of [current, future]) {
+      store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: packet.evaluation_id, packet });
+      const occurredAt = packet === current ? packet.evaluation_timestamp : "2027-01-01T09:00:00.000Z";
+      store.database.prepare("UPDATE evaluation_runs SET completed_at = ? WHERE evaluation_id = ?").run(occurredAt, packet.evaluation_id);
+      store.recordEvaluationOwner({ tenantId: "tenant-1", evaluationId: packet.evaluation_id, repId: "rep-1", evaluationKind: "exposure_index" });
+      store.recordEvent({
+        tenantId: "tenant-1", requestId: packet.request_id, evaluationId: packet.evaluation_id, leadId: packet.lead_id,
+        accountId: packet.account_id, actorType: "system", actorId: "system-1", scoreVersion: packet.score_version,
+        configVersion: packet.score_version, evidenceRefs: [], retentionClass: "pilot_analytics_12_months",
+        idempotencyKey: `${packet.evaluation_id}:run`, occurredAt, name: "evaluation.run",
+        data: { outcome: "complete", priorityScore: packet.priority_score, priorityBand: packet.priority_band }
+      });
+    }
+    store.recordEvent({
+      tenantId: "tenant-1", requestId: current.request_id, evaluationId: current.evaluation_id, leadId: current.lead_id,
+      accountId: current.account_id, actorType: "system", actorId: "system-1", scoreVersion: current.score_version,
+      configVersion: current.score_version, promptVersion: "grounding-v1", evidenceRefs: [], retentionClass: "pilot_analytics_12_months",
+      idempotencyKey: "future-shown", occurredAt: "2027-01-01T09:01:00.000Z", name: "score.shown",
+      data: { priorityScore: current.priority_score!, priorityBand: current.priority_band, surface: "dashboard" }
+    });
+
+    const report = createPilotReport(store.database, "tenant-1", {}, "2026-10-01T00:00:00.000Z");
+    assert.equal(report.leads.processed, 1);
+    assert.equal(report.recommendations.coverage.denominator, 0);
   } finally {
     store.close();
   }
@@ -391,11 +440,13 @@ test("live writeback audits and rollback links feed rollback metrics", () => {
     store.appendAuditRecord(identity, { ...audit, auditId: "live-write", recordedAt: originalAt });
     store.appendAuditRecord(identity, { ...audit, auditId: "rollback:live-write", reason: "Rollback of live-write" });
     store.appendRollbackLink("rollback:live-write", "tenant-1", packet.evaluation_id, "live-write", "rollback:live-write");
+    store.appendAuditRecord(identity, { ...audit, auditId: "pending:stuck-write", outcome: "Pending", reason: "Reserved before live CRM write." });
 
     const report = createPilotReport(store.database, "tenant-1", {}, generatedAt);
     assert.equal(report.writebacks.written, 1);
     assert.equal(report.writebacks.rolledBack, 1);
     assert.equal(report.writebacks.rate, 1);
+    assert.ok(report.metadata.caveats.some((caveat) => caveat.includes("1 live writeback reservation")));
   } finally {
     store.close();
   }
@@ -410,6 +461,7 @@ test("purged evaluations are excluded and only open-only evidence counts as weak
     store.saveConfigVersion(admin("tenant-1"), defaultConfigVersion);
     store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "weak", packet: weak });
     store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "purged", packet: purged, retentionAfter: "2026-01-02T00:00:00.000Z" });
+    store.database.prepare("UPDATE evaluation_runs SET completed_at = ? WHERE evaluation_id = ?").run("2026-01-01T09:00:00.000Z", weak.evaluation_id);
     store.registerPilotParticipant({ tenantId: "tenant-1", repId: "rep-1", cohort: "contextai", teamId: "team-1", activeFrom: "2026-01-01T00:00:00.000Z" });
     store.recordEvaluationOwner({ tenantId: "tenant-1", evaluationId: weak.evaluation_id, repId: "rep-1", evaluationKind: "exposure_index" });
     const base = {

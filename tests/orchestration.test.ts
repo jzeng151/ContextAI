@@ -74,6 +74,8 @@ test("ordered evaluation persists a complete run and replay is idempotent", asyn
     { ...(store.database.prepare("SELECT rep_id, evaluation_kind FROM pilot_evaluation_owners").get() as object) },
     { rep_id: "rep-1", evaluation_kind: "exposure_index" }
   );
+  const rescore = await evaluateLead({ ...options, idempotencyKey: "assignment:event-16", requestId: "event-16", evaluatedAt: "2026-07-13T09:00:00.000Z" });
+  assert.equal((store.database.prepare("SELECT evaluation_kind FROM pilot_evaluation_owners WHERE evaluation_id = ?").get(rescore.packet.evaluation_id) as { evaluation_kind: string }).evaluation_kind, "rescore");
   store.close();
 });
 

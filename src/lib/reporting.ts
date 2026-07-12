@@ -66,6 +66,11 @@ const currentFields = (packet: LeadPacket) => {
     if (!Number.isFinite(age) || age < 0 || age > 90 * day) continue;
     if (evidence.field_name) current.add(evidence.field_name);
     for (const field of Object.keys(evidence.field_values ?? {})) current.add(field);
+    if (evidence.source_type === "crm") {
+      if (packet.lead_identity.domain) current.add("company_domain");
+      if (packet.lead_identity.company && packet.lead_identity.company !== "Unknown company") current.add("company_name");
+      if (packet.lead_identity.title && packet.lead_identity.title !== "Data unavailable") current.add("contact_title");
+    }
   }
   if (current.has("employees") || current.has("numberofemployees")) current.add("company_size_band");
   return current;
@@ -81,6 +86,7 @@ export function createPilotReport(
   const from = timestamp(filters.from, "from");
   const to = timestamp(filters.to, "to");
   const generated = timestamp(generatedAt, "generatedAt")!;
+  const effectiveTo = to ?? generated;
   if (from !== undefined && to !== undefined && from > to) throw new Error("from must not be after to");
   if (filters.band && !bands.includes(filters.band)) throw new Error("band is not supported");
 
@@ -97,7 +103,8 @@ export function createPilotReport(
       invalidEvents++;
       return [];
     }
-  }).sort((left, right) => eventAt(left) - eventAt(right) || String(left.eventId).localeCompare(String(right.eventId)));
+  }).filter((event) => eventAt(event) <= effectiveTo)
+    .sort((left, right) => eventAt(left) - eventAt(right) || String(left.eventId).localeCompare(String(right.eventId)));
   const allRunByEvaluation = firstBy(allEvents.filter((event): event is Extract<PilotEvent, { name: "evaluation.run" }> => event.name === "evaluation.run"), ({ evaluationId }) => evaluationId);
 
   const allEvaluations = (database.prepare(`
@@ -124,7 +131,7 @@ export function createPilotReport(
   })).sort((left, right) => Date.parse(left.completedAt) - Date.parse(right.completedAt) || left.evaluationId.localeCompare(right.evaluationId));
   const inWindow = (evaluation: Evaluation) => {
     const at = Date.parse(evaluation.completedAt);
-    return (from === undefined || at >= from) && (to === undefined || at <= to);
+    return (from === undefined || at >= from) && at <= effectiveTo;
   };
   const anchors = allEvaluations.filter((evaluation) => inWindow(evaluation) && evaluation.evaluationKind !== "rescore");
   const allIndexes = new Map([
@@ -253,6 +260,8 @@ export function createPilotReport(
     SELECT audit_id, evaluation_id, field_name, outcome, recorded_at FROM writeback_audit_records WHERE tenant_id = ?
   `).all(tenantId) as Array<{ audit_id: string; evaluation_id: string; field_name: string; outcome: string; recorded_at: string }>)
     .filter(({ evaluation_id }) => treatmentEvaluationIds.has(evaluation_id));
+  const auditIds = new Set(auditRows.map(({ audit_id }) => audit_id));
+  const unresolvedReservations = auditRows.filter(({ audit_id }) => audit_id.startsWith("pending:") && !auditIds.has(audit_id.slice("pending:".length)));
   const originalAudits = auditRows.filter(({ audit_id }) => !audit_id.startsWith("pending:") && !audit_id.startsWith("rollback:"));
   const auditedEvaluationIds = new Set(originalAudits.map(({ evaluation_id }) => evaluation_id));
   const treatmentWritebackEvents = events.filter((event) => byEvaluation.get(event.evaluationId)?.cohort === "contextai" && !auditedEvaluationIds.has(event.evaluationId));
@@ -337,6 +346,7 @@ export function createPilotReport(
     ...(controlWritebackExposure.size ? [`${controlWritebackExposure.size} control evaluation(s) emitted writeback activity; cohort leakage requires review.`] : []),
     ...(lateActions ? [`${lateActions} first action(s) occurred outside the approved 24-hour research window.`] : []),
     ...(invalidEvents ? [`${invalidEvents} invalid stored event(s) were excluded.`] : []),
+    ...(unresolvedReservations.length ? [`${unresolvedReservations.length} live writeback reservation(s) require manual reconciliation.`] : []),
     ...(pendingWrites.length ? [`${pendingWrites.length} written writeback(s) lack a complete 30-day rollback window and were excluded.`] : []),
     ...(!evaluations.length ? ["No evaluations match this tenant and filter window; metrics are unavailable, not zero."] : []),
     ...(matured.length < indexEvaluations.size ? ["Outcome metrics exclude index evaluations without a complete 60-day maturation window."] : [])

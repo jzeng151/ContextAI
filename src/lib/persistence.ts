@@ -353,9 +353,19 @@ export class RuntimeStore {
     tenantId: string;
     evaluationId: string;
     repId: string;
-    evaluationKind: "baseline_anchor" | "exposure_index" | "rescore";
+    evaluationKind?: "baseline_anchor" | "exposure_index" | "rescore";
     recordedAt?: string;
   }>) {
+    const priorAnchor = this.database.prepare(`
+      SELECT 1
+      FROM evaluation_runs current
+      JOIN evaluation_runs prior ON prior.tenant_id = current.tenant_id AND prior.lead_id = current.lead_id
+      JOIN pilot_evaluation_owners owner ON owner.tenant_id = prior.tenant_id AND owner.evaluation_id = prior.evaluation_id
+      WHERE current.tenant_id = ? AND current.evaluation_id = ? AND owner.evaluation_kind != 'rescore'
+        AND (prior.completed_at < current.completed_at OR (prior.completed_at = current.completed_at AND prior.evaluation_id < current.evaluation_id))
+      LIMIT 1
+    `).get(input.tenantId, input.evaluationId);
+    const evaluationKind = input.evaluationKind ?? (priorAnchor ? "rescore" : "exposure_index");
     const result = this.database.prepare(`
       INSERT INTO pilot_evaluation_owners (tenant_id, evaluation_id, rep_id, evaluation_kind, recorded_at)
       SELECT ?, ?, ?, ?, ? WHERE EXISTS (
@@ -363,7 +373,7 @@ export class RuntimeStore {
       )
     `).run(
       nonEmpty(input.tenantId, "tenantId"), nonEmpty(input.evaluationId, "evaluationId"),
-      nonEmpty(input.repId, "repId"), input.evaluationKind,
+      nonEmpty(input.repId, "repId"), evaluationKind,
       isoDate(input.recordedAt ?? new Date().toISOString(), "recordedAt"), input.tenantId, input.repId
     );
     return result.changes === 1;

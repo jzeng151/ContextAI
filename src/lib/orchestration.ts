@@ -299,7 +299,7 @@ export const evaluateLead = async (options: EvaluationOptions) => {
   if (!saved.created) return { ...options.store.getEvaluation(options.identity, saved.evaluationId)!, replayed: true as const };
   if (assignedUserId) options.store.recordEvaluationOwner({
     tenantId: options.identity.tenantId, evaluationId: saved.evaluationId, repId: assignedUserId,
-    evaluationKind: options.evaluationKind ?? "exposure_index", recordedAt: at
+    evaluationKind: options.evaluationKind, recordedAt: at
   });
   if (finalPacket.tool_status.evaluate_crm_writeback.status === "success" && options.identity.role === "revops_admin") {
     await executeWriteback(planWriteback(finalPacket, writebackPolicy), { store: options.store, tenantId: options.identity.tenantId, actorType: options.identity.role, actorId: options.identity.actorId, identity: options.identity, policy: writebackPolicy, mode: "dry-run" });
