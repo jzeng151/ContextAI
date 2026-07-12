@@ -26,6 +26,7 @@ The current implementation includes:
 - OpenRouter configuration, key validation, and grounded explanation client foundations.
 - HubSpot contact list/read and guarded PATCH client foundations.
 - A native Node server boundary with SQLite migrations, fixture seeding, and durable evaluation/audit/event records.
+- A RevOps governance workspace with validated config publishing, immutable history, manual-review decisions, audit tracing, rollback access, and integration health.
 - Ordered HubSpot lead evaluation with bounded morning runs, authenticated assignment triggers, replay protection, manual-review routing, and dry-run writeback.
 - A HubSpot Developer Platform 2026.03 contact/company sidebar card backed by signed, tenant- and assignment-scoped APIs.
 - A typed, PII-rejecting pilot telemetry contract with idempotent append-only recording.
@@ -84,6 +85,8 @@ Live integration credentials are optional for local UI development and automated
 | `OPENROUTER_MODEL` | No | Overrides the default model, `openai/gpt-4.1-mini`. |
 | `CONTEXTAI_APP_URL` | No | Sets the application URL sent with OpenRouter requests. |
 | `CONTEXTAI_API_URL` | Required for CRM card | Public HTTPS origin used to validate signed HubSpot card requests. |
+| `PUBLIC_CONTEXTAI_API_URL` | No | Sets the runtime API origin used by the Astro governance page. |
+| `CONTEXTAI_ADMIN_ORIGIN` | No | Allows the Astro governance origin to call the runtime API; defaults to `http://127.0.0.1:4321`. |
 | `HUBSPOT_ACCESS_TOKEN` | No | Enables live HubSpot contact checks. |
 | `HUBSPOT_WEBHOOK_SECRET` | No | Authenticates `POST /webhooks/hubspot/assignments`. |
 | `HUBSPOT_INTEGRATION_ID` | No | Selects the encrypted HubSpot OAuth integration used by server-triggered evaluations. |
@@ -124,8 +127,10 @@ src/
   lib/persistence.ts      Durable runtime storage boundary
   lib/instrumentation.ts  Pilot event contract and failure-isolated recorder
   lib/integrations.ts     HubSpot and OpenRouter client foundations
+  lib/governance.ts       Governance review reason codes
   lib/orchestration.ts    Ordered evaluation and HubSpot trigger handling
   pages/index.astro       Current rep and RevOps dashboard
+  pages/admin.astro       RevOps governance and manual-review workspace
   server.ts               Minimal Node runtime and health endpoint
 scripts/
   database.ts             Local migration and fixture-seed command

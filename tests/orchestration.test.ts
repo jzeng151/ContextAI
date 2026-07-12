@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createScoringRunContext, defaultConfigVersion } from "../src/lib/config.ts";
+import { createConfigDraft, createScoringRunContext, defaultConfigVersion } from "../src/lib/config.ts";
 import type { Evidence } from "../src/lib/contextai.ts";
 import { evaluateLead, handleAssignmentEvent, mapHubSpotLead, parseHubSpotAssignmentEvents, verifyAssignmentSignature } from "../src/lib/orchestration.ts";
 import { RuntimeStore } from "../src/lib/persistence.ts";
@@ -68,6 +68,34 @@ test("ordered evaluation persists a complete run and replay is idempotent", asyn
   assert.equal(replay.replayed, true);
   assert.equal(replay.packet.evaluation_id, first.packet.evaluation_id);
   assert.equal(store.database.prepare("SELECT count(*) AS count FROM evaluation_runs").get().count, 1);
+  store.close();
+});
+
+test("new evaluations use the tenant's published active configuration", async () => {
+  const store = setup();
+  const draft = createConfigDraft({
+    ...defaultConfigVersion,
+    id: "score-v0.2",
+    author: "admin-15",
+    createdAt: "2026-07-12T08:00:00.000Z",
+    changeSummary: "Publish pilot scoring policy.",
+    adminNotes: "Verified before the morning run.",
+    config: {
+      ...defaultConfigVersion.config,
+      writeback: {
+        ...defaultConfigVersion.config.writeback,
+        manualApprovalFields: { contact: [], company: ["company_size_band"] }
+      }
+    }
+  });
+  store.saveConfigVersion(identity, draft);
+  store.publishConfigDraft(identity, draft.id);
+
+  const result = await evaluateLead({ identity, idempotencyKey: "active-config-15", contactId: record.id, store, dependencies: dependencies(), evaluatedAt: at });
+  assert.equal(result.packet.score_version, draft.id);
+  assert.equal(result.packet.writeback_plan?.decision, "Review");
+  assert.ok(store.listReviewItems(identity).some((item) => item.reason === "candidate_writeback_flagged"));
+  assert.equal(store.getGovernanceAudit(identity, result.packet.evaluation_id)?.configVersion?.id, draft.id);
   store.close();
 });
 

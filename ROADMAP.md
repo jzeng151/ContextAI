@@ -350,17 +350,17 @@ Rollback:
 
 Configuration primitives belong to #8; pilot-ready RevOps screens, review, audit, and rollback controls belong to #16; pilot metric reports and exports belong to #19.
 
-- [ ] Configure scoring weights within safe ranges
-- [ ] View score version history
-- [ ] Compare score changes before publishing
-- [ ] Define Hot, Warm, Cold, and Needs Manual Review thresholds
-- [ ] Set source freshness thresholds
-- [ ] Configure CRM writeback allowlist
-- [ ] Approve or block enrichment sources
-- [ ] Set weak-signal rules
-- [ ] View audit logs
-- [ ] Review fields flagged for manual approval
-- [ ] Roll back CRM writebacks
+- [x] Configure scoring weights within safe ranges
+- [x] View score version history
+- [x] Compare score changes before publishing
+- [x] Define Hot, Warm, and Cold thresholds; Needs Manual Review remains the locked nonnumeric safety override
+- [x] Set source freshness thresholds
+- [x] Configure CRM writeback allowlist
+- [x] Approve or block enrichment sources
+- [x] Set weak-signal rules
+- [x] View audit logs
+- [x] Review fields flagged for manual approval
+- [x] Roll back CRM writebacks
 - [ ] Export pilot metrics
 
 Scoring version control:
@@ -380,15 +380,15 @@ Scoring version control:
 
 Admin review queue reasons:
 
-- [ ] Missing required firmographic data
-- [ ] Stale enrichment
-- [ ] Conflicting source values
-- [ ] Duplicate lead or account risk
-- [ ] Unclear corporate domain
+- [x] Missing required firmographic data
+- [x] Stale enrichment
+- [x] Conflicting source values
+- [x] Duplicate lead or account risk
+- [x] Unclear corporate domain
 - [ ] High intent but poor ICP fit
 - [ ] Strong ICP fit but no verified intent
-- [ ] Candidate writeback blocked by policy
-- [ ] Candidate writeback flagged due to confidence or freshness
+- [x] Candidate writeback blocked by policy
+- [x] Candidate writeback flagged due to confidence or freshness
 
 Admin reporting:
 
@@ -522,10 +522,10 @@ Permissions:
 Field-level controls:
 
 - [ ] Configure readable CRM fields
-- [ ] Configure writable CRM fields
-- [ ] Configure fields requiring manual approval
+- [x] Configure writable CRM fields
+- [x] Configure fields requiring manual approval
 - [ ] Configure blocked writeback fields
-- [ ] Configure allowed sources
+- [x] Configure allowed sources
 - [ ] Configure engagement behaviors visible to reps
 - [ ] Configure sources allowed in generated hooks
 
@@ -649,7 +649,7 @@ Recommended sequencing:
 
 ### Phase 3: Pilot Hardening and Validation
 
-1. [ ] #16 builds minimum RevOps configuration, version publishing, audit, manual-review, and rollback controls.
+1. [x] #16 builds minimum RevOps configuration, version publishing, audit, manual-review, and rollback controls.
 2. [ ] #18 approves the metric dictionary, baselines, cohorts, surveys, safety stops, and decision rubric before exposure.
 3. [ ] #19 implements read-only pilot metric aggregation, reports, and exports against that approved definition.
 4. [ ] #20 runs the pilot and makes the proceed/pivot/narrow/stop decision.

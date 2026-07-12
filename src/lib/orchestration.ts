@@ -1,5 +1,5 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import { createScoringRunContext, defaultConfigVersion, type ScoringRunContext } from "./config.ts";
+import { createScoringRunContext, type ScoringRunContext } from "./config.ts";
 import type { Evidence, LeadPacket, ManualReviewReason, ToolStatus, ToolTerminalStatus } from "./contextai.ts";
 import { fallbackGroundedExplanation, groundingPromptVersion, type GroundedExplanation } from "./grounding.ts";
 import { enrichProfile, fetchIntentTriggers, fetchPublicSignals, type EnrichProfileResult, type IntentTriggersResult, type PublicSignalsResult } from "./ingestion.ts";
@@ -8,7 +8,7 @@ import { createEventRecorder } from "./instrumentation.ts";
 import { RuntimeStore } from "./persistence.ts";
 import { applyDeterministicScore, type ScoredLeadPacket } from "./scoring.ts";
 import { assertTenantAccess, type RequestIdentity } from "./security.ts";
-import { executeWriteback, hubSpotWritebackPolicy, planWriteback } from "./writeback.ts";
+import { executeWriteback, hubSpotWritebackPolicyFor, planWriteback } from "./writeback.ts";
 
 export type HubSpotCompany = Readonly<{ id: string; name: string; domain: string | null; archived?: boolean; primary?: boolean }>;
 export type HubSpotLeadRecord = Readonly<{
@@ -212,7 +212,8 @@ export const evaluateLead = async (options: EvaluationOptions) => {
   const existing = options.store.getEvaluationByIdempotencyKey(options.identity, options.idempotencyKey);
   if (existing) return { ...existing, replayed: true as const };
   const at = options.evaluatedAt ?? new Date().toISOString();
-  const context = options.scoringContext ?? createScoringRunContext(defaultConfigVersion);
+  const context = options.scoringContext ?? createScoringRunContext(options.store.getActiveConfigVersion(options.identity));
+  const writebackPolicy = hubSpotWritebackPolicyFor(context.config, context.score_version);
   const keyHash = createHash("sha256").update(`${options.identity.tenantId}|${options.idempotencyKey}`).digest("hex").slice(0, 24);
   const ids = { requestId: options.requestId ?? `request-${keyHash}`, evaluationId: `evaluation-${keyHash}` };
   let packet: LeadPacket;
@@ -270,7 +271,7 @@ export const evaluateLead = async (options: EvaluationOptions) => {
           : { status: "Skipped", reason: "Writeback policy evaluation is pending.", recorded_at: at },
         tool_status: { ...scored.tool_status, evaluate_crm_writeback: toolResult("success", at) },
       };
-      const planned = planWriteback(scored, hubSpotWritebackPolicy);
+      const planned = planWriteback(scored, writebackPolicy);
       const decision = planned.outcome === "Flagged for Review" ? "Review" : planned.outcome;
       scored = {
         ...scored,
@@ -296,7 +297,7 @@ export const evaluateLead = async (options: EvaluationOptions) => {
   const saved = options.store.saveEvaluation({ tenantId: options.identity.tenantId, idempotencyKey: options.idempotencyKey, packet: finalPacket, assignedRepId: assignedUserId });
   if (!saved.created) return { ...options.store.getEvaluation(options.identity, saved.evaluationId)!, replayed: true as const };
   if (finalPacket.tool_status.evaluate_crm_writeback.status === "success" && options.identity.role === "revops_admin") {
-    await executeWriteback(planWriteback(finalPacket, hubSpotWritebackPolicy), { store: options.store, tenantId: options.identity.tenantId, actorType: options.identity.role, actorId: options.identity.actorId, identity: options.identity, policy: hubSpotWritebackPolicy, mode: "dry-run" });
+    await executeWriteback(planWriteback(finalPacket, writebackPolicy), { store: options.store, tenantId: options.identity.tenantId, actorType: options.identity.role, actorId: options.identity.actorId, identity: options.identity, policy: writebackPolicy, mode: "dry-run" });
   }
   options.store.appendGroundingAudit(options.identity.tenantId, explanation, result.claims, result.audit);
   if (finalPacket.priority_band === "Needs Manual Review") options.store.appendReviewItem(options.identity, finalPacket.evaluation_id, finalPacket.manual_review_reasons.join(", "), finalPacket);
@@ -313,7 +314,7 @@ export const evaluateLead = async (options: EvaluationOptions) => {
     requestId: finalPacket.request_id, evaluationId: finalPacket.evaluation_id, leadId: finalPacket.lead_id, accountId: finalPacket.account_id,
     actorType: options.identity.role, actorId: options.identity.actorId, scoreVersion: context.score_version, configVersion: context.score_version,
     evidenceRefs: [], retentionClass: "writeback_audit_24_months", occurredAt: at,
-    data: { writebackId: `${finalPacket.evaluation_id}:${hubSpotWritebackPolicy.version}`, outcome: finalPacket.writeback_outcome.status },
+    data: { writebackId: `${finalPacket.evaluation_id}:${writebackPolicy.version}`, outcome: finalPacket.writeback_outcome.status },
   });
   return { packet: finalPacket, outcome: options.store.getEvaluation(options.identity, saved.evaluationId)!.outcome, replayed: false as const };
 };
