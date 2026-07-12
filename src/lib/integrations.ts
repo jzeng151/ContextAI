@@ -333,23 +333,28 @@ export const listAssignedOpenHubSpotLeads = async (ownerId: string, config = hub
   return Promise.all(assigned.map(({ id }) => getHubSpotLeadRecord(id, config)));
 };
 
-export const writeHubSpotEnrichment = async (
-  plan: WritebackPlan,
-  options: Readonly<{ store: RuntimeStore; tenantId: string; actorType: string; actorId: string; identity: RequestIdentity; policy: WritebackPolicy; mode?: "dry-run" | "live"; authorizedLiveWrite?: boolean }>,
-  config?: HubSpotConfig
-) => executeWriteback(plan, {
-  ...options,
-  write: async ({ object, objectId, properties }) => {
-    const serialized = Object.fromEntries(Object.entries(properties).map(([name, value]) => [name, Array.isArray(value) ? value.join(";") : String(value)]));
+export const writeHubSpotProperties = async (
+  { object, objectId, properties }: Readonly<{ object: "contact" | "company"; objectId: string; properties: Readonly<Record<string, unknown>> }>,
+  config = hubSpotConfigFromEnv()
+) => {
+    const serialized = Object.fromEntries(Object.entries(properties).map(([name, value]) => [name, value === null ? "" : Array.isArray(value) ? value.join(";") : String(value)]));
     const response = await fetch(`https://api.hubapi.com/crm/v3/objects/${object === "contact" ? "contacts" : "companies"}/${objectId}`, {
       method: "PATCH",
       headers: {
-        "Authorization": `Bearer ${(config ?? hubSpotConfigFromEnv()).accessToken}`,
+        "Authorization": `Bearer ${config.accessToken}`,
         "Content-Type": "application/json"
       },
       signal: AbortSignal.timeout(timeoutMs),
       body: JSON.stringify({ properties: serialized })
     });
     await readJson<HubSpotContact>(response);
-  }
+};
+
+export const writeHubSpotEnrichment = async (
+  plan: WritebackPlan,
+  options: Readonly<{ store: RuntimeStore; tenantId: string; actorType: string; actorId: string; identity: RequestIdentity; policy: WritebackPolicy; mode?: "dry-run" | "live"; authorizedLiveWrite?: boolean }>,
+  config?: HubSpotConfig
+) => executeWriteback(plan, {
+  ...options,
+  write: (input) => writeHubSpotProperties(input, config)
 });
