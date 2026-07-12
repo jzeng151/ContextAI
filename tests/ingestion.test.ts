@@ -277,6 +277,40 @@ test("live provider payload validation maps malformed responses to invalid_resul
   }
 });
 
+test("ingestion rejects control characters from lookup keys and provider text", async () => {
+  const originalFetch = globalThis.fetch;
+  let called = false;
+  try {
+    globalThis.fetch = async () => {
+      called = true;
+      return new Response(JSON.stringify({
+        source_name: "Provider\nInjected",
+        employees: 10,
+        last_updated: evaluatedAt,
+      }), { status: 200 });
+    };
+    const enrichment = await enrichProfile("example.com", {
+      evaluatedAt,
+      env: { ENRICHMENT_API_URL: "https://enrich.example/v1/profile" },
+    });
+    assert.equal(enrichment.status, "invalid_result");
+    assert.equal(enrichment.source_name, "enrichment");
+
+    called = false;
+    assert.equal((await fetchIntentTriggers("person\r@example.com", {
+      evaluatedAt,
+      env: { INTENT_API_URL: "https://signals.example/v1/intent" },
+    })).status, "unavailable");
+    assert.equal((await fetchPublicSignals("Example\u007fCorp", {
+      evaluatedAt,
+      env: { PUBLIC_SIGNALS_API_URL: "https://signals.example/v1/company" },
+    })).status, "unavailable");
+    assert.equal(called, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("adapter evidence matches the shared scalar and field-map contract", async () => {
   const enrichment = await enrichProfile("enterprisecorp.com", { evaluatedAt, fixtures });
   assert.equal(enrichment.status, "success");

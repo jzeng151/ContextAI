@@ -21,6 +21,23 @@ test("evaluation identifiers preserve an optional batch request ID", () => {
   assert.match(createEvaluationIdentifiers().requestId, /^[0-9a-f-]{36}$/);
 });
 
+test("persistence rejects control characters before writing JSON payloads", () => {
+  const store = new RuntimeStore(":memory:");
+  try {
+    assert.throws(() => store.saveTenant("tenant-unsafe", "Pilot\tTenant"), /control characters/i);
+    store.saveTenant("tenant-1", "Pilot tenant");
+    store.saveConfigVersion("tenant-1", defaultConfigVersion);
+    const packet = structuredClone(lead("golden-normal"));
+    packet.crm_context.owner = "Rep\nInjected";
+    assert.throws(
+      () => store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "unsafe", packet }),
+      /control characters/i
+    );
+  } finally {
+    store.close();
+  }
+});
+
 test("a clean store upgrades from schema v1 and failed migrations roll back", () => {
   const store = new RuntimeStore(":memory:", 1);
   try {

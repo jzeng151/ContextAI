@@ -76,6 +76,7 @@ const defaultTimeoutMs = 8000;
 const defaultMaxRetries = 2;
 const retryBaseMs = 120;
 const retryMaxDelayMs = 900;
+const controlText = /[\u0000-\u001f\u007f]/;
 
 const unavailable = <T extends { status: TerminalToolStatus; message?: string }>(
   base: Omit<T, "status" | "message"> & Partial<Pick<T, "message">>
@@ -93,7 +94,7 @@ const asConfidence = (value: unknown): Confidence | undefined =>
   value === "High" || value === "Medium" || value === "Low" ? value : undefined;
 
 const asString = (value: unknown): string | undefined =>
-  typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+  typeof value === "string" && value.trim().length > 0 && !controlText.test(value) ? value.trim() : undefined;
 
 const asNonNegativeInteger = (value: unknown): number | undefined =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
@@ -102,10 +103,10 @@ const asBoolean = (value: unknown): boolean | undefined =>
   typeof value === "boolean" ? value : undefined;
 
 const asIsoDate = (value: unknown): string | undefined =>
-  typeof value === "string" && Number.isFinite(Date.parse(value)) ? value : undefined;
+  typeof value === "string" && !controlText.test(value) && Number.isFinite(Date.parse(value)) ? value : undefined;
 
 const asUrl = (value: unknown): string | undefined => {
-  if (typeof value !== "string" || !value.trim()) return undefined;
+  if (typeof value !== "string" || !value.trim() || controlText.test(value)) return undefined;
   try {
     const url = new URL(value.trim());
     return url.protocol === "http:" || url.protocol === "https:" ? value.trim() : undefined;
@@ -117,16 +118,16 @@ const asUrl = (value: unknown): string | undefined => {
 const asTechStack = (value: unknown): string[] => {
   if (!Array.isArray(value)) return [];
   return value
-    .map((item) => (typeof item === "string" ? item.trim() : ""))
+    .map((item) => asString(item) ?? "")
     .filter((item) => item.length > 0);
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-const normalizeDomain = (domain: string) => domain.trim().toLowerCase().replace(/^www\./, "");
-const normalizeEmail = (email: string) => email.trim().toLowerCase();
-const normalizeCompany = (name: string) => name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+const normalizeDomain = (domain: string) => controlText.test(domain) ? "" : domain.trim().toLowerCase().replace(/^www\./, "");
+const normalizeEmail = (email: string) => controlText.test(email) ? "" : email.trim().toLowerCase();
+const normalizeCompany = (name: string) => controlText.test(name) ? "" : name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -714,9 +715,9 @@ export const enrichProfile = async (
     return parsed ?? invalidResult({
       tech_stack: [],
       confidence: "Low",
-      source_name: fixture.source_name || "enrichment",
-      source_url: fixture.source_url,
-      source_record_id: fixture.source_record_id,
+      source_name: asString(fixture.source_name) ?? "enrichment",
+      source_url: asUrl(fixture.source_url),
+      source_record_id: asString(fixture.source_record_id),
       evidence: [],
       message: "Malformed enrichment fixture.",
     });
@@ -796,9 +797,9 @@ export const fetchIntentTriggers = async (
       pricing_page_visit: false,
       surge: false,
       confidence: "Low",
-      source_name: fixture.source_name || "intent",
-      intent_source_name: fixture.intent_source_name,
-      engagement_source_name: fixture.engagement_source_name,
+      source_name: asString(fixture.source_name) ?? "intent",
+      intent_source_name: asString(fixture.intent_source_name),
+      engagement_source_name: asString(fixture.engagement_source_name),
       evidence: [],
       message: "Malformed intent fixture.",
     });

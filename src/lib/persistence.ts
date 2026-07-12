@@ -39,12 +39,17 @@ type AuditRecord = Readonly<{
   recordedAt?: string;
 }>;
 
+const controlText = /[\u0000-\u001f\u007f]/;
 const nonEmpty = (value: string, name: string) => {
   if (!value.trim()) throw new Error(`${name} is required`);
+  if (controlText.test(value)) throw new Error(`${name} must not contain control characters`);
   return value;
 };
 const json = (value: unknown) => {
-  const serialized = JSON.stringify(value);
+  const serialized = JSON.stringify(value, (_key, item) => {
+    if (typeof item === "string" && controlText.test(item)) throw new Error("persisted text must not contain control characters");
+    return item;
+  });
   if (serialized === undefined) throw new Error("value must be JSON serializable");
   return serialized;
 };
@@ -90,6 +95,7 @@ export class RuntimeStore {
   }
 
   saveIntegration(input: Readonly<{ integrationId: string; tenantId: string; provider: string; externalAccountId: string; status: "active" | "disabled" | "error" }>) {
+    json(input);
     this.database.prepare(`
       INSERT INTO integrations (integration_id, tenant_id, provider, external_account_id, status, created_at)
       VALUES (?, ?, ?, ?, ?, ?)
@@ -187,6 +193,7 @@ export class RuntimeStore {
   }
 
   appendAuditRecord(input: AuditRecord) {
+    json(input);
     const auditId = input.auditId ?? randomUUID();
     this.database.prepare(`
       INSERT INTO writeback_audit_records (
@@ -205,6 +212,7 @@ export class RuntimeStore {
   }
 
   appendGroundingAudit(tenantId: string, explanation: GroundedExplanation, claims: GroundedClaim[], audit: GroundingAudit) {
+    json({ tenantId, explanation, claims, audit });
     const result = this.database.prepare(`
       INSERT INTO grounding_audit_records (
         tenant_id, evaluation_id, prompt_version, model_id, allowed_claim_ids_json,
