@@ -349,12 +349,19 @@ export class RuntimeStore {
     );
   }
 
-  recordEvaluationOwner(input: Readonly<{ tenantId: string; evaluationId: string; repId: string; recordedAt?: string }>) {
+  recordEvaluationOwner(input: Readonly<{
+    tenantId: string;
+    evaluationId: string;
+    repId: string;
+    evaluationKind: "baseline_anchor" | "exposure_index" | "rescore";
+    recordedAt?: string;
+  }>) {
     this.database.prepare(`
-      INSERT INTO pilot_evaluation_owners (tenant_id, evaluation_id, rep_id, recorded_at) VALUES (?, ?, ?, ?)
+      INSERT INTO pilot_evaluation_owners (tenant_id, evaluation_id, rep_id, evaluation_kind, recorded_at) VALUES (?, ?, ?, ?, ?)
     `).run(
       nonEmpty(input.tenantId, "tenantId"), nonEmpty(input.evaluationId, "evaluationId"),
-      nonEmpty(input.repId, "repId"), isoDate(input.recordedAt ?? new Date().toISOString(), "recordedAt")
+      nonEmpty(input.repId, "repId"), input.evaluationKind,
+      isoDate(input.recordedAt ?? new Date().toISOString(), "recordedAt")
     );
   }
 

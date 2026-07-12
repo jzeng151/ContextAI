@@ -453,6 +453,14 @@ export const migrations: readonly Migration[] = [
       WHEN EXISTS (SELECT 1 FROM pilot_evaluation_owners WHERE tenant_id = NEW.tenant_id AND evaluation_id = NEW.evaluation_id)
       BEGIN SELECT RAISE(ABORT, 'pilot evaluation owners are append-only'); END;
     `
+  },
+  {
+    version: 15,
+    name: "pilot evaluation phase",
+    sql: `
+      ALTER TABLE pilot_evaluation_owners ADD COLUMN evaluation_kind TEXT NOT NULL DEFAULT 'exposure_index'
+        CHECK (evaluation_kind IN ('baseline_anchor', 'exposure_index', 'rescore'));
+    `
   }
 ];
 
