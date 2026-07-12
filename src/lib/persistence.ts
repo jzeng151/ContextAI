@@ -7,6 +7,9 @@ import { assertConfigVersion, type ScoringConfigVersion } from "./config.ts";
 import { assertLeadPacket, type Evidence, type LeadPacket } from "./contextai.ts";
 import { assertPilotEvent, type PilotEvent } from "./instrumentation.ts";
 import { migrateDatabase } from "./migrations.ts";
+import { hubSpotRequiredScopes, refreshHubSpotAccessToken, type HubSpotOAuthTokens } from "./integrations.ts";
+import { assertAdminAccess, assertRequestIdentity, assertTenantAccess, canReadAssignedEvaluation, type RequestIdentity } from "./security.ts";
+import { decryptSecret, encryptSecret } from "./secrets.ts";
 import type { GroundedClaim, GroundedExplanation, GroundingAudit } from "./grounding.ts";
 
 export type EvaluationOutcome = "complete" | "partial_failure";
@@ -15,12 +18,12 @@ type EvaluationInput = Readonly<{
   tenantId: string;
   idempotencyKey: string;
   packet: LeadPacket;
+  assignedRepId?: string;
   retentionAfter?: string;
 }>;
 
 export type AuditRecord = Readonly<{
   auditId?: string;
-  tenantId: string;
   evaluationId: string;
   requestId: string;
   crmObjectType: string;
@@ -36,7 +39,7 @@ export type AuditRecord = Readonly<{
   reason: string;
   scoreVersion: string;
   policyVersion?: string;
-  actorType: string;
+  actorType?: string;
   actorId?: string;
   recordedAt?: string;
 }>;
@@ -64,12 +67,17 @@ export type StoredAuditRecord = Readonly<{
   recorded_at: string;
 }>;
 
+const controlText = /[\u0000-\u001f\u007f]/;
 const nonEmpty = (value: string, name: string) => {
   if (!value.trim()) throw new Error(`${name} is required`);
+  if (controlText.test(value)) throw new Error(`${name} must not contain control characters`);
   return value;
 };
 const json = (value: unknown) => {
-  const serialized = JSON.stringify(value);
+  const serialized = JSON.stringify(value, (_key, item) => {
+    if (typeof item === "string" && controlText.test(item)) throw new Error("persisted text must not contain control characters");
+    return item;
+  });
   if (serialized === undefined) throw new Error("value must be JSON serializable");
   return serialized;
 };
@@ -97,8 +105,11 @@ const evidenceFrom = (packet: LeadPacket): Evidence[] => [
 
 export class RuntimeStore {
   readonly database: DatabaseSync;
+  readonly evaluationRetentionDays: number;
 
-  constructor(path = process.env.DATABASE_PATH ?? ".contextai/contextai.sqlite", targetVersion?: number) {
+  constructor(path = process.env.DATABASE_PATH ?? ".contextai/contextai.sqlite", targetVersion?: number, evaluationRetentionDays = Number(process.env.EVALUATION_RETENTION_DAYS ?? 365)) {
+    if (!Number.isSafeInteger(evaluationRetentionDays) || evaluationRetentionDays < 1) throw new Error("evaluation retention days must be a positive integer");
+    this.evaluationRetentionDays = evaluationRetentionDays;
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
     this.database = new DatabaseSync(path);
     this.database.exec("PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL;");
@@ -109,24 +120,203 @@ export class RuntimeStore {
     this.database.close();
   }
 
+  private recordAccess(identity: RequestIdentity, action: string, resourceType: string, resourceId: string, outcome: "allowed" | "denied") {
+    json({ identity, action, resourceType, resourceId, outcome });
+    this.database.prepare(`
+      INSERT INTO access_audit_records (
+        tenant_id, request_id, actor_id, actor_role, action, resource_type, resource_id, outcome, recorded_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      identity.tenantId, identity.requestId, identity.actorId, identity.role, action, resourceType, resourceId,
+      outcome, new Date().toISOString()
+    );
+  }
+
+  private requireAdmin(identity: RequestIdentity, action: string, resourceType: string, resourceId: string) {
+    assertRequestIdentity(identity);
+    try {
+      assertAdminAccess(identity);
+    } catch (error) {
+      this.recordAccess(identity, action, resourceType, resourceId, "denied");
+      throw error;
+    }
+  }
+
   saveTenant(tenantId: string, name: string) {
     this.database.prepare("INSERT OR IGNORE INTO tenants (tenant_id, name, created_at) VALUES (?, ?, ?)")
       .run(nonEmpty(tenantId, "tenantId"), nonEmpty(name, "tenant name"), new Date().toISOString());
   }
 
-  saveIntegration(input: Readonly<{ integrationId: string; tenantId: string; provider: string; externalAccountId: string; status: "active" | "disabled" | "error" }>) {
+  saveIntegration(identity: RequestIdentity, input: Readonly<{ integrationId: string; provider: string; externalAccountId: string; status: "active" | "disabled" | "error" }>) {
+    this.requireAdmin(identity, "integration.create", "integration", input.integrationId);
+    if (input.status === "active") throw new Error("Active integrations require encrypted OAuth credentials");
+    json(input);
     this.database.prepare(`
       INSERT INTO integrations (integration_id, tenant_id, provider, external_account_id, status, created_at)
       VALUES (?, ?, ?, ?, ?, ?)
-    `).run(input.integrationId, input.tenantId, input.provider, input.externalAccountId, input.status, new Date().toISOString());
+    `).run(input.integrationId, identity.tenantId, input.provider, input.externalAccountId, input.status, new Date().toISOString());
+    this.recordAccess(identity, "integration.create", "integration", input.integrationId, "allowed");
   }
 
-  saveConfigVersion(tenantId: string, version: ScoringConfigVersion) {
+  activateHubSpotIntegration(identity: RequestIdentity, integrationId: string, credentials: Readonly<{
+    accessToken: string;
+    refreshToken: string;
+    scopes: readonly string[];
+    expiresAt: string;
+    externalAccountId: string;
+  }>, key: Buffer) {
+    this.requireAdmin(identity, "integration.connect", "integration", integrationId);
+    if (hubSpotRequiredScopes.some((scope) => !credentials.scopes.includes(scope))) throw new Error("HubSpot OAuth scopes are insufficient");
+    const result = this.database.prepare(`
+      UPDATE integrations SET
+        status = 'active', access_token_ciphertext = ?, refresh_token_ciphertext = ?, scopes_json = ?,
+        token_expires_at = ?, last_error = NULL, rate_limited_until = NULL, revoked_at = NULL
+      WHERE tenant_id = ? AND integration_id = ? AND provider = 'hubspot' AND external_account_id = ?
+    `).run(
+      encryptSecret(credentials.accessToken, key), encryptSecret(credentials.refreshToken, key), json(credentials.scopes),
+      isoDate(credentials.expiresAt, "expiresAt"), identity.tenantId, integrationId, credentials.externalAccountId
+    );
+    if (result.changes !== 1) throw new Error("HubSpot integration not found");
+    this.recordAccess(identity, "integration.connect", "integration", integrationId, "allowed");
+  }
+
+  async getHubSpotAccessToken(
+    identity: RequestIdentity,
+    integrationId: string,
+    key: Buffer,
+    now = new Date().toISOString(),
+    refresh: (refreshToken: string) => Promise<HubSpotOAuthTokens> = refreshHubSpotAccessToken,
+  ) {
+    assertTenantAccess(identity, identity.tenantId);
+    try {
+      if (identity.role !== "system" && identity.role !== "integration") throw new Error("Integration worker access required");
+      const integration = this.database.prepare(`
+        SELECT status, external_account_id, access_token_ciphertext, refresh_token_ciphertext, scopes_json, token_expires_at,
+          rate_limited_until, revoked_at
+        FROM integrations WHERE tenant_id = ? AND integration_id = ? AND provider = 'hubspot'
+      `).get(identity.tenantId, integrationId) as {
+        status: string;
+        external_account_id: string;
+        access_token_ciphertext: string | null;
+        refresh_token_ciphertext: string | null;
+        scopes_json: string;
+        token_expires_at: string | null;
+        rate_limited_until: string | null;
+        revoked_at: string | null;
+      } | undefined;
+      const nowMs = Date.parse(isoDate(now, "now"));
+      if (!integration || integration.status !== "active" || integration.revoked_at || !integration.access_token_ciphertext) {
+        throw new Error("HubSpot integration is disconnected");
+      }
+      if (integration.rate_limited_until && Date.parse(integration.rate_limited_until) > nowMs) throw new Error("HubSpot integration is rate limited");
+      let accessToken: string;
+      if (!integration.token_expires_at || Date.parse(integration.token_expires_at) <= nowMs) {
+        if (!integration.refresh_token_ciphertext) throw new Error("HubSpot refresh token is unavailable");
+        let tokens: HubSpotOAuthTokens;
+        try {
+          tokens = await refresh(decryptSecret(integration.refresh_token_ciphertext, key));
+        } catch (error) {
+          this.database.prepare(`
+            UPDATE integrations SET status = 'error', last_error = 'token_refresh_failed'
+            WHERE tenant_id = ? AND integration_id = ? AND status = 'active' AND revoked_at IS NULL
+          `).run(identity.tenantId, integrationId);
+          throw error;
+        }
+        const scopes = tokens.scopes ?? parse<string[]>(integration.scopes_json);
+        if ((tokens.hub_id !== undefined && String(tokens.hub_id) !== integration.external_account_id) || hubSpotRequiredScopes.some((scope) => !scopes.includes(scope))) {
+          throw new Error("HubSpot returned tokens for the wrong account or scopes");
+        }
+        const result = this.database.prepare(`
+          UPDATE integrations SET access_token_ciphertext = ?, refresh_token_ciphertext = ?, scopes_json = ?,
+            token_expires_at = ?, last_error = NULL
+          WHERE tenant_id = ? AND integration_id = ? AND status = 'active' AND revoked_at IS NULL
+        `).run(
+          encryptSecret(tokens.access_token, key), encryptSecret(tokens.refresh_token, key), json(scopes),
+          new Date(nowMs + tokens.expires_in * 1000).toISOString(), identity.tenantId, integrationId
+        );
+        if (result.changes !== 1) throw new Error("HubSpot integration changed during token refresh");
+        accessToken = tokens.access_token;
+      } else {
+        accessToken = decryptSecret(integration.access_token_ciphertext, key);
+      }
+      this.recordAccess(identity, "integration.token", "integration", integrationId, "allowed");
+      return accessToken;
+    } catch (error) {
+      this.recordAccess(identity, "integration.token", "integration", integrationId, "denied");
+      throw error;
+    }
+  }
+
+  async disconnectHubSpotIntegration(
+    identity: RequestIdentity,
+    integrationId: string,
+    key: Buffer,
+    revoke: (refreshToken: string) => Promise<void>,
+  ) {
+    this.requireAdmin(identity, "integration.disconnect", "integration", integrationId);
+    const row = this.database.prepare(`
+      SELECT refresh_token_ciphertext FROM integrations
+      WHERE tenant_id = ? AND integration_id = ? AND provider = 'hubspot'
+    `).get(identity.tenantId, integrationId) as { refresh_token_ciphertext: string | null } | undefined;
+    if (!row) throw new Error("HubSpot integration not found");
+    this.database.prepare(`
+      UPDATE integrations SET status = 'disabled', access_token_ciphertext = NULL, revoked_at = ?, rate_limited_until = NULL
+      WHERE tenant_id = ? AND integration_id = ?
+    `).run(new Date().toISOString(), identity.tenantId, integrationId);
+    try {
+      const refreshToken = row.refresh_token_ciphertext ? decryptSecret(row.refresh_token_ciphertext, key) : null;
+      if (refreshToken) await revoke(refreshToken);
+      this.database.prepare(`
+        UPDATE integrations SET refresh_token_ciphertext = NULL, last_error = NULL
+        WHERE tenant_id = ? AND integration_id = ?
+      `).run(identity.tenantId, integrationId);
+      this.recordAccess(identity, "integration.disconnect", "integration", integrationId, "allowed");
+    } catch (error) {
+      this.database.prepare(`
+        UPDATE integrations SET status = 'error', last_error = 'token_revocation_failed'
+        WHERE tenant_id = ? AND integration_id = ?
+      `).run(identity.tenantId, integrationId);
+      this.recordAccess(identity, "integration.disconnect", "integration", integrationId, "denied");
+      throw error;
+    }
+  }
+
+  recordIntegrationHealth(identity: RequestIdentity, integrationId: string, status: "healthy" | "error" | "rate_limited", retryAfter?: string) {
+    assertRequestIdentity(identity);
+    if (identity.role === "rep") throw new Error("Rep access denied");
+    const rateLimitedUntil = status === "rate_limited"
+      ? isoDate(retryAfter ?? new Date(Date.now() + 60_000).toISOString(), "retryAfter")
+      : null;
+    const result = this.database.prepare(`
+      UPDATE integrations SET status = ?, last_health_at = ?, last_error = ?, rate_limited_until = ?
+      WHERE tenant_id = ? AND integration_id = ? AND status IN ('active', 'error')
+        AND access_token_ciphertext IS NOT NULL AND refresh_token_ciphertext IS NOT NULL AND revoked_at IS NULL
+    `).run(
+      status === "error" ? "error" : "active", new Date().toISOString(), status === "error" ? "provider_error" : null,
+      rateLimitedUntil, identity.tenantId, integrationId
+    );
+    if (result.changes !== 1) throw new Error("Integration not found");
+  }
+
+  getIntegrationStatus(identity: RequestIdentity, integrationId: string) {
+    this.requireAdmin(identity, "integration.status", "integration", integrationId);
+    const status = this.database.prepare(`
+      SELECT provider, external_account_id, status, scopes_json, token_expires_at, last_health_at, last_error,
+        rate_limited_until, revoked_at
+      FROM integrations WHERE tenant_id = ? AND integration_id = ?
+    `).get(identity.tenantId, integrationId);
+    this.recordAccess(identity, "integration.status", "integration", integrationId, status ? "allowed" : "denied");
+    return status ?? null;
+  }
+
+  saveConfigVersion(identity: RequestIdentity, version: ScoringConfigVersion) {
+    this.requireAdmin(identity, "config.write", "config_version", version.id);
     assertConfigVersion(version);
     this.database.prepare(`
       INSERT INTO config_versions (tenant_id, version_id, status, created_by, created_at, config_json)
       VALUES (?, ?, ?, ?, ?, ?)
-    `).run(tenantId, version.id, version.status, version.author, version.createdAt, json(version));
+    `).run(identity.tenantId, version.id, version.status, version.author, version.createdAt, json(version));
+    this.recordAccess(identity, "config.write", "config_version", version.id, "allowed");
   }
 
   saveEvaluation(input: EvaluationInput): Readonly<{ created: boolean; evaluationId: string }> {
@@ -134,7 +324,10 @@ export class RuntimeStore {
     assertLeadPacket(packet);
     nonEmpty(tenantId, "tenantId");
     nonEmpty(idempotencyKey, "idempotencyKey");
-    const retentionAfter = input.retentionAfter === undefined ? null : isoDate(input.retentionAfter, "retentionAfter");
+    const assignedRepId = input.assignedRepId === undefined ? null : nonEmpty(input.assignedRepId, "assignedRepId");
+    const retentionAfter = input.retentionAfter === undefined
+      ? new Date(Date.parse(packet.evaluation_timestamp) + this.evaluationRetentionDays * 24 * 60 * 60 * 1000).toISOString()
+      : isoDate(input.retentionAfter, "retentionAfter");
     const outcome: EvaluationOutcome = Object.values(packet.tool_status).some(({ status }) => failedStatuses.has(status))
       ? "partial_failure"
       : "complete";
@@ -155,12 +348,12 @@ export class RuntimeStore {
       this.database.prepare(`
         INSERT INTO evaluation_runs (
           evaluation_id, tenant_id, request_id, idempotency_key, lead_id, account_id, score_version,
-          outcome_status, packet_json, started_at, completed_at, retention_after
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          outcome_status, packet_json, started_at, completed_at, retention_after, assigned_rep_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         packet.evaluation_id, tenantId, packet.request_id, idempotencyKey, packet.lead_id, packet.account_id,
         packet.score_version, outcome, json(packet), packet.evaluation_timestamp, packet.evaluation_timestamp,
-        retentionAfter
+        retentionAfter, assignedRepId
       );
 
       const insertStep = this.database.prepare(`
@@ -198,34 +391,51 @@ export class RuntimeStore {
     }
   }
 
-  getEvaluation(tenantId: string, evaluationId: string) {
+  getEvaluation(identity: RequestIdentity, evaluationId: string) {
+    assertRequestIdentity(identity);
     const run = this.database.prepare(`
-      SELECT outcome_status, packet_json FROM evaluation_runs WHERE tenant_id = ? AND evaluation_id = ?
-    `).get(tenantId, evaluationId) as { outcome_status: EvaluationOutcome; packet_json: string } | undefined;
-    if (!run) return null;
+      SELECT outcome_status, packet_json, assigned_rep_id, purged_at FROM evaluation_runs WHERE tenant_id = ? AND evaluation_id = ?
+    `).get(identity.tenantId, evaluationId) as { outcome_status: EvaluationOutcome; packet_json: string; assigned_rep_id: string | null; purged_at: string | null } | undefined;
+    if (!run || run.purged_at || !canReadAssignedEvaluation(identity, run.assigned_rep_id)) {
+      this.recordAccess(identity, "evaluation.read", "evaluation", evaluationId, "denied");
+      return null;
+    }
     const packet = parse<LeadPacket>(run.packet_json);
     assertLeadPacket(packet);
     const steps = this.database.prepare(`
       SELECT step, status, detail, completed_at FROM evaluation_steps WHERE tenant_id = ? AND evaluation_id = ? ORDER BY step
-    `).all(tenantId, evaluationId);
+    `).all(identity.tenantId, evaluationId);
+    this.recordAccess(identity, "evaluation.read", "evaluation", evaluationId, "allowed");
     return { outcome: run.outcome_status, packet, steps } as const;
   }
 
-  appendAuditRecord(input: AuditRecord) {
+  appendAuditRecord(identity: RequestIdentity, input: AuditRecord) {
+    this.requireAdmin(identity, "writeback.execute", "evaluation", input.evaluationId);
+    json(input);
+    const activeEvaluation = this.database.prepare(`
+      SELECT 1 FROM evaluation_runs
+      WHERE tenant_id = ? AND evaluation_id = ? AND request_id = ? AND score_version = ? AND purged_at IS NULL
+    `).get(identity.tenantId, input.evaluationId, input.requestId, input.scoreVersion);
+    if (!activeEvaluation) {
+      this.recordAccess(identity, "writeback.execute", "evaluation", input.evaluationId, "denied");
+      throw new Error("Writeback audit evaluation is purged or unavailable");
+    }
     const auditId = input.auditId ?? randomUUID();
     this.database.prepare(`
       INSERT INTO writeback_audit_records (
         audit_id, tenant_id, evaluation_id, request_id, crm_object_type, crm_object_id, field_name,
         previous_value_json, new_value_json, source_name, source_ref, source_updated_at, confidence,
-        outcome, reason, score_version, policy_version, actor_type, actor_id, recorded_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        outcome, reason, score_version, policy_version, actor_type, actor_id, recorded_at, access_request_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      auditId, input.tenantId, input.evaluationId, input.requestId, input.crmObjectType, input.crmObjectId,
+      auditId, identity.tenantId, input.evaluationId, input.requestId, input.crmObjectType, input.crmObjectId,
       input.fieldName, input.previousValue === undefined ? null : json(input.previousValue),
       input.newValue === undefined ? null : json(input.newValue), input.sourceName, input.sourceRef,
-      input.sourceUpdatedAt, input.confidence, input.outcome, input.reason, input.scoreVersion, input.policyVersion ?? input.scoreVersion, input.actorType, input.actorId ?? input.actorType,
-      input.recordedAt ?? new Date().toISOString()
+      input.sourceUpdatedAt, input.confidence, input.outcome, input.reason, input.scoreVersion, input.policyVersion ?? input.scoreVersion,
+      input.actorType ?? identity.role, input.actorId ?? identity.actorId,
+      input.recordedAt ?? new Date().toISOString(), identity.requestId
     );
+    this.recordAccess(identity, "writeback.execute", "evaluation", input.evaluationId, "allowed");
     return auditId;
   }
 
@@ -263,6 +473,7 @@ export class RuntimeStore {
   }
 
   appendGroundingAudit(tenantId: string, explanation: GroundedExplanation, claims: GroundedClaim[], audit: GroundingAudit) {
+    json({ tenantId, explanation, claims, audit });
     const result = this.database.prepare(`
       INSERT INTO grounding_audit_records (
         tenant_id, evaluation_id, prompt_version, model_id, allowed_claim_ids_json,
@@ -290,7 +501,7 @@ export class RuntimeStore {
 
     const linkedEvaluation = this.database.prepare(`
       SELECT 1 FROM evaluation_runs
-      WHERE tenant_id = ? AND evaluation_id = ? AND request_id = ? AND score_version = ?
+      WHERE tenant_id = ? AND evaluation_id = ? AND request_id = ? AND score_version = ? AND purged_at IS NULL
     `).get(input.tenantId, input.evaluationId, input.requestId, input.scoreVersion);
     if (!linkedEvaluation) throw new Error("Event does not match its tenant, request, evaluation, and score version");
     const linkedConfig = this.database.prepare(`
@@ -335,5 +546,44 @@ export class RuntimeStore {
       SELECT tenant_id, evaluation_id, retention_after FROM evaluation_runs
       WHERE retention_after IS NOT NULL AND retention_after <= ? ORDER BY retention_after
     `).all(isoDate(before, "before"));
+  }
+
+  purgeExpiredEvaluations(identity: RequestIdentity, before: string) {
+    this.requireAdmin(identity, "retention.purge", "tenant", identity.tenantId);
+    const cutoff = isoDate(before, "before");
+    const candidates = this.database.prepare(`
+      SELECT evaluation_id FROM evaluation_runs
+      WHERE tenant_id = ? AND purged_at IS NULL AND retention_after <= ?
+    `).all(identity.tenantId, cutoff) as Array<{ evaluation_id: string }>;
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      this.database.prepare("INSERT INTO retention_job_guard (active) VALUES (1)").run();
+      for (const { evaluation_id: evaluationId } of candidates) {
+        for (const table of ["claim_evidence", "claims", "evidence", "evaluation_steps", "writeback_plans", "writeback_outcomes", "review_items"] as const) {
+          this.database.prepare(`DELETE FROM ${table} WHERE tenant_id = ? AND evaluation_id = ?`).run(identity.tenantId, evaluationId);
+        }
+        this.database.prepare(`
+          DELETE FROM events
+          WHERE tenant_id = ? AND evaluation_id = ? AND retention_class != 'writeback_audit_24_months'
+        `).run(identity.tenantId, evaluationId);
+        this.database.prepare(`
+          UPDATE grounding_audit_records
+          SET allowed_claim_ids_json = '[]', evidence_ids_json = '[]', compiled_claims_json = '[]',
+            hook_claim_ids_json = '[]', output_json = '{}'
+          WHERE tenant_id = ? AND evaluation_id = ?
+        `).run(identity.tenantId, evaluationId);
+        this.database.prepare(`
+          UPDATE evaluation_runs SET packet_json = 'null', lead_id = '[deleted]', account_id = NULL, assigned_rep_id = NULL, purged_at = ?
+          WHERE tenant_id = ? AND evaluation_id = ?
+        `).run(new Date().toISOString(), identity.tenantId, evaluationId);
+      }
+      this.database.prepare("DELETE FROM retention_job_guard").run();
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+    this.recordAccess(identity, "retention.purge", "tenant", identity.tenantId, "allowed");
+    return candidates.length;
   }
 }
