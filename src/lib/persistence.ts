@@ -18,7 +18,7 @@ type EvaluationInput = Readonly<{
   retentionAfter?: string;
 }>;
 
-type AuditRecord = Readonly<{
+export type AuditRecord = Readonly<{
   auditId?: string;
   tenantId: string;
   evaluationId: string;
@@ -35,8 +35,33 @@ type AuditRecord = Readonly<{
   outcome: string;
   reason: string;
   scoreVersion: string;
+  policyVersion?: string;
   actorType: string;
+  actorId?: string;
   recordedAt?: string;
+}>;
+
+export type StoredAuditRecord = Readonly<{
+  audit_id: string;
+  tenant_id: string;
+  evaluation_id: string;
+  request_id: string;
+  crm_object_type: string;
+  crm_object_id: string;
+  field_name: string;
+  previous_value_json: string | null;
+  new_value_json: string | null;
+  source_name: string;
+  source_ref: string;
+  source_updated_at: string;
+  confidence: string;
+  outcome: string;
+  reason: string;
+  score_version: string;
+  policy_version: string;
+  actor_type: string;
+  actor_id: string;
+  recorded_at: string;
 }>;
 
 const nonEmpty = (value: string, name: string) => {
@@ -192,16 +217,49 @@ export class RuntimeStore {
       INSERT INTO writeback_audit_records (
         audit_id, tenant_id, evaluation_id, request_id, crm_object_type, crm_object_id, field_name,
         previous_value_json, new_value_json, source_name, source_ref, source_updated_at, confidence,
-        outcome, reason, score_version, actor_type, recorded_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        outcome, reason, score_version, policy_version, actor_type, actor_id, recorded_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       auditId, input.tenantId, input.evaluationId, input.requestId, input.crmObjectType, input.crmObjectId,
       input.fieldName, input.previousValue === undefined ? null : json(input.previousValue),
       input.newValue === undefined ? null : json(input.newValue), input.sourceName, input.sourceRef,
-      input.sourceUpdatedAt, input.confidence, input.outcome, input.reason, input.scoreVersion, input.actorType,
+      input.sourceUpdatedAt, input.confidence, input.outcome, input.reason, input.scoreVersion, input.policyVersion ?? input.scoreVersion, input.actorType, input.actorId ?? input.actorType,
       input.recordedAt ?? new Date().toISOString()
     );
     return auditId;
+  }
+
+  getAuditRecord(auditId: string) {
+    return this.database.prepare("SELECT * FROM writeback_audit_records WHERE audit_id = ?").get(auditId) as StoredAuditRecord | undefined;
+  }
+
+  listWrittenAuditRecords(tenantId: string, evaluationId: string) {
+    return this.database.prepare(`
+      SELECT audit.* FROM writeback_audit_records audit
+      LEFT JOIN rollback_links link ON link.original_audit_id = audit.audit_id
+      WHERE audit.tenant_id = ? AND audit.evaluation_id = ? AND audit.outcome = 'Written'
+        AND audit.audit_id NOT LIKE 'rollback:%' AND link.original_audit_id IS NULL
+      ORDER BY audit.recorded_at, audit.audit_id
+    `).all(tenantId, evaluationId) as StoredAuditRecord[];
+  }
+
+  appendRollbackLink(rollbackId: string, tenantId: string, evaluationId: string, originalAuditId: string, rollbackAuditId: string) {
+    this.database.prepare(`
+      INSERT INTO rollback_links (rollback_id, tenant_id, evaluation_id, original_audit_id, rollback_audit_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(rollbackId, tenantId, evaluationId, originalAuditId, rollbackAuditId, new Date().toISOString());
+    return rollbackId;
+  }
+
+  getRollbackLink(rollbackId: string) {
+    return this.database.prepare("SELECT * FROM rollback_links WHERE rollback_id = ?").get(rollbackId) as Readonly<{
+      rollback_id: string;
+      tenant_id: string;
+      evaluation_id: string;
+      original_audit_id: string;
+      rollback_audit_id: string;
+      created_at: string;
+    }> | undefined;
   }
 
   appendGroundingAudit(tenantId: string, explanation: GroundedExplanation, claims: GroundedClaim[], audit: GroundingAudit) {

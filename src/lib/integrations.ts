@@ -1,4 +1,4 @@
-import { assertLeadPacket, hasWritebackEvidence, isWritebackEligible, type LeadPacket } from "./contextai.ts";
+import { assertLeadPacket } from "./contextai.ts";
 import {
   compileAllowedClaims,
   fallbackGroundedExplanation,
@@ -8,6 +8,8 @@ import {
 } from "./grounding.ts";
 import type { ScoredLeadPacket } from "./scoring.ts";
 import type { ScoringRunContext } from "./config.ts";
+import type { RuntimeStore } from "./persistence.ts";
+import { executeWriteback, type WritebackPlan, type WritebackPolicy } from "./writeback.ts";
 
 type Env = Record<string, string | undefined>;
 
@@ -195,29 +197,22 @@ export const getHubSpotContact = async (
 };
 
 export const writeHubSpotEnrichment = async (
-  lead: LeadPacket,
-  contactId: string,
-  properties: Record<string, string>,
-  allowedProperties: readonly string[],
-  config = hubSpotConfigFromEnv()
-) => {
-  assertLeadPacket(lead);
-  if (Object.keys(properties).length === 0) throw new Error("No HubSpot properties to write");
-  if (!isWritebackEligible(lead)) throw new Error("Lead is not eligible for CRM writeback");
-  const blocked = Object.keys(properties).filter((property) => !allowedProperties.includes(property));
-  if (blocked.length > 0) throw new Error(`HubSpot properties are not allowlisted: ${blocked.join(", ")}`);
-  const unsupported = Object.entries(properties)
-    .filter(([property, value]) => !hasWritebackEvidence(lead, property, value))
-    .map(([property]) => property);
-  if (unsupported.length > 0) throw new Error(`HubSpot properties lack eligible evidence: ${unsupported.join(", ")}`);
-  const response = await fetch(`https://api.hubapi.com/crm/v3/objects/contacts/${contactId}`, {
-    method: "PATCH",
-    headers: {
-      "Authorization": `Bearer ${config.accessToken}`,
-      "Content-Type": "application/json"
-    },
-    signal: AbortSignal.timeout(timeoutMs),
-    body: JSON.stringify({ properties })
-  });
-  return readJson<HubSpotContact>(response);
-};
+  plan: WritebackPlan,
+  options: Readonly<{ store: RuntimeStore; tenantId: string; actorType: string; actorId: string; policy: WritebackPolicy; mode?: "dry-run" | "live"; authorizedLiveWrite?: boolean }>,
+  config?: HubSpotConfig
+) => executeWriteback(plan, {
+  ...options,
+  write: async ({ object, objectId, properties }) => {
+    const serialized = Object.fromEntries(Object.entries(properties).map(([name, value]) => [name, Array.isArray(value) ? value.join(";") : String(value)]));
+    const response = await fetch(`https://api.hubapi.com/crm/v3/objects/${object === "contact" ? "contacts" : "companies"}/${objectId}`, {
+      method: "PATCH",
+      headers: {
+        "Authorization": `Bearer ${(config ?? hubSpotConfigFromEnv()).accessToken}`,
+        "Content-Type": "application/json"
+      },
+      signal: AbortSignal.timeout(timeoutMs),
+      body: JSON.stringify({ properties: serialized })
+    });
+    await readJson<HubSpotContact>(response);
+  }
+});
