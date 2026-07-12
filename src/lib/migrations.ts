@@ -246,6 +246,22 @@ export const migrations: readonly Migration[] = [
       WHEN EXISTS (SELECT 1 FROM grounding_audit_records WHERE grounding_audit_id = NEW.grounding_audit_id)
       BEGIN SELECT RAISE(ABORT, 'grounding audit records are append-only'); END;
     `
+  },
+  {
+    version: 5,
+    name: "immutable rollback links",
+    sql: `
+      ALTER TABLE writeback_audit_records ADD COLUMN policy_version TEXT NOT NULL DEFAULT 'legacy';
+      CREATE UNIQUE INDEX rollback_links_original_audit ON rollback_links (original_audit_id);
+      CREATE TRIGGER rollback_links_no_update
+      BEFORE UPDATE ON rollback_links BEGIN SELECT RAISE(ABORT, 'rollback links are append-only'); END;
+      CREATE TRIGGER rollback_links_no_delete
+      BEFORE DELETE ON rollback_links BEGIN SELECT RAISE(ABORT, 'rollback links are append-only'); END;
+      CREATE TRIGGER rollback_links_no_duplicate
+      BEFORE INSERT ON rollback_links
+      WHEN EXISTS (SELECT 1 FROM rollback_links WHERE rollback_id = NEW.rollback_id)
+      BEGIN SELECT RAISE(ABORT, 'rollback links are append-only'); END;
+    `
   }
 ];
 
