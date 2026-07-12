@@ -89,7 +89,7 @@ export function createPilotReport(
     ? new Set(allEvents.filter(({ configVersion }) => configVersion === filters.configVersion).map(({ evaluationId }) => evaluationId))
     : null;
 
-  const candidateEvaluations = (database.prepare(`
+  const windowEvaluations = (database.prepare(`
     SELECT er.evaluation_id, er.lead_id, er.packet_json, er.completed_at,
       pp.rep_id, pp.cohort, pp.team_id
     FROM evaluation_runs er
@@ -111,29 +111,37 @@ export function createPilotReport(
     teamId: row.team_id
   })).sort((left, right) => Date.parse(left.completedAt) - Date.parse(right.completedAt) || left.evaluationId.localeCompare(right.evaluationId)).filter((evaluation) => {
     const at = Date.parse(evaluation.completedAt);
-    return (from === undefined || at >= from) && (to === undefined || at <= to) &&
+    return (from === undefined || at >= from) && (to === undefined || at <= to);
+  });
+  const allIndexes = firstBy(windowEvaluations, ({ leadId }) => leadId);
+  const matchesSegments = (evaluation: Evaluation) =>
       (!filters.cohort || evaluation.cohort === filters.cohort) &&
       (!filters.teamId || evaluation.teamId === filters.teamId) &&
       (!filters.repId || evaluation.repId === filters.repId) &&
       (!filters.scoreVersion || evaluation.packet.score_version === filters.scoreVersion) &&
       (!filters.source || evaluation.packet.crm_context.source === filters.source) &&
       (!configEvaluations || configEvaluations.has(evaluation.evaluationId));
-  });
-  const candidateIndexes = firstBy(candidateEvaluations, ({ leadId }) => leadId);
+  const candidateEvaluations = windowEvaluations.filter(matchesSegments);
   const evaluations = candidateEvaluations.filter((evaluation) => !filters.band || evaluation.packet.priority_band === filters.band);
 
   const evaluationIds = new Set(evaluations.map(({ evaluationId }) => evaluationId));
   const events = allEvents.filter((event) => evaluationIds.has(event.evaluationId) &&
     (!filters.configVersion || event.configVersion === filters.configVersion));
   const byEvaluation = new Map(evaluations.map((evaluation) => [evaluation.evaluationId, evaluation]));
-  const indexEvaluations = new Map([...candidateIndexes].filter(([, evaluation]) => !filters.band || evaluation.packet.priority_band === filters.band));
+  const indexEvaluations = new Map([...allIndexes].filter(([, evaluation]) => matchesSegments(evaluation) && (!filters.band || evaluation.packet.priority_band === filters.band)));
   const indexEvaluationIds = new Set([...indexEvaluations.values()].map(({ evaluationId }) => evaluationId));
   const eventRuns = events.filter((event): event is Extract<PilotEvent, { name: "evaluation.run" }> => event.name === "evaluation.run");
   const runByEvaluation = firstBy(eventRuns, ({ evaluationId }) => evaluationId);
-  const leadsByBand = Object.fromEntries(bands.map((band) => [band, [...runByEvaluation.values()].filter(({ data }) => data.priorityBand === band).length]));
+  const indexRuns = new Map([...indexEvaluations].flatMap(([leadId, { evaluationId }]) => {
+    const run = runByEvaluation.get(evaluationId);
+    return run ? [[leadId, run] as const] : [];
+  }));
+  const leadsByBand = Object.fromEntries(bands.map((band) => [band, [...indexRuns.values()].filter(({ data }) => data.priorityBand === band).length]));
 
-  const shown = firstBy(events.filter((event): event is Extract<PilotEvent, { name: "score.shown" }> => event.name === "score.shown" && (!filters.promptVersion || event.promptVersion === filters.promptVersion)), ({ evaluationId }) => evaluationId);
-  const allDispositionEvents = events.filter((event): event is Extract<PilotEvent, { name: "recommendation.disposition" }> => event.name === "recommendation.disposition" && (!filters.promptVersion || event.promptVersion === filters.promptVersion));
+  const controlRecommendationExposure = new Set(events.filter((event) => ["score.shown", "recommendation.disposition"].includes(event.name) && byEvaluation.get(event.evaluationId)?.cohort === "control").map(({ evaluationId }) => evaluationId));
+  const recommendationEvents = events.filter((event) => byEvaluation.get(event.evaluationId)?.cohort !== "control");
+  const shown = firstBy(recommendationEvents.filter((event): event is Extract<PilotEvent, { name: "score.shown" }> => event.name === "score.shown" && (!filters.promptVersion || event.promptVersion === filters.promptVersion)), ({ evaluationId }) => evaluationId);
+  const allDispositionEvents = recommendationEvents.filter((event): event is Extract<PilotEvent, { name: "recommendation.disposition" }> => event.name === "recommendation.disposition" && (!filters.promptVersion || event.promptVersion === filters.promptVersion));
   const dispositionEvents = allDispositionEvents.filter((event) => {
     const score = shown.get(event.evaluationId);
     return score && eventAt(event) >= eventAt(score) && eventAt(event) - eventAt(score) <= day;
@@ -170,15 +178,19 @@ export function createPilotReport(
     (!filters.cohort || participant.cohort === filters.cohort) &&
     (!filters.teamId || participant.team_id === filters.teamId) &&
     (!filters.repId || participant.rep_id === filters.repId) &&
-    (to === undefined || Date.parse(participant.active_from!) <= to) &&
+    Date.parse(participant.active_from!) <= (to ?? generated) &&
     (from === undefined || participant.active_to === null || Date.parse(participant.active_to) >= from)
   );
   const enrolledReps = new Set(participants.map(({ rep_id }) => rep_id!));
   const meetingsByRep: Record<string, number> = Object.fromEntries([...enrolledReps].map((repId) => [repId, 0]));
   let meetingsMissingOwner = 0;
+  let attributedMeetings = 0;
   for (const event of meetings.values()) {
     const repId = byEvaluation.get(event.evaluationId)?.repId;
-    if (repId) meetingsByRep[repId] = (meetingsByRep[repId] ?? 0) + 1;
+    if (repId) {
+      meetingsByRep[repId] = (meetingsByRep[repId] ?? 0) + 1;
+      attributedMeetings++;
+    }
     else meetingsMissingOwner++;
   }
   const matured = [...indexEvaluations.values()].filter(({ evaluationId }) => {
@@ -252,12 +264,13 @@ export function createPilotReport(
     });
   }).map(({ evaluationId }) => evaluationId));
   const hotRuns = new Set([...indexEvaluations.values()].filter(({ evaluationId }) => runByEvaluation.get(evaluationId)?.data.priorityBand === "Hot").map(({ evaluationId }) => evaluationId));
-  const missingEvaluationRuns = evaluations.length - runByEvaluation.size;
+  const missingEvaluationRuns = indexEvaluations.size - indexRuns.size;
   const missingOwnerSnapshots = evaluations.filter(({ repId }) => repId === null).length;
   const caveats = [
     ...(missingEvaluationRuns ? [`${missingEvaluationRuns} evaluation(s) lack evaluation.run telemetry; missing data is excluded, not counted as zero.`] : []),
     ...(missingOwnerSnapshots ? [`${missingOwnerSnapshots} evaluation(s) lack a frozen owner snapshot; rep and cohort metrics are incomplete.`] : []),
     ...(meetingsMissingOwner ? [`${meetingsMissingOwner} meeting(s) lack a frozen owner snapshot.`] : []),
+    ...(controlRecommendationExposure.size ? [`${controlRecommendationExposure.size} control evaluation(s) emitted recommendation exposure; cohort leakage requires review.`] : []),
     ...(lateActions ? [`${lateActions} first action(s) occurred outside the approved 24-hour research window.`] : []),
     ...(invalidEvents ? [`${invalidEvents} invalid stored event(s) were excluded.`] : []),
     ...(!evaluations.length ? ["No evaluations match this tenant and filter window; metrics are unavailable, not zero."] : []),
@@ -266,14 +279,14 @@ export function createPilotReport(
 
   return {
     metadata: { metricVersion: pilotMetricVersion, tenantId, filters, window: { from: filters.from ?? null, to: filters.to ?? null }, generatedAt, caveats },
-    leads: { processed: runByEvaluation.size, byBand: leadsByBand },
+    leads: { processed: indexRuns.size, byBand: leadsByBand },
     recommendations: {
       accepted: { numerator: accepted, denominator: dispositions.size, rate: ratio(accepted, dispositions.size) },
       overridden: { numerator: overridden, denominator: dispositions.size, rate: ratio(overridden, dispositions.size) },
       coverage: { numerator: dispositions.size, denominator: shown.size, rate: ratio(dispositions.size, shown.size) }
     },
     researchTime: { observed: researchMinutes.length, eligibleViews: views.size, censored: views.size - researchMinutes.length, coverage: ratio(researchMinutes.length, views.size), medianMinutes: median(researchMinutes) },
-    meetings: { total: meetings.size, enrolledReps: enrolledReps.size, perRep: ratio(meetings.size, enrolledReps.size), byRep: meetingsByRep },
+    meetings: { total: attributedMeetings, enrolledReps: enrolledReps.size, perRep: ratio(attributedMeetings, enrolledReps.size), byRep: meetingsByRep },
     conversion: conversions,
     hotFalsePositives: { numerator: falsePositiveLeads.size, denominator: hotLeads.size, rate: ratio(falsePositiveLeads.size, hotLeads.size), missingOutcomes: maturedHot.filter(({ evaluationId }) => ![...outcomes.values()].some((event) => event.evaluationId === evaluationId)).length },
     crmCompleteness: { numerator: completeRecords, denominator: indexEvaluations.size, rate: ratio(completeRecords, indexEvaluations.size), fieldCoverage: coreFieldCoverage },
@@ -289,6 +302,7 @@ export function createPilotReport(
       missingOwnerSnapshots,
       duplicateDispositionEvents: allDispositionEvents.length - dispositions.size,
       duplicateMeetingEvents: meetingEvents.length - meetings.size,
+      controlRecommendationExposure: controlRecommendationExposure.size,
       lateActions,
       invalidEvents,
       caveats
@@ -299,8 +313,9 @@ export function createPilotReport(
 const csvCell = (value: unknown) => `"${String(value ?? "").replaceAll('"', '""')}"`;
 
 export function exportPilotReport(report: ReturnType<typeof createPilotReport>) {
-  const rows: unknown[][] = [["metric_version", "tenant_id", "cohort", "prompt_version", "window_from", "window_to", "generated_at", "metric", "numerator", "denominator", "value", "caveats"]];
-  const metadata = [report.metadata.metricVersion, report.metadata.tenantId, report.metadata.filters.cohort ?? "all", report.metadata.filters.promptVersion ?? "all", report.metadata.window.from ?? "", report.metadata.window.to ?? "", report.metadata.generatedAt];
+  const rows: unknown[][] = [["metric_version", "tenant_id", "cohort", "team_id", "rep_id", "score_version", "config_version", "prompt_version", "source", "band", "window_from", "window_to", "generated_at", "metric", "numerator", "denominator", "value", "caveats"]];
+  const filters = report.metadata.filters;
+  const metadata = [report.metadata.metricVersion, report.metadata.tenantId, filters.cohort ?? "all", filters.teamId ?? "all", filters.repId ?? "all", filters.scoreVersion ?? "all", filters.configVersion ?? "all", filters.promptVersion ?? "all", filters.source ?? "all", filters.band ?? "all", report.metadata.window.from ?? "", report.metadata.window.to ?? "", report.metadata.generatedAt];
   const caveats = report.metadata.caveats.join(" ");
   const add = (metric: string, numerator: number | null, denominator: number | null, value: number | null) => rows.push([...metadata, metric, numerator, denominator, value, caveats]);
   add("leads_processed", report.leads.processed, report.leads.processed, report.leads.processed);

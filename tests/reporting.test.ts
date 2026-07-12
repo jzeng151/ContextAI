@@ -72,6 +72,7 @@ test("pilot reports reconcile tenant-scoped events, filters, duplicates, windows
     assert.equal(promptV2.recommendations.overridden.rate, 1);
     assert.match(exportPilotReport(promptV2), /"prompt_version"/);
     assert.match(exportPilotReport(promptV2), /"grounding-v2"/);
+    assert.match(exportPilotReport(report).split("\n")[0]!, /"team_id","rep_id","score_version","config_version"/);
     assert.equal(createPilotReport(store.database, "tenant-2", {}, "2026-04-01T00:00:00.000Z").dataQuality.status, "no_data");
     assert.equal(createPilotReport(store.database, "tenant-1", { cohort: "control" }, "2026-04-01T00:00:00.000Z").leads.processed, 0);
     assert.equal(createPilotReport(store.database, "tenant-1", { configVersion: "wrong" }, "2026-04-01T00:00:00.000Z").leads.processed, 0);
@@ -150,12 +151,13 @@ test("pilot metric denominators honor index runs, active enrollment, attribution
     event({ ...base(outsideEnrollment), idempotencyKey: "outside-run", occurredAt: "2026-01-03T09:00:00.000Z", name: "evaluation.run", data: { outcome: "complete", priorityScore: outsideEnrollment.priority_score, priorityBand: outsideEnrollment.priority_band } });
 
     const report = createPilotReport(store.database, "tenant-1", { cohort: "contextai" }, "2026-04-01T00:00:00.000Z");
-    assert.equal(report.leads.processed, 2);
-    assert.equal(report.leads.byBand.Hot, 2);
+    assert.equal(report.leads.processed, 1);
+    assert.equal(report.leads.byBand.Hot, 1);
     assert.equal(report.leads.byBand.Warm, 0);
     assert.equal(report.researchTime.medianMinutes, 60);
     assert.equal(report.researchTime.eligibleViews, 1);
     assert.equal(report.meetings.total, 1);
+    assert.equal(report.meetings.enrolledReps, 1);
     assert.equal(report.hotFalsePositives.rate, 0);
     assert.equal(report.writebacks.rate, 0.5);
     assert.equal(report.writebacks.byField.contact_title!.Written, 2);
@@ -185,10 +187,53 @@ test("band filters cannot promote a later rescore to the contact index", () => {
     event({ ...base(hotRescore), evidenceRefs: ["gn-intent"], idempotencyKey: "hot-weak", occurredAt: "2026-01-02T09:00:01.000Z", name: "source.contribution", data: { sourceType: "engagement", contribution: "supporting", weakSignal: true, hotMaking: true } });
 
     const report = createPilotReport(store.database, "tenant-1", { band: "Hot" }, "2026-04-01T00:00:00.000Z");
-    assert.equal(report.leads.processed, 1);
+    assert.equal(report.leads.processed, 0);
     assert.equal(report.weakSignalContribution.denominator, 0);
     assert.equal(report.weakSignalContribution.rate, null);
     assert.equal(report.conversion.Hot.denominator, 0);
+  } finally {
+    store.close();
+  }
+});
+
+test("contact indexes preserve their original cohort and ownerless meetings stay out of per-rep rates", () => {
+  const store = new RuntimeStore(":memory:");
+  try {
+    const controlIndex = { ...structuredClone(leads[0]!), evaluation_id: "eval-transfer-a-control", request_id: "request-transfer-control", lead_id: "lead-transfer" };
+    const contextRescore = { ...structuredClone(leads[0]!), evaluation_id: "eval-transfer-z-context", request_id: "request-transfer-context", lead_id: "lead-transfer" };
+    const ownerless = { ...structuredClone(leads[1]!), evaluation_id: "eval-ownerless", request_id: "request-ownerless", lead_id: "lead-ownerless" };
+    store.saveTenant("tenant-1", "Pilot tenant");
+    store.saveConfigVersion("tenant-1", defaultConfigVersion);
+    for (const [idempotencyKey, packet] of [["control", controlIndex], ["context", contextRescore], ["ownerless", ownerless]] as const) {
+      store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey, packet });
+    }
+    store.registerPilotParticipant({ tenantId: "tenant-1", repId: "rep-control", cohort: "control", teamId: "team-1", activeFrom: "2026-01-01T00:00:00.000Z" });
+    store.registerPilotParticipant({ tenantId: "tenant-1", repId: "rep-context", cohort: "contextai", teamId: "team-1", activeFrom: "2026-01-01T00:00:00.000Z" });
+    store.recordEvaluationOwner({ tenantId: "tenant-1", evaluationId: controlIndex.evaluation_id, repId: "rep-control" });
+    store.recordEvaluationOwner({ tenantId: "tenant-1", evaluationId: contextRescore.evaluation_id, repId: "rep-context" });
+    const base = (packet: typeof controlIndex) => ({
+      tenantId: "tenant-1", requestId: packet.request_id, evaluationId: packet.evaluation_id, leadId: packet.lead_id,
+      accountId: packet.account_id, actorType: "system" as const, actorId: "system-1", scoreVersion: packet.score_version,
+      configVersion: packet.score_version, promptVersion: "grounding-v1", evidenceRefs: [] as string[], retentionClass: "pilot_analytics_12_months" as const
+    });
+    const event = <T extends PilotEvent>(value: T) => store.recordEvent(value);
+    event({ ...base(controlIndex), idempotencyKey: "control-run", occurredAt: "2026-01-01T09:00:00.000Z", name: "evaluation.run", data: { outcome: "complete", priorityScore: 94, priorityBand: "Hot" } });
+    event({ ...base(controlIndex), idempotencyKey: "control-shown", occurredAt: "2026-01-01T09:01:00.000Z", name: "score.shown", data: { priorityScore: 94, priorityBand: "Hot", surface: "dashboard" } });
+    event({ ...base(contextRescore), idempotencyKey: "context-run", occurredAt: "2026-01-02T09:00:00.000Z", name: "evaluation.run", data: { outcome: "complete", priorityScore: 94, priorityBand: "Hot" } });
+    event({ ...base(ownerless), idempotencyKey: "ownerless-run", occurredAt: "2026-01-01T09:00:00.000Z", name: "evaluation.run", data: { outcome: "complete", priorityScore: ownerless.priority_score, priorityBand: ownerless.priority_band } });
+    event({ ...base(ownerless), idempotencyKey: "ownerless-meeting", occurredAt: "2026-01-20T09:00:00.000Z", name: "meeting.attribution", data: { meetingId: "meeting-ownerless", attribution: "crm_association" } });
+
+    const contextReport = createPilotReport(store.database, "tenant-1", { cohort: "contextai" }, "2026-04-01T00:00:00.000Z");
+    assert.equal(contextReport.leads.processed, 0);
+    assert.equal(contextReport.crmCompleteness.denominator, 0);
+    const report = createPilotReport(store.database, "tenant-1", {}, "2026-04-01T00:00:00.000Z");
+    assert.equal(report.leads.processed, 2);
+    assert.equal(report.meetings.total, 0);
+    assert.equal(report.meetings.perRep, 0);
+    assert.equal(report.dataQuality.controlRecommendationExposure, 1);
+    assert.equal(report.recommendations.coverage.denominator, 0);
+    assert.match(report.dataQuality.caveats.join(" "), /cohort leakage/i);
+    assert.match(report.dataQuality.caveats.join(" "), /lack a frozen owner snapshot/i);
   } finally {
     store.close();
   }
