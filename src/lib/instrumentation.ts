@@ -25,7 +25,7 @@ type EventData = {
   "lead.viewed": { surface: "dashboard" | "crm_widget" };
   "action.first_meaningful": { actionType: ActionType };
   "recommendation.disposition": { disposition: "accepted" | "ignored" | "overridden"; actionType?: ActionType };
-  "source.contribution": { sourceType: SourceType; contribution: "primary" | "supporting"; weakSignal: boolean };
+  "source.contribution": { sourceType: SourceType; contribution: "primary" | "supporting"; weakSignal: boolean; hotMaking: boolean };
   "writeback.outcome": { writebackId: string; outcome: WritebackOutcomeStatus; fieldName?: string };
   "writeback.edit": { writebackId: string; fieldName: string };
   "writeback.rollback": { writebackId: string; rollbackId: string; fieldName: string };
@@ -69,7 +69,7 @@ const requiredEventData: Record<PilotEventName, readonly string[]> = {
   "lead.viewed": ["surface"],
   "action.first_meaningful": ["actionType"],
   "recommendation.disposition": ["disposition"],
-  "source.contribution": ["sourceType", "contribution", "weakSignal"],
+  "source.contribution": ["sourceType", "contribution", "weakSignal", "hotMaking"],
   "writeback.outcome": ["writebackId", "outcome"],
   "writeback.edit": ["writebackId", "fieldName"],
   "writeback.rollback": ["writebackId", "rollbackId", "fieldName"],
@@ -82,7 +82,7 @@ const allowedEventData: Partial<Record<PilotEventName, Record<string, readonly u
   "lead.viewed": { surface: ["dashboard", "crm_widget"] },
   "action.first_meaningful": { actionType: ["call", "email", "sequence", "manual_enrichment", "nurture", "disqualify"] },
   "recommendation.disposition": { disposition: ["accepted", "ignored", "overridden"], actionType: ["call", "email", "sequence", "manual_enrichment", "nurture", "disqualify", undefined] },
-  "source.contribution": { sourceType: ["crm", "enrichment", "intent", "engagement", "public_signal", "validation"], contribution: ["primary", "supporting"], weakSignal: [true, false] },
+  "source.contribution": { sourceType: ["crm", "enrichment", "intent", "engagement", "public_signal", "validation"], contribution: ["primary", "supporting"], weakSignal: [true, false], hotMaking: [true, false] },
   "writeback.outcome": { outcome: ["Written", "Skipped", "Flagged for Review", "Blocked", "Data unavailable"] },
   "meeting.attribution": { attribution: ["crm_association", "rep_reported"] },
   "outcome.attribution": { outcomeType: ["opportunity_created", "bad_fit", "disqualified"], attribution: ["crm_association", "rep_reported"] }
@@ -119,7 +119,7 @@ export function assertPilotEvent(value: unknown): asserts value is PilotEvent {
   const data = event.data as Record<string, unknown>;
   for (const field of requiredEventData[event.name as PilotEventName]) {
     if (!Object.hasOwn(data, field)) throw new Error(`${String(event.name)} data.${field} is required`);
-    if (field !== "priorityScore" && field !== "weakSignal") nonEmpty(data[field], `data.${field}`);
+    if (field !== "priorityScore" && field !== "weakSignal" && field !== "hotMaking") nonEmpty(data[field], `data.${field}`);
   }
   for (const [field, values] of Object.entries(allowedEventData[event.name as PilotEventName] ?? {})) {
     if (!values.includes(data[field])) throw new Error(`${String(event.name)} data.${field} is not supported`);
@@ -170,8 +170,8 @@ export const pilotMetricInputs = {
   accepted: { numerator: "distinct evaluations whose first recommendation disposition is accepted", denominator: "distinct evaluations with a recommendation disposition" },
   overridden: { numerator: "distinct evaluations whose first recommendation disposition is overridden", denominator: "distinct evaluations with a recommendation disposition" },
   firstMeaningfulAction: { value: "earliest action.first_meaningful occurredAt after lead.viewed for an evaluation" },
-  hotFalsePositive: { numerator: "distinct Hot evaluations with attributed bad_fit or disqualified outcomes", denominator: "distinct Hot score.shown evaluations" },
+  hotFalsePositive: { numerator: "distinct eligible contacts whose Hot index evaluation has an attributed bad_fit or disqualified outcome", denominator: "distinct eligible contacts with a Hot score.shown for their index evaluation" },
   coreField: { value: "a field listed in coreFields with current source-backed evidence no older than 90 days" },
   badWriteback: { numerator: "distinct Written writeback IDs later rolled back", denominator: "distinct writeback.outcome events with outcome=Written" },
-  weakSignalPrimaryDriver: { numerator: "distinct Hot evaluations with a primary weak source contribution", denominator: "distinct Hot evaluation.run events" }
+  weakSignalPrimaryDriver: { numerator: "distinct Hot index evaluations with a weak email-open source contribution marked hotMaking", denominator: "distinct Hot index evaluation.run events" }
 } as const;

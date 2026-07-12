@@ -24,7 +24,7 @@ Every event links to one tenant, request, evaluation, lead, nullable account, op
 | `lead.viewed` | surface |
 | `action.first_meaningful` | action type |
 | `recommendation.disposition` | accepted, ignored, or overridden; action type when known |
-| `source.contribution` | source type, primary/supporting contribution, weak-signal flag, evidence IDs |
+| `source.contribution` | source type, primary/supporting contribution, weak-signal flag, Hot-making flag, evidence IDs |
 | `writeback.outcome` | writeback ID, outcome, field when applicable |
 | `writeback.edit` | linked writeback ID and field |
 | `writeback.rollback` | linked writeback ID, rollback ID, and field |
@@ -32,6 +32,8 @@ Every event links to one tenant, request, evaluation, lead, nullable account, op
 | `outcome.attribution` | outcome ID, outcome type, and attribution basis |
 
 `action.first_meaningful` is the first observed call, email, sequence enrollment, manual enrichment, nurture, or disqualification after a lead view. ContextAI records these actions; it does not execute them.
+
+For `source.contribution`, `hotMaking` is true only for a Hot evaluation when deterministic scoring under the same score/config version produces a non-Hot band after removing the referenced contribution. It is false otherwise. A weak email-open contribution may be counted as Hot-making only when its evidence references resolve to normalized open evidence and that same-version counterfactual passes.
 
 ## Privacy and Retention
 
@@ -45,9 +47,9 @@ These measurable definitions are inputs to issue #18, which owns final pilot app
 
 - **Accepted / overridden:** numerator is distinct evaluations whose first disposition is the matching value; denominator is distinct evaluations with a disposition.
 - **First meaningful action:** earliest `action.first_meaningful` after `lead.viewed` for the evaluation.
-- **Hot false positive:** distinct Hot evaluations later attributed `bad_fit` or `disqualified`; denominator is distinct Hot `score.shown` evaluations.
+- **Hot false positive:** distinct eligible contacts whose Hot index evaluation is later attributed `bad_fit` or `disqualified`; denominator is distinct eligible contacts with a Hot `score.shown` for their index evaluation.
 - **Core field:** one of the exported `coreFields` with current, source-backed evidence no older than 90 days.
 - **Bad writeback:** distinct Written writeback IDs later rolled back; denominator is distinct Written writeback outcomes. An edit alone is diagnostic, not automatically bad.
-- **Weak-signal primary driver:** distinct Hot evaluations with a primary contribution marked weak; denominator is distinct Hot evaluation runs.
+- **Weak-signal primary driver:** distinct Hot index evaluations with a weak email-open contribution marked `hotMaking`; denominator is distinct Hot index evaluation runs.
 
 Meeting and other outcome rates use their attribution events and the cohort/window approved by issue #18. Reporting queries do not belong in producers or this recording boundary.
