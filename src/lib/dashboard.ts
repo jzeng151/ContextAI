@@ -1,5 +1,7 @@
 import type { LeadPacket } from "./contextai.ts";
 import { assertPilotEvent, type ActionType, type PilotEvent } from "./instrumentation.ts";
+import type { RuntimeStore } from "./persistence.ts";
+import type { RequestIdentity } from "./security.ts";
 
 export const dashboardPromptVersion = "grounding-v1";
 
@@ -91,3 +93,6 @@ export const dashboardViewEvents = (input: DashboardViewInput): PilotEvent[] => 
   events.forEach(assertPilotEvent);
   return events;
 };
+
+export const hubSpotDashboardPackets = (store: RuntimeStore, identity: RequestIdentity, contactIds: readonly string[]) =>
+  contactIds.flatMap((contactId) => store.getLatestEvaluationForCrmRecord(identity, "0-1", contactId)?.packet ?? []);

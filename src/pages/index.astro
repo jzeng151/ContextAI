@@ -1,5 +1,4 @@
 ---
-import { leads } from "../data/leads";
 import { dashboardPromptVersion } from "../lib/dashboard";
 import { defaultConfigVersion } from "../lib/config";
 import {
@@ -12,6 +11,20 @@ import {
   type LeadPacket,
   type ScoreBreakdown
 } from "../lib/contextai";
+
+const dashboardApiUrl = (import.meta.env.PUBLIC_CONTEXTAI_API_URL ?? "http://127.0.0.1:4000").replace(/\/$/, "");
+let leads: LeadPacket[] = [];
+let dashboardError = "";
+if (import.meta.env.DEV) {
+  try {
+    const response = await fetch(`${dashboardApiUrl}/dashboard`);
+    const result = await response.json() as { leads?: LeadPacket[]; error?: string };
+    if (!response.ok) throw new Error(result.error || "HubSpot dashboard request failed");
+    leads = result.leads ?? [];
+  } catch (error) {
+    dashboardError = error instanceof Error ? error.message : "HubSpot dashboard is unavailable";
+  }
+}
 
 const bandRank: Record<LeadPacket["priority_band"], number> = {
   Hot: 4,
@@ -108,7 +121,7 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
     <meta name="color-scheme" content="light" />
     <title>ContextAI Lead Triage</title>
   </head>
-  <body data-config-version={defaultConfigVersion.id} data-prompt-version={dashboardPromptVersion}>
+  <body data-api-origin={dashboardApiUrl} data-config-version={defaultConfigVersion.id} data-prompt-version={dashboardPromptVersion}>
     <a class="skip-link" href="#queue-workspace">Skip to lead queue</a>
     <div class="app-shell" data-app-shell>
       <aside class="app-nav" aria-label="ContextAI navigation">
@@ -117,7 +130,7 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
           <strong>ContextAI</strong>
         </a>
         <nav>
-          <button type="button" class="nav-item active" data-nav-view="today" aria-current="page"><span>Today</span><strong>{leads.length}</strong></button>
+          <button type="button" class="nav-item active" data-nav-view="today" aria-current="page"><span>HubSpot</span><strong>{leads.length}</strong></button>
           <button type="button" class="nav-item" data-nav-view="review"><span>Manual review</span><strong>{review}</strong></button>
           <button type="button" class="nav-item" data-nav-tab="run"><span>Runs</span><strong>{partial}</strong></button>
           <button type="button" class="nav-item" data-nav-tab="score"><span>Scoring</span></button>
@@ -126,16 +139,16 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
           <a class="nav-item" href="/admin"><span>Governance</span></a>
         </nav>
         <div class="nav-account">
-          <span aria-hidden="true">MC</span>
-          <p><strong>Maya Chen</strong><small>Pilot workspace</small></p>
+          <span aria-hidden="true">HS</span>
+          <p><strong>HubSpot</strong><small>Connected CRM</small></p>
         </div>
       </aside>
 
       <main class="queue-pane" id="queue-workspace" aria-labelledby="queue-title">
         <header class="queue-toolbar">
           <div>
-            <h1 id="queue-title">Today’s lead queue</h1>
-            <p>Morning schedule · {formatTimestamp(selected.evaluation_timestamp)} · {leads.length} evaluated</p>
+            <h1 id="queue-title">HubSpot lead queue</h1>
+            <p>{selected ? `Last analyzed ${formatTimestamp(selected.evaluation_timestamp)} · ${leads.length} evaluated` : "Refresh to analyze current HubSpot contacts"}</p>
           </div>
           <div class="toolbar-controls">
             <label class="search-control">
@@ -152,15 +165,15 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
                 <option value="Needs Manual Review">Manual review</option>
               </select>
             </label>
-            <button type="button" class="quiet-button" data-refresh-queue>Refresh</button>
+            <button type="button" class="quiet-button" data-refresh-queue>Refresh &amp; analyze</button>
           </div>
         </header>
 
-        <section class="run-summary" aria-label="Morning run summary">
+        <section class="run-summary" aria-label="HubSpot analysis summary">
           <p><strong>{hot}</strong><span>Hot leads</span></p>
           <p><strong>{review}</strong><span>Needs manual review</span></p>
           <p><strong>{partial}</strong><span>Partial source run</span></p>
-          <p class="run-complete"><strong>Run complete</strong><span>All required steps are terminal</span></p>
+          <p class="run-complete"><strong>{leads.length ? "Run complete" : "Ready to sync"}</strong><span>{leads.length ? "All required steps are terminal" : "Only HubSpot contacts appear"}</span></p>
         </section>
 
         <div class="queue-status" aria-live="polite">
@@ -211,17 +224,17 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
           ))}
         </ol>
 
-        <section class="empty-state" data-empty-state hidden>
-          <h2>No leads match these filters</h2>
-          <p>Clear the search and band filter to return to the full morning queue.</p>
-          <button type="button" class="primary-button" data-clear-filters>Clear filters</button>
+        <section class="empty-state" data-empty-state hidden={leads.length > 0}>
+          <h2>{dashboardError ? "HubSpot data is unavailable" : "No analyzed HubSpot contacts yet"}</h2>
+          <p>{dashboardError || "Choose Refresh & analyze to pull current contacts from HubSpot and run the evaluation pipeline."}</p>
+          <button type="button" class="primary-button" data-empty-refresh hidden={Boolean(dashboardError)}>Refresh &amp; analyze</button>
         </section>
       </main>
 
       <aside class="detail-pane" id="lead-detail" aria-label="Selected lead detail">
-        <section class="no-selection" data-no-selection hidden>
-          <h2>Select a lead</h2>
-          <p>Choose a visible lead to inspect its decision, evidence, CRM context, score, and run audit.</p>
+        <section class="no-selection" data-no-selection hidden={leads.length > 0}>
+          <h2>{leads.length ? "Select a lead" : "Waiting for HubSpot"}</h2>
+          <p>{leads.length ? "Choose a visible lead to inspect its decision, evidence, CRM context, score, and run audit." : "Refresh the queue to analyze current CRM contacts."}</p>
         </section>
 
         {queueLeads.map((lead, leadIndex) => {
@@ -367,7 +380,7 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
                 <section class="tab-panel audit-panel" role="tabpanel" id={`${lead.lead_id}-audit-panel`} aria-labelledby={`${lead.lead_id}-audit-tab`} data-panel="audit" hidden>
                   <header class="panel-heading"><div><h3>Audit view</h3><p>Plans, observed outcomes, and emitted UI events remain distinct.</p></div><strong>{lead.writeback_outcome.status}</strong></header>
                   <section class="writeback-pair"><div><span>Deterministic plan</span><strong>{lead.writeback_plan?.decision ?? "Data unavailable"}</strong><p>{lead.writeback_plan?.reason ?? "No plan was produced."}</p></div><div><span>Authoritative execution outcome</span><strong>{lead.writeback_outcome.status}</strong><p>{lead.writeback_outcome.reason}</p></div></section>
-                  <dl class="identifier-grid"><div><dt>Evaluation</dt><dd>{lead.evaluation_id}</dd></div><div><dt>Score / config</dt><dd>{lead.score_version} / {defaultConfigVersion.id}</dd></div><div><dt>Writeback recorded</dt><dd>{formatTimestamp(lead.writeback_outcome.recorded_at)}</dd></div><div><dt>Actor</dt><dd>System fixture</dd></div></dl>
+                  <dl class="identifier-grid"><div><dt>Evaluation</dt><dd>{lead.evaluation_id}</dd></div><div><dt>Score / config</dt><dd>{lead.score_version} / {defaultConfigVersion.id}</dd></div><div><dt>Writeback recorded</dt><dd>{formatTimestamp(lead.writeback_outcome.recorded_at)}</dd></div><div><dt>Actor</dt><dd>HubSpot analysis worker</dd></div></dl>
                   <section class="session-events"><h3>UI events emitted this session</h3><p>No telemetry endpoint is connected to this static surface. Valid #9 events are emitted through the browser boundary for the recorder to consume.</p><ol data-session-events><li>No rep outcome events emitted.</li></ol></section>
                 </section>
               </div>
@@ -416,7 +429,7 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
       packet: packets[leadId],
       tenantId: "pilot-workspace",
       actorType: "rep",
-      actorId: "rep-fixture-1",
+      actorId: "dashboard-user",
       configVersion: document.body.dataset.configVersion ?? "score-v0.1",
       occurredAt: new Date().toISOString(),
       idempotencySeed: `dashboard:${eventSessionId}:${packets[leadId].evaluation_id}:view`
@@ -573,7 +586,7 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
           actionType,
           tenantId: "pilot-workspace",
           actorType: "rep",
-          actorId: "rep-fixture-1",
+          actorId: "dashboard-user",
           configVersion: document.body.dataset.configVersion ?? "score-v0.1",
           occurredAt: new Date().toISOString(),
           idempotencySeed: `dashboard:${eventSessionId}:${packet.evaluation_id}:${String(disposition)}:${actionType ?? "none"}`
@@ -596,28 +609,45 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
     });
   });
 
-  document.querySelector<HTMLButtonElement>("[data-refresh-queue]")?.addEventListener("click", (event) => {
-    const button = event.currentTarget as HTMLButtonElement;
+  const refreshQueue = async (button: HTMLButtonElement) => {
     const loading = document.querySelector<HTMLElement>("[data-loading-ledger]");
     const table = document.querySelector<HTMLElement>("[data-queue-table]");
     const list = document.querySelector<HTMLElement>("[data-mobile-list]");
+    const previous = button.textContent;
     button.disabled = true;
+    button.textContent = "Analyzing…";
     shell?.classList.add("is-loading");
     queuePane?.setAttribute("aria-busy", "true");
     if (loading) loading.hidden = false;
     if (table) table.hidden = true;
     if (list) list.hidden = true;
-    setTimeout(() => {
+    announce("Pulling contacts from HubSpot and running analysis.");
+    try {
+      const apiOrigin = document.body.dataset.apiOrigin?.replace(/\/$/, "") ?? "";
+      const sessionToken = sessionStorage.getItem("contextai.session-token");
+      const response = await fetch(`${apiOrigin}/dashboard/refresh`, {
+        method: "POST",
+        headers: sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {},
+      });
+      const result = await response.json() as { analyzed?: number; failed?: number; error?: string };
+      if (!response.ok) throw new Error(result.error || "HubSpot analysis failed");
+      announce(`Analyzed ${result.analyzed ?? 0} HubSpot contacts${result.failed ? `; ${result.failed} failed` : ""}.`);
+      location.reload();
+    } catch (error) {
       if (loading) loading.hidden = true;
       if (table) table.hidden = false;
       if (list) list.hidden = false;
       queuePane?.setAttribute("aria-busy", "false");
       shell?.classList.remove("is-loading");
       button.disabled = false;
+      button.textContent = previous;
       applyFilters();
-      announce("Morning queue refreshed from fixture data.");
-    }, 650);
-  });
+      announce(error instanceof Error ? error.message : "HubSpot analysis failed");
+    }
+  };
+  document.querySelectorAll<HTMLButtonElement>("[data-refresh-queue], [data-empty-refresh]").forEach((button) =>
+    button.addEventListener("click", () => refreshQueue(button))
+  );
 
   const hash = new URLSearchParams(location.hash.slice(1));
   const hashLead = hash.get("lead");

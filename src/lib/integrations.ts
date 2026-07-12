@@ -266,6 +266,17 @@ export const listHubSpotContacts = async (
   return hubSpotRequest<HubSpotContactList>(url.toString(), config);
 };
 
+export const listAllHubSpotContacts = async (config = hubSpotConfigFromEnv()) => {
+  const contacts: HubSpotContact[] = [];
+  let after: string | undefined;
+  do {
+    const page = await listHubSpotContacts(100, config, after);
+    contacts.push(...page.results);
+    after = page.paging?.next?.after;
+  } while (after);
+  return contacts;
+};
+
 export const getHubSpotContact = async (
   contactId: string,
   config = hubSpotConfigFromEnv()

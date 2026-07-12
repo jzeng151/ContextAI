@@ -3,10 +3,13 @@ import test from "node:test";
 import { leads } from "../src/data/leads.ts";
 import {
   dashboardOutcomeEvents,
+  hubSpotDashboardPackets,
   dashboardPromptVersion,
   dashboardViewEvents
 } from "../src/lib/dashboard.ts";
+import { defaultConfigVersion } from "../src/lib/config.ts";
 import { assertPilotEvent } from "../src/lib/instrumentation.ts";
+import { RuntimeStore } from "../src/lib/persistence.ts";
 
 test("dashboard outcomes emit contract-safe disposition and optional action events", () => {
   const packet = leads[0]!;
@@ -103,4 +106,21 @@ test("dashboard views emit one idempotent view and score event from a minimal pa
   events.forEach(assertPilotEvent);
   assert.deepEqual(dashboardViewEvents(input), events);
   assert.ok(!JSON.stringify(events).includes(lead.lead_identity.email));
+});
+
+test("live dashboard excludes evaluations that are not current HubSpot contacts", () => {
+  const store = new RuntimeStore(":memory:");
+  const identity = { requestId: "dashboard-live", tenantId: "tenant-live", actorId: "admin", role: "revops_admin" as const };
+  store.saveTenant(identity.tenantId, "Live dashboard");
+  store.saveConfigVersion(identity, defaultConfigVersion);
+  const current = structuredClone(leads[0]!);
+  current.lead_id = "hubspot-contact-1";
+  current.evaluation_id = "hubspot-evaluation-1";
+  const fixtureOnly = structuredClone(leads[1]!);
+  fixtureOnly.evaluation_id = "fixture-evaluation";
+  store.saveEvaluation({ tenantId: identity.tenantId, idempotencyKey: "current", packet: current });
+  store.saveEvaluation({ tenantId: identity.tenantId, idempotencyKey: "fixture", packet: fixtureOnly });
+
+  assert.deepEqual(hubSpotDashboardPackets(store, identity, ["hubspot-contact-1"]).map(({ lead_id }) => lead_id), ["hubspot-contact-1"]);
+  store.close();
 });
