@@ -82,6 +82,7 @@ test("manual-review decisions are authorized, audited, idempotent, and visible",
     assert.equal(resolved.resolved_by, "admin-1");
     assert.equal(resolved.resolution_note, "Verified in CRM.");
     assert.ok((store.database.prepare("SELECT count(*) AS count FROM access_audit_records WHERE action = 'review.decide'").get() as { count: number }).count >= 3);
+    assert.equal((store.database.prepare("SELECT count(*) AS count FROM access_audit_records WHERE action = 'review.decide' AND outcome = 'allowed'").get() as { count: number }).count, 2);
   } finally {
     store.close();
   }
@@ -118,10 +119,15 @@ test("governance audit and integration health expose pilot provenance without se
 
 test("admin UI exposes labeled config, review, audit, rollback, and integration controls", () => {
   const page = readFileSync(new URL("../src/pages/admin.astro", import.meta.url), "utf8");
+  const server = readFileSync(new URL("../src/server.ts", import.meta.url), "utf8");
   for (const marker of ["Draft configuration", "Version history", "Manual-review queue", "Decision and writeback audit", "Integration health", "data-rollback-field", "data-rollback-lead"]) {
     assert.match(page, new RegExp(marker));
   }
   assert.match(page, /<label><span>Contact fields requiring approval<\/span>/);
   assert.match(page, /role="alert"/);
   assert.match(page, /aria-live="polite"/);
+  assert.match(page, /fetch\(`\/admin\/reviews\/\$\{encodeURIComponent\(reviewId\)\}\/decision`/);
+  assert.match(page, /contextai\.session-token/);
+  assert.match(server, /authenticateBearer\(request\.headers\.authorization\)/);
+  assert.match(server, /store\.decideReviewItem/);
 });

@@ -344,6 +344,25 @@ export class RuntimeStore {
     return versions;
   }
 
+  getActiveConfigVersion(identity: RequestIdentity) {
+    assertRequestIdentity(identity);
+    if (identity.role === "rep") {
+      this.recordAccess(identity, "config.active", "tenant", identity.tenantId, "denied");
+      throw new Error("Rep access denied");
+    }
+    const row = this.database.prepare(`
+      SELECT status, config_json FROM config_versions WHERE tenant_id = ? AND status = 'active'
+    `).get(identity.tenantId) as { status: ScoringConfigVersion["status"]; config_json: string } | undefined;
+    if (!row) {
+      this.recordAccess(identity, "config.active", "tenant", identity.tenantId, "denied");
+      throw new Error("Active config version not found");
+    }
+    const version = { ...parse<ScoringConfigVersion>(row.config_json), status: row.status };
+    assertConfigVersion(version);
+    this.recordAccess(identity, "config.active", "config_version", version.id, "allowed");
+    return version;
+  }
+
   publishConfigDraft(identity: RequestIdentity, draftId: string) {
     this.requireAdmin(identity, "config.publish", "config_version", draftId);
     nonEmpty(draftId, "draftId");
@@ -539,6 +558,7 @@ export class RuntimeStore {
         if (item.status !== decision || item.resolved_by !== identity.actorId || item.resolution_note !== note) {
           throw new Error("Review item is already closed");
         }
+        this.recordAccess(identity, "review.decide", "review_item", reviewId, "allowed");
         this.database.exec("COMMIT");
         return { changed: false, reviewId, status: decision } as const;
       }

@@ -152,10 +152,10 @@ const date = (value: string) => new Intl.DateTimeFormat("en-US", { month: "short
         <section id="review" aria-labelledby="review-title">
           <div class="section-heading"><div><h2 id="review-title">Manual-review queue</h2><p>Resolve or dismiss one reason at a time. Every decision records the actor, note, and timestamp.</p></div><span class="status warning">{reviewItems.length} open</span></div>
           <div class="review-list" data-review-list>
-            {reviewItems.map(({ lead, reason }) => <article data-review-item>
+            {reviewItems.map(({ lead, reason }) => <article data-review-item data-review-id={`${lead.evaluation_id}:${reason}`}>
               <div><strong>{lead.lead_identity.company}</strong><span>{lead.lead_identity.name} · {lead.lead_id}</span></div>
               <div><strong>{label(reason)}</strong><span>{lead.source_conflicts[0] || lead.missing_fields.map(label).join(", ") || lead.writeback_plan?.reason || "Policy review required"}</span></div>
-              <form data-review-form><label><span>Decision note</span><input name="note" required placeholder="What was verified or corrected?" /></label><button name="decision" value="resolved">Resolve</button><button class="secondary" name="decision" value="dismissed">Dismiss</button></form>
+              <form data-review-form><label><span>Decision note</span><input name="note" required placeholder="What was verified or corrected?" /></label><button name="decision" value="resolved">Resolve</button><button class="secondary" name="decision" value="dismissed">Dismiss</button><output data-review-status aria-live="polite"></output></form>
             </article>)}
             {reviewItems.length === 0 && <div class="empty"><strong>No open review items</strong><p>New manual-review evaluations will appear here with their reason codes.</p></div>}
           </div>
@@ -204,12 +204,35 @@ const date = (value: string) => new Intl.DateTimeFormat("en-US", { month: "short
         if (message) return;
         if (status) status.value = "Validated. Publish through the authenticated governance service to make this version active.";
       });
-      document.querySelectorAll<HTMLFormElement>("[data-review-form]").forEach((form) => form.addEventListener("submit", (event) => {
+      document.querySelectorAll<HTMLFormElement>("[data-review-form]").forEach((form) => form.addEventListener("submit", async (event) => {
         event.preventDefault();
         if (!form.reportValidity()) return;
         const item = form.closest<HTMLElement>("[data-review-item]");
-        item?.setAttribute("data-closed", "true");
-        form.querySelectorAll("input, button").forEach((control) => (control as HTMLInputElement | HTMLButtonElement).disabled = true);
+        const reviewId = item?.dataset.reviewId;
+        const decision = ((event as SubmitEvent).submitter as HTMLButtonElement | null)?.value;
+        const note = String(new FormData(form).get("note") ?? "").trim();
+        const reviewStatus = form.querySelector<HTMLOutputElement>("[data-review-status]");
+        const token = sessionStorage.getItem("contextai.session-token");
+        if (!reviewId || !decision || !token) {
+          if (reviewStatus) reviewStatus.value = token ? "Review item is unavailable." : "Sign in again to record this decision.";
+          return;
+        }
+        const controls = form.querySelectorAll<HTMLInputElement | HTMLButtonElement>("input, button");
+        controls.forEach((control) => control.disabled = true);
+        try {
+          const response = await fetch(`/admin/reviews/${encodeURIComponent(reviewId)}/decision`, {
+            method: "POST",
+            headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ decision, note })
+          });
+          const result = await response.json() as { error?: string };
+          if (!response.ok) throw new Error(result.error || "Review decision failed.");
+          item.setAttribute("data-closed", "true");
+          if (reviewStatus) reviewStatus.value = decision === "resolved" ? "Resolved and audited." : "Dismissed and audited.";
+        } catch (error) {
+          controls.forEach((control) => control.disabled = false);
+          if (reviewStatus) reviewStatus.value = error instanceof Error ? error.message : "Review decision failed.";
+        }
       }));
     </script>
   </body>
@@ -243,7 +266,7 @@ const date = (value: string) => new Intl.DateTimeFormat("en-US", { month: "short
   .split-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
   .publish-panel { position: sticky; top: 60px; display: grid; gap: 15px; padding: 17px; border: 1px solid var(--line); background: var(--surface); }.publish-panel > div > span { color: var(--muted); font-size: 10px; font-weight: 750; }.publish-panel h3 { margin-top: 2px; font-family: ui-monospace, monospace; font-size: 14px; }.publish-panel p { margin-top: 5px; color: var(--muted); font-size: 11px; }.publish-panel ul { padding: 0; list-style: none; border-block: 1px solid var(--line); }.publish-panel li { display: flex; justify-content: space-between; gap: 10px; padding: 8px 0; font-size: 11px; }.publish-panel li + li { border-top: 1px solid var(--line); }.publish-panel li span { color: var(--warning); }.publish-panel button, .review-list button, .row-actions button { min-height: 38px; padding: 0 11px; border: 1px solid var(--accent); border-radius: 5px; color: white; background: var(--accent); font-weight: 800; }.publish-panel button:hover, .review-list button:hover { background: var(--accent-dark); }.publish-panel output { min-height: 32px; color: var(--muted); font-size: 10px; }.error { padding: 9px; color: var(--danger); background: #fff0f0; }
   .table-wrap { overflow-x: auto; border-bottom: 1px solid var(--line); }table { width: 100%; border-collapse: collapse; background: var(--surface); }th, td { padding: 11px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }th { color: var(--muted); background: #eef2f0; font-size: 10px; }td { font-size: 11px; }td:first-child strong { font-size: 12px; }
-  .review-list { background: var(--surface); }.review-list article { display: grid; grid-template-columns: 1fr 1.3fr minmax(390px, 1.7fr); align-items: center; gap: 16px; padding: 13px; border-bottom: 1px solid var(--line); }.review-list article > div { display: grid; }.review-list article span { color: var(--muted); font-size: 10px; }.review-list form { display: grid; grid-template-columns: 1fr auto auto; align-items: end; gap: 7px; }.review-list button.secondary, .row-actions button.secondary { color: var(--accent-dark); background: transparent; }.review-list article[data-closed="true"] { opacity: .55; background: var(--soft); }.empty { padding: 32px; text-align: center; }.empty p { color: var(--muted); }
+  .review-list { background: var(--surface); }.review-list article { display: grid; grid-template-columns: 1fr 1.3fr minmax(390px, 1.7fr); align-items: center; gap: 16px; padding: 13px; border-bottom: 1px solid var(--line); }.review-list article > div { display: grid; }.review-list article span { color: var(--muted); font-size: 10px; }.review-list form { display: grid; grid-template-columns: 1fr auto auto; align-items: end; gap: 7px; }.review-list form output { grid-column: 1 / -1; color: var(--muted); font-size: 10px; }.review-list button.secondary, .row-actions button.secondary { color: var(--accent-dark); background: transparent; }.review-list article[data-closed="true"] { opacity: .55; background: var(--soft); }.empty { padding: 32px; text-align: center; }.empty p { color: var(--muted); }
   .row-actions { display: flex; gap: 5px; }.row-actions button { min-height: 30px; padding-inline: 8px; font-size: 10px; }.row-actions button:disabled { color: #718079; border-color: var(--line); cursor: not-allowed; opacity: .65; }
   .integration-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 17px; background: var(--surface); }.integration-row > div { display: grid; }.provider { display: flex !important; align-items: center; gap: 11px; }.provider > span { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 6px; color: white; background: #ff6c35; font-weight: 900; }.provider div { display: grid; }.integration-row small { color: var(--muted); }.integration-row a { color: var(--accent-dark); font-weight: 800; }
   @media (max-width: 1050px) { #config-form { grid-template-columns: 1fr; }.publish-panel { position: static; }.review-list article { grid-template-columns: 1fr 1fr; }.review-list form { grid-column: 1 / -1; } }

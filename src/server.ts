@@ -36,11 +36,25 @@ const hubSpotDependencies = (identity: RequestIdentity) => {
 };
 
 const server = createServer(async (request, response) => {
-  if (request.method === "GET" && request.url === "/health") {
+  const path = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`).pathname;
+  if (request.method === "GET" && path === "/health") {
     json(response, 200, { status: "ok" });
     return;
   }
   try {
+    const reviewDecision = request.method === "POST" && path.match(/^\/admin\/reviews\/([^/]+)\/decision$/);
+    if (reviewDecision) {
+      let identity: RequestIdentity;
+      try {
+        identity = authenticateBearer(request.headers.authorization);
+      } catch {
+        return json(response, 401, { error: "Authentication required" });
+      }
+      if (identity.tenantId !== tenantId || identity.role !== "revops_admin") return json(response, 403, { error: "RevOps Admin access required" });
+      const input = JSON.parse(await body(request)) as { decision?: string; note?: string };
+      if ((input.decision !== "resolved" && input.decision !== "dismissed") || !input.note?.trim()) return json(response, 400, { error: "decision and note are required" });
+      return json(response, 200, store.decideReviewItem(identity, decodeURIComponent(reviewDecision[1]!), input.decision, input.note));
+    }
     if (request.method === "POST" && request.url === "/webhooks/hubspot/assignments") {
       const raw = await body(request);
       if (!verifyAssignmentSignature(raw, request.headers["x-contextai-signature"] as string | undefined, process.env.HUBSPOT_WEBHOOK_SECRET ?? "")) return json(response, 401, { error: "Invalid webhook signature" });

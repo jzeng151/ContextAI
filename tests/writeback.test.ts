@@ -31,6 +31,9 @@ test("planning maps canonical evidence to CRM fields independently per field", (
   assert.equal(blocked.fields.find(({ canonicalField }) => canonicalField === "employees")?.outcome, "Blocked");
   const sideEffect = planWriteback(lead, { ...hubSpotWritebackPolicy, fields: { ...hubSpotWritebackPolicy.fields, employees: { ...hubSpotWritebackPolicy.fields.employees!, sideEffects: true } } });
   assert.equal(sideEffect.fields.find(({ canonicalField }) => canonicalField === "employees")?.outcome, "Blocked");
+  const manualApproval = planWriteback(lead, { ...hubSpotWritebackPolicy, manualApprovalFields: ["technology_tags"] });
+  assert.equal(manualApproval.fields.find(({ canonicalField }) => canonicalField === "tech_stack")?.outcome, "Flagged for Review");
+  assert.equal(manualApproval.fields.find(({ canonicalField }) => canonicalField === "employees")?.outcome, "Eligible");
 });
 
 test("planning handles empty, invalid, stale, low-confidence, and conflicting fields", () => {

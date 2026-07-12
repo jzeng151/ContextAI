@@ -62,10 +62,12 @@ test("a clean store upgrades from schema v1 and failed migrations roll back", ()
       INSERT INTO integrations (integration_id, tenant_id, provider, external_account_id, status, created_at)
       VALUES ('legacy-hubspot', 'legacy-tenant', 'hubspot', 'legacy-portal', 'active', '2026-07-01T00:00:00.000Z')
     `).run();
+    const legacyConfigVersion = structuredClone(defaultConfigVersion) as unknown as { config: { writeback: Record<string, unknown> } };
+    delete legacyConfigVersion.config.writeback.manualApprovalFields;
     store.database.prepare(`
       INSERT INTO config_versions (tenant_id, version_id, status, created_by, created_at, config_json)
       VALUES (?, ?, ?, ?, ?, ?)
-    `).run("legacy-tenant", defaultConfigVersion.id, defaultConfigVersion.status, defaultConfigVersion.author, defaultConfigVersion.createdAt, JSON.stringify(defaultConfigVersion));
+    `).run("legacy-tenant", defaultConfigVersion.id, defaultConfigVersion.status, defaultConfigVersion.author, defaultConfigVersion.createdAt, JSON.stringify(legacyConfigVersion));
     const legacyPacket = lead("golden-normal");
     store.database.prepare(`
       INSERT INTO evaluation_runs (
@@ -87,6 +89,7 @@ test("a clean store upgrades from schema v1 and failed migrations roll back", ()
       (store.database.prepare("SELECT retention_after FROM evaluation_runs WHERE evaluation_id = 'legacy-evaluation'").get() as { retention_after: string }).retention_after,
       "2027-07-01T00:00:00.000Z"
     );
+    assert.deepEqual(store.listConfigVersions(admin("legacy-tenant"))[0]?.config.writeback.manualApprovalFields, { contact: [], company: [] });
 
     assert.throws(() => migrateDatabase(store.database, [
       ...migrations,

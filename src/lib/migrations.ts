@@ -370,6 +370,14 @@ export const migrations: readonly Migration[] = [
       ALTER TABLE review_items ADD COLUMN resolved_by TEXT;
       ALTER TABLE review_items ADD COLUMN resolution_note TEXT;
 
+      UPDATE config_versions
+      SET config_json = json_set(
+        config_json,
+        '$.config.writeback.manualApprovalFields',
+        json('{"contact":[],"company":[]}')
+      )
+      WHERE json_type(config_json, '$.config.writeback.manualApprovalFields') IS NULL;
+
       CREATE TRIGGER config_versions_no_delete
       BEFORE DELETE ON config_versions BEGIN SELECT RAISE(ABORT, 'config versions are immutable'); END;
       CREATE TRIGGER config_versions_content_immutable
