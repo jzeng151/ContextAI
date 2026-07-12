@@ -291,6 +291,9 @@ export const migrations: readonly Migration[] = [
       ALTER TABLE integrations ADD COLUMN last_error TEXT;
       ALTER TABLE integrations ADD COLUMN rate_limited_until TEXT;
       ALTER TABLE integrations ADD COLUMN revoked_at TEXT;
+
+      UPDATE integrations SET status = 'disabled', last_error = 'oauth_reconnect_required'
+      WHERE status = 'active' AND access_token_ciphertext IS NULL;
     `
   },
   {
@@ -298,6 +301,9 @@ export const migrations: readonly Migration[] = [
     name: "retention purge controls",
     sql: `
       ALTER TABLE evaluation_runs ADD COLUMN purged_at TEXT;
+      UPDATE evaluation_runs
+      SET retention_after = strftime('%Y-%m-%dT%H:%M:%fZ', completed_at, '+365 days')
+      WHERE retention_after IS NULL;
       CREATE TABLE retention_job_guard (active INTEGER PRIMARY KEY CHECK (active = 1));
 
       DROP TRIGGER events_no_delete;
@@ -316,6 +322,17 @@ export const migrations: readonly Migration[] = [
       BEFORE INSERT ON access_audit_records
       WHEN EXISTS (SELECT 1 FROM access_audit_records WHERE access_audit_id = NEW.access_audit_id)
       BEGIN SELECT RAISE(ABORT, 'access audit records are append-only'); END;
+    `
+  },
+  {
+    version: 9,
+    name: "legacy security backfills",
+    sql: `
+      UPDATE integrations SET status = 'disabled', last_error = 'oauth_reconnect_required'
+      WHERE status = 'active' AND access_token_ciphertext IS NULL;
+      UPDATE evaluation_runs
+      SET retention_after = strftime('%Y-%m-%dT%H:%M:%fZ', completed_at, '+365 days')
+      WHERE retention_after IS NULL;
     `
   }
 ];

@@ -188,12 +188,12 @@ export class RuntimeStore {
       WHERE tenant_id = ? AND integration_id = ? AND provider = 'hubspot'
     `).get(identity.tenantId, integrationId) as { refresh_token_ciphertext: string | null } | undefined;
     if (!row) throw new Error("HubSpot integration not found");
-    const refreshToken = row.refresh_token_ciphertext ? decryptSecret(row.refresh_token_ciphertext, key) : null;
     this.database.prepare(`
       UPDATE integrations SET status = 'disabled', access_token_ciphertext = NULL, revoked_at = ?, rate_limited_until = NULL
       WHERE tenant_id = ? AND integration_id = ?
     `).run(new Date().toISOString(), identity.tenantId, integrationId);
     try {
+      const refreshToken = row.refresh_token_ciphertext ? decryptSecret(row.refresh_token_ciphertext, key) : null;
       if (refreshToken) await revoke(refreshToken);
       this.database.prepare(`
         UPDATE integrations SET refresh_token_ciphertext = NULL, last_error = NULL
@@ -252,6 +252,7 @@ export class RuntimeStore {
     assertLeadPacket(packet);
     nonEmpty(tenantId, "tenantId");
     nonEmpty(idempotencyKey, "idempotencyKey");
+    const assignedRepId = input.assignedRepId === undefined ? null : nonEmpty(input.assignedRepId, "assignedRepId");
     const retentionAfter = input.retentionAfter === undefined
       ? new Date(Date.parse(packet.evaluation_timestamp) + this.evaluationRetentionDays * 24 * 60 * 60 * 1000).toISOString()
       : isoDate(input.retentionAfter, "retentionAfter");
@@ -280,7 +281,7 @@ export class RuntimeStore {
       `).run(
         packet.evaluation_id, tenantId, packet.request_id, idempotencyKey, packet.lead_id, packet.account_id,
         packet.score_version, outcome, json(packet), packet.evaluation_timestamp, packet.evaluation_timestamp,
-        retentionAfter, input.assignedRepId ?? null
+        retentionAfter, assignedRepId
       );
 
       const insertStep = this.database.prepare(`

@@ -41,6 +41,11 @@ test("persistence rejects control characters before writing JSON payloads", () =
       () => store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "unsafe", packet }),
       /control characters/i
     );
+    const unsafeAssignee = structuredClone(lead("golden-normal"));
+    assert.throws(
+      () => store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "unsafe-assignee", packet: unsafeAssignee, assignedRepId: "rep\nforged" }),
+      /assignedRepId.*control characters/i
+    );
   } finally {
     store.close();
   }
@@ -51,15 +56,42 @@ test("a clean store upgrades from schema v1 and failed migrations roll back", ()
   try {
     assert.equal((store.database.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 1);
     assert.throws(() => store.database.prepare("SELECT * FROM events").all(), /no such table/i);
+    store.saveTenant("legacy-tenant", "Legacy tenant");
+    store.database.prepare(`
+      INSERT INTO integrations (integration_id, tenant_id, provider, external_account_id, status, created_at)
+      VALUES ('legacy-hubspot', 'legacy-tenant', 'hubspot', 'legacy-portal', 'active', '2026-07-01T00:00:00.000Z')
+    `).run();
+    store.database.prepare(`
+      INSERT INTO config_versions (tenant_id, version_id, status, created_by, created_at, config_json)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run("legacy-tenant", defaultConfigVersion.id, defaultConfigVersion.status, defaultConfigVersion.author, defaultConfigVersion.createdAt, JSON.stringify(defaultConfigVersion));
+    const legacyPacket = lead("golden-normal");
+    store.database.prepare(`
+      INSERT INTO evaluation_runs (
+        evaluation_id, tenant_id, request_id, idempotency_key, lead_id, account_id, score_version,
+        outcome_status, packet_json, started_at, completed_at, retention_after
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+    `).run(
+      "legacy-evaluation", "legacy-tenant", legacyPacket.request_id, "legacy", legacyPacket.lead_id, legacyPacket.account_id,
+      legacyPacket.score_version, "complete", JSON.stringify(legacyPacket), "2026-07-01T00:00:00.000Z", "2026-07-01T00:00:00.000Z"
+    );
 
     migrateDatabase(store.database);
-    assert.equal((store.database.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 8);
+    assert.equal((store.database.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 9);
+    assert.deepEqual(
+      { ...(store.database.prepare("SELECT status, last_error FROM integrations WHERE integration_id = 'legacy-hubspot'").get() as object) },
+      { status: "disabled", last_error: "oauth_reconnect_required" }
+    );
+    assert.equal(
+      (store.database.prepare("SELECT retention_after FROM evaluation_runs WHERE evaluation_id = 'legacy-evaluation'").get() as { retention_after: string }).retention_after,
+      "2027-07-01T00:00:00.000Z"
+    );
 
     assert.throws(() => migrateDatabase(store.database, [
       ...migrations,
-      { version: 9, name: "broken", sql: "CREATE TABLE should_rollback (id TEXT); INVALID SQL;" }
-    ]), /Migration 9.*failed/);
-    assert.equal((store.database.prepare("SELECT count(*) AS count FROM schema_migrations WHERE version = 9").get() as { count: number }).count, 0);
+      { version: 10, name: "broken", sql: "CREATE TABLE should_rollback (id TEXT); INVALID SQL;" }
+    ]), /Migration 10.*failed/);
+    assert.equal((store.database.prepare("SELECT count(*) AS count FROM schema_migrations WHERE version = 10").get() as { count: number }).count, 0);
     assert.throws(() => store.database.prepare("SELECT * FROM should_rollback").all(), /no such table/i);
   } finally {
     store.close();
@@ -268,15 +300,20 @@ test("integration credentials are encrypted, rate limited, and revoked on discon
       expiresAt: "2026-07-12T00:00:00.000Z",
       externalAccountId: "portal-2",
     }, key);
-    await assert.rejects(
-      store.disconnectHubSpotIntegration(identity, "hubspot-fail", key, async () => { throw new Error("revoke failed"); }),
-      /revoke failed/i
-    );
+    let failedRevokeCalled = false;
+    await assert.rejects(store.disconnectHubSpotIntegration(identity, "hubspot-fail", Buffer.alloc(32, 9), async () => { failedRevokeCalled = true; }));
+    assert.equal(failedRevokeCalled, false);
     const failedDisconnect = store.database.prepare(`
       SELECT outcome FROM access_audit_records
       WHERE action = 'integration.disconnect' AND resource_id = 'hubspot-fail'
     `).get() as { outcome: string };
     assert.equal(failedDisconnect.outcome, "denied");
+    const failedIntegration = store.database.prepare(`
+      SELECT status, access_token_ciphertext, revoked_at FROM integrations WHERE integration_id = 'hubspot-fail'
+    `).get() as { status: string; access_token_ciphertext: string | null; revoked_at: string | null };
+    assert.equal(failedIntegration.status, "error");
+    assert.equal(failedIntegration.access_token_ciphertext, null);
+    assert.ok(failedIntegration.revoked_at);
     assert.throws(
       () => store.getHubSpotAccessToken(integrationIdentity, "hubspot-fail", key, "2026-07-11T23:01:00.000Z"),
       /disconnected/i
