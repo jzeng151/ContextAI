@@ -132,11 +132,15 @@ test("tenant and pilot role checks protect evaluations and administration", () =
     const assigned = lead("golden-normal");
     const otherTenant = structuredClone(lead("no-usable-data"));
     otherTenant.evaluation_id = "other-tenant-evaluation";
+    const unassigned = structuredClone(lead("no-public-signal"));
+    unassigned.evaluation_id = "unassigned-evaluation";
     store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "assigned", packet: assigned, assignedRepId: "rep-1" });
+    store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "unassigned", packet: unassigned });
     store.saveEvaluation({ tenantId: "tenant-2", idempotencyKey: "other", packet: otherTenant, assignedRepId: "rep-2" });
 
     assert.equal(store.getEvaluation(rep("tenant-1", "rep-1", "read-own"), assigned.evaluation_id)?.packet.lead_id, assigned.lead_id);
     assert.equal(store.getEvaluation(rep("tenant-1", "rep-2", "read-unassigned"), assigned.evaluation_id), null);
+    assert.equal(store.getEvaluation(rep("tenant-1", "rep-1", "read-no-assignee"), unassigned.evaluation_id), null);
     assert.equal(store.getEvaluation(admin("tenant-1", "read-cross-tenant"), otherTenant.evaluation_id), null);
     assert.throws(
       () => store.saveConfigVersion(rep("tenant-1", "rep-1", "rep-config"), { ...defaultConfigVersion, id: "rep-draft", status: "draft" }),
@@ -146,18 +150,37 @@ test("tenant and pilot role checks protect evaluations and administration", () =
       () => store.saveIntegration(rep("tenant-1", "rep-1", "rep-integration"), { integrationId: "blocked", provider: "hubspot", externalAccountId: "portal", status: "active" }),
       /RevOps Admin/i
     );
+    assert.throws(
+      () => store.appendAuditRecord(rep("tenant-1", "rep-1", "rep-writeback"), {
+        evaluationId: assigned.evaluation_id,
+        requestId: assigned.request_id,
+        crmObjectType: "contact",
+        crmObjectId: assigned.lead_id,
+        fieldName: "contact_title",
+        sourceName: "Provider",
+        sourceRef: "record-1",
+        sourceUpdatedAt: assigned.evaluation_timestamp,
+        confidence: "High",
+        outcome: "Written",
+        reason: "test",
+        scoreVersion: assigned.score_version,
+      }),
+      /RevOps Admin/i
+    );
 
     const audits = store.database.prepare(`
       SELECT request_id, actor_id, outcome FROM access_audit_records
-      WHERE request_id IN ('read-own', 'read-unassigned', 'read-cross-tenant', 'rep-config', 'rep-integration')
+      WHERE request_id IN ('read-own', 'read-unassigned', 'read-no-assignee', 'read-cross-tenant', 'rep-config', 'rep-integration', 'rep-writeback')
       ORDER BY request_id
     `).all().map((row) => ({ ...row }));
     assert.deepEqual(audits, [
       { request_id: "read-cross-tenant", actor_id: "admin-1", outcome: "denied" },
+      { request_id: "read-no-assignee", actor_id: "rep-1", outcome: "denied" },
       { request_id: "read-own", actor_id: "rep-1", outcome: "allowed" },
       { request_id: "read-unassigned", actor_id: "rep-2", outcome: "denied" },
       { request_id: "rep-config", actor_id: "rep-1", outcome: "denied" },
       { request_id: "rep-integration", actor_id: "rep-1", outcome: "denied" },
+      { request_id: "rep-writeback", actor_id: "rep-1", outcome: "denied" },
     ]);
     assert.throws(() => store.database.prepare("DELETE FROM access_audit_records").run(), /append-only/i);
   } finally {
@@ -201,6 +224,7 @@ test("integration credentials are encrypted, rate limited, and revoked on discon
     assert.doesNotMatch(stored.access_token_ciphertext, /access-secret/);
     assert.doesNotMatch(stored.refresh_token_ciphertext, /refresh-secret/);
     assert.equal(store.getHubSpotAccessToken(integrationIdentity, "hubspot-1", key, "2026-07-11T23:00:00.000Z"), "access-secret");
+    assert.throws(() => store.getHubSpotAccessToken(identity, "hubspot-1", key), /worker access/i);
 
     store.recordIntegrationHealth(integrationIdentity, "hubspot-1", "rate_limited", "2026-07-11T23:05:00.000Z");
     assert.throws(

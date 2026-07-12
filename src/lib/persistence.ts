@@ -155,6 +155,7 @@ export class RuntimeStore {
 
   getHubSpotAccessToken(identity: RequestIdentity, integrationId: string, key: Buffer, now = new Date().toISOString()) {
     assertTenantAccess(identity, identity.tenantId);
+    if (identity.role !== "system" && identity.role !== "integration") throw new Error("Integration worker access required");
     const integration = this.database.prepare(`
       SELECT status, access_token_ciphertext, token_expires_at, rate_limited_until, revoked_at
       FROM integrations WHERE tenant_id = ? AND integration_id = ? AND provider = 'hubspot'
