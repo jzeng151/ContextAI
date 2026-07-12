@@ -53,13 +53,13 @@ test("a clean store upgrades from schema v1 and failed migrations roll back", ()
     assert.throws(() => store.database.prepare("SELECT * FROM events").all(), /no such table/i);
 
     migrateDatabase(store.database);
-    assert.equal((store.database.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 7);
+    assert.equal((store.database.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 8);
 
     assert.throws(() => migrateDatabase(store.database, [
       ...migrations,
-      { version: 8, name: "broken", sql: "CREATE TABLE should_rollback (id TEXT); INVALID SQL;" }
-    ]), /Migration 8.*failed/);
-    assert.equal((store.database.prepare("SELECT count(*) AS count FROM schema_migrations WHERE version = 8").get() as { count: number }).count, 0);
+      { version: 9, name: "broken", sql: "CREATE TABLE should_rollback (id TEXT); INVALID SQL;" }
+    ]), /Migration 9.*failed/);
+    assert.equal((store.database.prepare("SELECT count(*) AS count FROM schema_migrations WHERE version = 9").get() as { count: number }).count, 0);
     assert.throws(() => store.database.prepare("SELECT * FROM should_rollback").all(), /no such table/i);
   } finally {
     store.close();
@@ -182,6 +182,13 @@ test("tenant and pilot role checks protect evaluations and administration", () =
       { request_id: "rep-integration", actor_id: "rep-1", outcome: "denied" },
       { request_id: "rep-writeback", actor_id: "rep-1", outcome: "denied" },
     ]);
+    const auditCount = (store.database.prepare("SELECT count(*) AS count FROM access_audit_records").get() as { count: number }).count;
+    assert.throws(() => store.getEvaluation(admin("tenant-1", "unsafe-audit"), "missing\nforged"), /control characters/i);
+    assert.equal((store.database.prepare("SELECT count(*) AS count FROM access_audit_records").get() as { count: number }).count, auditCount);
+    assert.throws(
+      () => store.database.prepare("INSERT OR REPLACE INTO access_audit_records SELECT * FROM access_audit_records WHERE access_audit_id = 1").run(),
+      /append-only/i
+    );
     assert.throws(() => store.database.prepare("DELETE FROM access_audit_records").run(), /append-only/i);
   } finally {
     store.close();
@@ -232,6 +239,14 @@ test("integration credentials are encrypted, rate limited, and revoked on discon
       /rate limited/i
     );
     store.recordIntegrationHealth(integrationIdentity, "hubspot-1", "healthy");
+    store.recordIntegrationHealth(integrationIdentity, "hubspot-1", "rate_limited");
+    const defaultRateLimit = (store.database.prepare("SELECT rate_limited_until FROM integrations WHERE integration_id = 'hubspot-1'").get() as { rate_limited_until: string }).rate_limited_until;
+    assert.ok(defaultRateLimit);
+    assert.throws(
+      () => store.getHubSpotAccessToken(integrationIdentity, "hubspot-1", key, new Date(Date.parse(defaultRateLimit) - 1).toISOString()),
+      /rate limited/i
+    );
+    store.recordIntegrationHealth(integrationIdentity, "hubspot-1", "healthy");
 
     let revoked = "";
     await store.disconnectHubSpotIntegration(identity, "hubspot-1", key, async (token) => { revoked = token; });
@@ -244,6 +259,28 @@ test("integration credentials are encrypted, rate limited, and revoked on discon
     assert.ok(status.revoked_at);
     assert.deepEqual(JSON.parse(status.scopes_json), ["oauth", "crm.objects.contacts.read", "crm.objects.contacts.write"]);
     assert.equal("access_token_ciphertext" in status, false);
+
+    store.saveIntegration(identity, { integrationId: "hubspot-fail", provider: "hubspot", externalAccountId: "portal-2", status: "disabled" });
+    store.activateHubSpotIntegration(identity, "hubspot-fail", {
+      accessToken: "access-fail",
+      refreshToken: "refresh-fail",
+      scopes: ["oauth", "crm.objects.contacts.read", "crm.objects.contacts.write"],
+      expiresAt: "2026-07-12T00:00:00.000Z",
+      externalAccountId: "portal-2",
+    }, key);
+    await assert.rejects(
+      store.disconnectHubSpotIntegration(identity, "hubspot-fail", key, async () => { throw new Error("revoke failed"); }),
+      /revoke failed/i
+    );
+    const failedDisconnect = store.database.prepare(`
+      SELECT outcome FROM access_audit_records
+      WHERE action = 'integration.disconnect' AND resource_id = 'hubspot-fail'
+    `).get() as { outcome: string };
+    assert.equal(failedDisconnect.outcome, "denied");
+    assert.throws(
+      () => store.getHubSpotAccessToken(integrationIdentity, "hubspot-fail", key, "2026-07-11T23:01:00.000Z"),
+      /disconnected/i
+    );
   } finally {
     store.close();
   }
@@ -410,6 +447,8 @@ test("pilot event contract records every event idempotently without PII or repor
     recordEvent({ ...events[2]!, idempotencyKey: "pii-safe-failure", actorId: "rep@example.com" });
     assert.equal(failures.length, 1);
     assert.equal(store.getEvaluation(admin("tenant-1"), packet.evaluation_id)?.packet.priority_score, packet.priority_score);
+    assert.equal(store.purgeExpiredEvaluations(admin("tenant-1", "event-retention"), "2027-07-10T00:00:00.000Z"), 1);
+    assert.throws(() => store.recordEvent(events[2]!), /does not match/i);
   } finally {
     store.close();
   }

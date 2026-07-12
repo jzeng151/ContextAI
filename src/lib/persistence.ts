@@ -95,6 +95,7 @@ export class RuntimeStore {
   }
 
   private recordAccess(identity: RequestIdentity, action: string, resourceType: string, resourceId: string, outcome: "allowed" | "denied") {
+    json({ identity, action, resourceType, resourceId, outcome });
     this.database.prepare(`
       INSERT INTO access_audit_records (
         tenant_id, request_id, actor_id, actor_role, action, resource_type, resource_id, outcome, recorded_at
@@ -204,6 +205,7 @@ export class RuntimeStore {
         UPDATE integrations SET status = 'error', last_error = 'token_revocation_failed'
         WHERE tenant_id = ? AND integration_id = ?
       `).run(identity.tenantId, integrationId);
+      this.recordAccess(identity, "integration.disconnect", "integration", integrationId, "denied");
       throw error;
     }
   }
@@ -211,12 +213,15 @@ export class RuntimeStore {
   recordIntegrationHealth(identity: RequestIdentity, integrationId: string, status: "healthy" | "error" | "rate_limited", retryAfter?: string) {
     assertRequestIdentity(identity);
     if (identity.role === "rep") throw new Error("Rep access denied");
+    const rateLimitedUntil = status === "rate_limited"
+      ? isoDate(retryAfter ?? new Date(Date.now() + 60_000).toISOString(), "retryAfter")
+      : null;
     const result = this.database.prepare(`
       UPDATE integrations SET status = ?, last_health_at = ?, last_error = ?, rate_limited_until = ?
       WHERE tenant_id = ? AND integration_id = ?
     `).run(
       status === "error" ? "error" : "active", new Date().toISOString(), status === "error" ? "provider_error" : null,
-      status === "rate_limited" && retryAfter ? isoDate(retryAfter, "retryAfter") : null, identity.tenantId, integrationId
+      rateLimitedUntil, identity.tenantId, integrationId
     );
     if (result.changes !== 1) throw new Error("Integration not found");
   }
@@ -381,7 +386,7 @@ export class RuntimeStore {
 
     const linkedEvaluation = this.database.prepare(`
       SELECT 1 FROM evaluation_runs
-      WHERE tenant_id = ? AND evaluation_id = ? AND request_id = ? AND score_version = ?
+      WHERE tenant_id = ? AND evaluation_id = ? AND request_id = ? AND score_version = ? AND purged_at IS NULL
     `).get(input.tenantId, input.evaluationId, input.requestId, input.scoreVersion);
     if (!linkedEvaluation) throw new Error("Event does not match its tenant, request, evaluation, and score version");
     const linkedConfig = this.database.prepare(`

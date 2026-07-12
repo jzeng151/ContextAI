@@ -273,6 +273,10 @@ export const migrations: readonly Migration[] = [
       BEFORE UPDATE ON access_audit_records BEGIN SELECT RAISE(ABORT, 'access audit records are append-only'); END;
       CREATE TRIGGER access_audit_records_no_delete
       BEFORE DELETE ON access_audit_records BEGIN SELECT RAISE(ABORT, 'access audit records are append-only'); END;
+      CREATE TRIGGER access_audit_records_no_duplicate
+      BEFORE INSERT ON access_audit_records
+      WHEN EXISTS (SELECT 1 FROM access_audit_records WHERE access_audit_id = NEW.access_audit_id)
+      BEGIN SELECT RAISE(ABORT, 'access audit records are append-only'); END;
     `
   },
   {
@@ -302,6 +306,16 @@ export const migrations: readonly Migration[] = [
       WHEN OLD.retention_class = 'writeback_audit_24_months'
         OR NOT EXISTS (SELECT 1 FROM retention_job_guard WHERE active = 1)
       BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
+    `
+  },
+  {
+    version: 8,
+    name: "access audit replacement guard",
+    sql: `
+      CREATE TRIGGER IF NOT EXISTS access_audit_records_no_duplicate
+      BEFORE INSERT ON access_audit_records
+      WHEN EXISTS (SELECT 1 FROM access_audit_records WHERE access_audit_id = NEW.access_audit_id)
+      BEGIN SELECT RAISE(ABORT, 'access audit records are append-only'); END;
     `
   }
 ];
