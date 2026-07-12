@@ -4,7 +4,7 @@
   "config": {
     "name": "ContextAI",
     "description": "Grounded lead priority and data quality inside HubSpot CRM.",
-    "distribution": "marketplace",
+    "distribution": "private",
     "auth": {
       "type": "oauth",
       "redirectUrls": ["${CONTEXTAI_API_URL}/oauth/hubspot/callback"],
