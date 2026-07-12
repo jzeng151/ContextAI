@@ -416,6 +416,25 @@ export class RuntimeStore {
     return row ? this.getEvaluation(identity, row.evaluation_id) : null;
   }
 
+  tenantForHubSpotAccount(accountId: string) {
+    const rows = this.database.prepare(`
+      SELECT tenant_id FROM integrations
+      WHERE provider = 'hubspot' AND external_account_id = ? AND status = 'active' AND revoked_at IS NULL
+    `).all(nonEmpty(accountId, "HubSpot account ID")) as Array<{ tenant_id: string }>;
+    return rows.length === 1 ? rows[0]!.tenant_id : null;
+  }
+
+  getLatestEvaluationForCrmRecord(identity: RequestIdentity, objectTypeId: "0-1" | "0-2", objectId: string) {
+    assertRequestIdentity(identity);
+    const column = objectTypeId === "0-1" ? "lead_id" : "account_id";
+    const row = this.database.prepare(`
+      SELECT evaluation_id FROM evaluation_runs
+      WHERE tenant_id = ? AND ${column} = ? AND purged_at IS NULL
+      ORDER BY completed_at DESC, evaluation_id DESC LIMIT 1
+    `).get(identity.tenantId, nonEmpty(objectId, "CRM record ID")) as { evaluation_id: string } | undefined;
+    return row ? this.getEvaluation(identity, row.evaluation_id) : null;
+  }
+
   appendReviewItem(identity: RequestIdentity, evaluationId: string, reason: string, payload: unknown) {
     assertRequestIdentity(identity);
     if (identity.role === "rep") {

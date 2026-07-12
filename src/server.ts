@@ -4,6 +4,7 @@ import { handleAssignmentEvent, parseHubSpotAssignmentEvents, runMorningEvaluati
 import { RuntimeStore } from "./lib/persistence.ts";
 import { authenticateBearer, type RequestIdentity } from "./lib/security.ts";
 import { secretKeyFromEnv } from "./lib/secrets.ts";
+import { handleCrmExtensionRequest } from "./lib/crm-extension.ts";
 
 const store = new RuntimeStore();
 const host = process.env.HOST ?? "127.0.0.1";
@@ -62,6 +63,11 @@ const server = createServer(async (request, response) => {
       const dependencies = hubSpotDependencies(tokenIdentity);
       const results = await runMorningEvaluation({ identity, ownerId: input.ownerId, scheduledFor: input.scheduledFor ?? new Date().toISOString(), store, dependencies, listAssignedOpen: dependencies.listAssignedOpen });
       return json(response, 202, { results });
+    }
+    if (request.method === "POST" && request.url?.startsWith("/hubspot/crm-card?")) {
+      const raw = await body(request);
+      const result = handleCrmExtensionRequest({ method: request.method, url: request.url, headers: request.headers, body: raw }, store);
+      return json(response, result.status, result.body);
     }
     response.writeHead(404).end();
   } catch (error) {

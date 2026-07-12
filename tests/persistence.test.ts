@@ -254,7 +254,7 @@ test("integration credentials are encrypted, rate limited, and revoked on discon
     store.activateHubSpotIntegration(identity, "hubspot-1", {
       accessToken: "access-secret",
       refreshToken: "refresh-secret",
-      scopes: ["oauth", "crm.objects.contacts.read", "crm.objects.contacts.write"],
+      scopes: [...hubSpotRequiredScopes],
       expiresAt: "2026-07-12T00:00:00.000Z",
       externalAccountId: "123",
     }, key);
@@ -294,7 +294,7 @@ test("integration credentials are encrypted, rate limited, and revoked on discon
           refresh_token: "refresh-rotated",
           expires_in: 1800,
           hub_id: 123,
-          scopes: ["oauth", "crm.objects.contacts.read", "crm.objects.contacts.write"],
+          scopes: [...hubSpotRequiredScopes],
         };
       }
     ), "access-rotated");
@@ -320,14 +320,14 @@ test("integration credentials are encrypted, rate limited, and revoked on discon
     );
     const status = store.getIntegrationStatus(identity, "hubspot-1") as { revoked_at: string; scopes_json: string };
     assert.ok(status.revoked_at);
-    assert.deepEqual(JSON.parse(status.scopes_json), ["oauth", "crm.objects.contacts.read", "crm.objects.contacts.write"]);
+    assert.deepEqual(JSON.parse(status.scopes_json), [...hubSpotRequiredScopes]);
     assert.equal("access_token_ciphertext" in status, false);
 
     store.saveIntegration(identity, { integrationId: "hubspot-fail", provider: "hubspot", externalAccountId: "portal-2", status: "disabled" });
     store.activateHubSpotIntegration(identity, "hubspot-fail", {
       accessToken: "access-fail",
       refreshToken: "refresh-fail",
-      scopes: ["oauth", "crm.objects.contacts.read", "crm.objects.contacts.write"],
+      scopes: [...hubSpotRequiredScopes],
       expiresAt: "2026-07-12T00:00:00.000Z",
       externalAccountId: "portal-2",
     }, key);

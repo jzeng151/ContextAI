@@ -61,7 +61,7 @@ export type OpenRouterKeyStatus = {
 
 const timeoutMs = 15000;
 const hubSpotOAuthEndpoint = "https://api.hubapi.com/oauth/2026-03/token";
-export const hubSpotRequiredScopes = ["oauth", "crm.objects.contacts.read", "crm.objects.contacts.write"] as const;
+export const hubSpotRequiredScopes = ["oauth", "crm.objects.contacts.read", "crm.objects.contacts.write", "crm.objects.companies.read", "crm.objects.owners.read"] as const;
 
 const requireEnv = (env: Env, name: string) => {
   const value = env[name];
@@ -279,6 +279,7 @@ export const getHubSpotContact = async (
 
 type HubSpotAssociation = { toObjectId: number; associationTypes: Array<{ typeId: number; label: string | null }> };
 type HubSpotCompanyRecord = { id: string; properties: { name?: string | null; domain?: string | null }; archived?: boolean };
+type HubSpotOwner = { id: string; userId?: number | null; archived?: boolean };
 
 const hubSpotRequest = async <T>(url: string, config: HubSpotConfig, init?: RequestInit) => {
   for (let attempt = 0; ; attempt += 1) {
@@ -303,6 +304,9 @@ export const getHubSpotLeadRecord = async (contactId: string, config = hubSpotCo
     return { id: company.id, name: company.properties.name || "Unknown company", domain: company.properties.domain ?? null, archived: company.archived, primary: association.associationTypes.some(({ typeId }) => typeId === 1) };
   }));
   const properties = contact.properties;
+  const owner = properties.hubspot_owner_id
+    ? await hubSpotRequest<HubSpotOwner>(`https://api.hubapi.com/crm/owners/2026-03/${properties.hubspot_owner_id}?idProperty=id`, config)
+    : null;
   return {
     id: contact.id,
     firstname: properties.firstname,
@@ -311,6 +315,7 @@ export const getHubSpotLeadRecord = async (contactId: string, config = hubSpotCo
     jobtitle: properties.jobtitle,
     company: properties.company,
     owner: properties.hubspot_owner_id,
+    assignedUserId: owner?.userId == null || owner.archived ? null : String(owner.userId),
     source: properties.hs_analytics_source,
     lifecycleStage: properties.lifecyclestage,
     routingStatus: properties.hs_lead_status?.toLowerCase() ?? null,

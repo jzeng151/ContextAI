@@ -20,6 +20,7 @@ import {
   explainLeadWithOpenRouter,
   hubSpotAuthorizationUrl,
   hubSpotConfigFromEnv,
+  hubSpotRequiredScopes,
   listHubSpotContacts,
   openRouterConfigFromEnv,
   refreshHubSpotAccessToken,
@@ -797,7 +798,7 @@ test("HubSpot OAuth requests least privilege and keeps secrets in request bodies
       refresh_token: "refresh-secret",
       expires_in: 1800,
       hub_id: 123,
-      scopes: ["oauth", "crm.objects.contacts.read", "crm.objects.contacts.write"],
+      scopes: [...hubSpotRequiredScopes],
     }), { status: 200 });
   };
   try {
