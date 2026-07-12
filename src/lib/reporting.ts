@@ -90,12 +90,14 @@ export function createPilotReport(
 
   const evaluations = (database.prepare(`
     SELECT er.evaluation_id, er.lead_id, er.packet_json, er.completed_at,
-      po.rep_id, pp.cohort, pp.team_id
+      pp.rep_id, pp.cohort, pp.team_id
     FROM evaluation_runs er
     LEFT JOIN pilot_evaluation_owners po
       ON po.tenant_id = er.tenant_id AND po.evaluation_id = er.evaluation_id
     LEFT JOIN pilot_participants pp
       ON pp.tenant_id = po.tenant_id AND pp.rep_id = po.rep_id
+      AND er.completed_at >= pp.active_from
+      AND (pp.active_to IS NULL OR er.completed_at <= pp.active_to)
     WHERE er.tenant_id = ?
     ORDER BY er.completed_at, er.evaluation_id
   `).all(tenantId) as Array<Record<string, string | null>>).map((row): Evaluation => ({
@@ -122,9 +124,11 @@ export function createPilotReport(
   const events = allEvents.filter((event) => evaluationIds.has(event.evaluationId) &&
     (!filters.configVersion || event.configVersion === filters.configVersion));
   const byEvaluation = new Map(evaluations.map((evaluation) => [evaluation.evaluationId, evaluation]));
+  const indexEvaluations = firstBy(evaluations, ({ leadId }) => leadId);
+  const indexEvaluationIds = new Set([...indexEvaluations.values()].map(({ evaluationId }) => evaluationId));
   const eventRuns = events.filter((event): event is Extract<PilotEvent, { name: "evaluation.run" }> => event.name === "evaluation.run");
   const runByEvaluation = firstBy(eventRuns, ({ evaluationId }) => evaluationId);
-  const leadsByBand = Object.fromEntries(bands.map((band) => [band, new Set(eventRuns.filter(({ data }) => data.priorityBand === band).map(({ evaluationId }) => evaluationId)).size]));
+  const leadsByBand = Object.fromEntries(bands.map((band) => [band, [...runByEvaluation.values()].filter(({ data }) => data.priorityBand === band).length]));
 
   const shown = firstBy(events.filter((event): event is Extract<PilotEvent, { name: "score.shown" }> => event.name === "score.shown"), ({ evaluationId }) => evaluationId);
   const allDispositionEvents = events.filter((event): event is Extract<PilotEvent, { name: "recommendation.disposition" }> => event.name === "recommendation.disposition");
@@ -136,7 +140,7 @@ export function createPilotReport(
   const accepted = [...dispositions.values()].filter(({ data }) => data.disposition === "accepted").length;
   const overridden = [...dispositions.values()].filter(({ data }) => data.disposition === "overridden").length;
 
-  const views = firstBy(events.filter((event): event is Extract<PilotEvent, { name: "lead.viewed" }> => event.name === "lead.viewed"), ({ evaluationId }) => evaluationId);
+  const views = firstBy(events.filter((event): event is Extract<PilotEvent, { name: "lead.viewed" }> => event.name === "lead.viewed" && indexEvaluationIds.has(event.evaluationId)), ({ evaluationId }) => evaluationId);
   const actions = events.filter((event): event is Extract<PilotEvent, { name: "action.first_meaningful" }> => event.name === "action.first_meaningful");
   const researchMinutes: number[] = [];
   let lateActions = 0;
@@ -151,7 +155,7 @@ export function createPilotReport(
   const allMeetingEvents = events.filter((event): event is Extract<PilotEvent, { name: "meeting.attribution" }> => event.name === "meeting.attribution");
   const meetingEvents = allMeetingEvents.filter((event) => {
     const run = runByEvaluation.get(event.evaluationId);
-    return run && eventAt(event) >= eventAt(run) && eventAt(event) - eventAt(run) <= 60 * day;
+    return indexEvaluationIds.has(event.evaluationId) && run && eventAt(event) >= eventAt(run) && eventAt(event) - eventAt(run) <= 60 * day;
   });
   const meetings = new Map<string, typeof meetingEvents[number]>();
   for (const event of meetingEvents) {
@@ -175,7 +179,6 @@ export function createPilotReport(
     if (repId) meetingsByRep[repId] = (meetingsByRep[repId] ?? 0) + 1;
     else meetingsMissingOwner++;
   }
-  const indexEvaluations = firstBy(evaluations, ({ leadId }) => leadId);
   const matured = [...indexEvaluations.values()].filter(({ evaluationId }) => {
     const run = runByEvaluation.get(evaluationId);
     return run && generated - eventAt(run) >= 60 * day;
@@ -191,16 +194,27 @@ export function createPilotReport(
     const run = runByEvaluation.get(event.evaluationId);
     return run !== undefined && eventAt(event) >= eventAt(run) && eventAt(event) - eventAt(run) <= 60 * day;
   });
+  const outcomes = new Map<string, typeof outcomeEvents[number]>();
+  for (const event of outcomeEvents) {
+    const existing = outcomes.get(event.data.outcomeId);
+    if (!existing || (existing.data.attribution === "rep_reported" && event.data.attribution === "crm_association")) outcomes.set(event.data.outcomeId, event);
+  }
   const maturedHot = matured.filter(({ evaluationId }) => shown.get(evaluationId)?.data.priorityBand === "Hot");
-  const falsePositiveLeads = new Set(maturedHot.filter(({ evaluationId }) => outcomeEvents.some((event) => event.evaluationId === evaluationId && ["bad_fit", "disqualified"].includes(event.data.outcomeType))).map(({ leadId }) => leadId));
+  const falsePositiveLeads = new Set(maturedHot.filter(({ evaluationId }) => [...outcomes.values()].some((event) => event.evaluationId === evaluationId && ["bad_fit", "disqualified"].includes(event.data.outcomeType))).map(({ leadId }) => leadId));
   const hotLeads = new Set(maturedHot.map(({ leadId }) => leadId));
 
   const writeEvents = events.filter((event): event is Extract<PilotEvent, { name: "writeback.outcome" }> => event.name === "writeback.outcome");
-  const writtenIds = new Set(writeEvents.filter(({ data }) => data.outcome === "Written").map(({ data }) => data.writebackId));
-  const rollbackIds = new Set(events.filter((event): event is Extract<PilotEvent, { name: "writeback.rollback" }> => event.name === "writeback.rollback" && writtenIds.has(event.data.writebackId)).map(({ data }) => data.writebackId));
+  const written = firstBy(writeEvents.filter(({ data }) => data.outcome === "Written"), ({ data }) => data.writebackId);
+  const writtenIds = new Set(written.keys());
+  const rollbackIds = new Set(events.filter((event): event is Extract<PilotEvent, { name: "writeback.rollback" }> => {
+    if (event.name !== "writeback.rollback") return false;
+    const write = written.get(event.data.writebackId);
+    return write !== undefined && eventAt(event) >= eventAt(write) && eventAt(event) - eventAt(write) <= 30 * day;
+  }).map(({ data }) => data.writebackId));
   const writebacksByOutcome = Object.fromEntries(writebackOutcomes.map((outcome) => [outcome, new Set(writeEvents.filter(({ data }) => data.outcome === outcome).map(({ data }) => data.writebackId)).size]));
   const writebacksByField: Record<string, Record<string, number>> = {};
-  for (const { data } of writeEvents) {
+  const fieldWritebacks = firstBy(writeEvents.filter(({ data }) => data.fieldName), ({ data }) => `${data.writebackId}\0${data.fieldName}\0${data.outcome}`);
+  for (const { data } of fieldWritebacks.values()) {
     if (!data.fieldName) continue;
     const field = writebacksByField[data.fieldName] ??= {};
     field[data.outcome] = (field[data.outcome] ?? 0) + 1;
@@ -228,7 +242,7 @@ export function createPilotReport(
   }
 
   const weakHotEvaluations = new Set(events.filter((event): event is Extract<PilotEvent, { name: "source.contribution" }> => {
-    if (event.name !== "source.contribution" || !event.data.weakSignal || !event.data.hotMaking || event.data.sourceType !== "engagement") return false;
+    if (event.name !== "source.contribution" || !indexEvaluationIds.has(event.evaluationId) || !event.data.weakSignal || !event.data.hotMaking || event.data.sourceType !== "engagement") return false;
     const packet = byEvaluation.get(event.evaluationId)?.packet;
     return packet !== undefined && event.evidenceRefs.some((ref) => {
       const evidence = packetEvidence(packet).find(({ evidence_id }) => evidence_id === ref);
@@ -259,7 +273,7 @@ export function createPilotReport(
     researchTime: { observed: researchMinutes.length, eligibleViews: views.size, censored: views.size - researchMinutes.length, coverage: ratio(researchMinutes.length, views.size), medianMinutes: median(researchMinutes) },
     meetings: { total: meetings.size, enrolledReps: enrolledReps.size, perRep: ratio(meetings.size, enrolledReps.size), byRep: meetingsByRep },
     conversion: conversions,
-    hotFalsePositives: { numerator: falsePositiveLeads.size, denominator: hotLeads.size, rate: ratio(falsePositiveLeads.size, hotLeads.size), missingOutcomes: maturedHot.filter(({ evaluationId }) => !outcomeEvents.some((event) => event.evaluationId === evaluationId)).length },
+    hotFalsePositives: { numerator: falsePositiveLeads.size, denominator: hotLeads.size, rate: ratio(falsePositiveLeads.size, hotLeads.size), missingOutcomes: maturedHot.filter(({ evaluationId }) => ![...outcomes.values()].some((event) => event.evaluationId === evaluationId)).length },
     crmCompleteness: { numerator: completeRecords, denominator: indexEvaluations.size, rate: ratio(completeRecords, indexEvaluations.size), fieldCoverage: coreFieldCoverage },
     writebacks: { rolledBack: rollbackIds.size, written: writtenIds.size, rate: ratio(rollbackIds.size, writtenIds.size), byOutcome: writebacksByOutcome, byField: writebacksByField },
     topScoreDrivers: Object.entries(driverTotals).sort((left, right) => right[1] - left[1]).map(([driver, points]) => ({ driver, points })),
@@ -272,7 +286,7 @@ export function createPilotReport(
       missingEvaluationRuns,
       missingOwnerSnapshots,
       duplicateDispositionEvents: allDispositionEvents.length - dispositions.size,
-      duplicateMeetingEvents: allMeetingEvents.length - meetings.size,
+      duplicateMeetingEvents: meetingEvents.length - meetings.size,
       lateActions,
       invalidEvents,
       caveats

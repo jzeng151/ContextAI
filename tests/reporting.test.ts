@@ -94,3 +94,64 @@ test("zero denominators and incomplete telemetry are unavailable rather than val
     store.close();
   }
 });
+
+test("pilot metric denominators honor index runs, active enrollment, attribution precedence, and outcome windows", () => {
+  const store = new RuntimeStore(":memory:");
+  try {
+    const index = structuredClone(leads[0]!);
+    const rescore = { ...structuredClone(index), evaluation_id: "eval-z-rescore", request_id: "request-rescore" };
+    const outsideEnrollment = structuredClone(leads[1]!);
+    store.saveTenant("tenant-1", "Pilot tenant");
+    store.saveConfigVersion("tenant-1", defaultConfigVersion);
+    store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "index", packet: index });
+    store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "rescore", packet: rescore });
+    store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "outside", packet: outsideEnrollment });
+    store.registerPilotParticipant({ tenantId: "tenant-1", repId: "rep-1", cohort: "contextai", teamId: "team-1", activeFrom: "2026-01-01T00:00:00.000Z" });
+    store.registerPilotParticipant({ tenantId: "tenant-1", repId: "rep-2", cohort: "contextai", teamId: "team-1", activeFrom: "2026-08-01T00:00:00.000Z" });
+    store.recordEvaluationOwner({ tenantId: "tenant-1", evaluationId: index.evaluation_id, repId: "rep-1" });
+    store.recordEvaluationOwner({ tenantId: "tenant-1", evaluationId: rescore.evaluation_id, repId: "rep-1" });
+    store.recordEvaluationOwner({ tenantId: "tenant-1", evaluationId: outsideEnrollment.evaluation_id, repId: "rep-2" });
+
+    const base = (packet: typeof index) => ({
+      tenantId: "tenant-1", requestId: packet.request_id, evaluationId: packet.evaluation_id,
+      leadId: packet.lead_id, accountId: packet.account_id, actorType: "rep" as const, actorId: "actor-1",
+      scoreVersion: packet.score_version, configVersion: packet.score_version, promptVersion: "grounding-v1",
+      evidenceRefs: [] as string[], retentionClass: "pilot_analytics_12_months" as const
+    });
+    const event = <T extends PilotEvent>(value: T) => store.recordEvent(value);
+    event({ ...base(index), idempotencyKey: "index-run", occurredAt: "2026-01-01T09:00:00.000Z", name: "evaluation.run", data: { outcome: "complete", priorityScore: 94, priorityBand: "Hot" } });
+    event({ ...base(index), idempotencyKey: "index-run-retry", occurredAt: "2026-01-01T09:00:01.000Z", name: "evaluation.run", data: { outcome: "complete", priorityScore: 70, priorityBand: "Warm" } });
+    event({ ...base(index), idempotencyKey: "index-shown", occurredAt: "2026-01-01T09:01:00.000Z", name: "score.shown", data: { priorityScore: 94, priorityBand: "Hot", surface: "dashboard" } });
+    event({ ...base(index), idempotencyKey: "index-view", occurredAt: "2026-01-01T09:02:00.000Z", name: "lead.viewed", data: { surface: "dashboard" } });
+    event({ ...base(index), idempotencyKey: "index-action", occurredAt: "2026-01-01T10:02:00.000Z", name: "action.first_meaningful", data: { actionType: "email" } });
+    event({ ...base(index), idempotencyKey: "index-meeting", occurredAt: "2026-01-20T09:00:00.000Z", name: "meeting.attribution", data: { meetingId: "meeting-index", attribution: "crm_association" } });
+    event({ ...base(index), idempotencyKey: "outcome-rep", occurredAt: "2026-01-20T09:00:00.000Z", name: "outcome.attribution", data: { outcomeId: "outcome-1", outcomeType: "bad_fit", attribution: "rep_reported" } });
+    event({ ...base(index), idempotencyKey: "outcome-crm", occurredAt: "2026-01-21T09:00:00.000Z", name: "outcome.attribution", data: { outcomeId: "outcome-1", outcomeType: "opportunity_created", attribution: "crm_association" } });
+    event({ ...base(index), retentionClass: "writeback_audit_24_months", idempotencyKey: "write-1", occurredAt: "2026-01-02T09:00:00.000Z", name: "writeback.outcome", data: { writebackId: "write-1", outcome: "Written", fieldName: "contact_title" } });
+    event({ ...base(index), retentionClass: "writeback_audit_24_months", idempotencyKey: "write-1-retry", occurredAt: "2026-01-02T09:00:01.000Z", name: "writeback.outcome", data: { writebackId: "write-1", outcome: "Written", fieldName: "contact_title" } });
+    event({ ...base(index), retentionClass: "writeback_audit_24_months", idempotencyKey: "rollback-1", occurredAt: "2026-01-03T09:00:00.000Z", name: "writeback.rollback", data: { writebackId: "write-1", rollbackId: "rollback-1", fieldName: "contact_title" } });
+    event({ ...base(index), retentionClass: "writeback_audit_24_months", idempotencyKey: "write-2", occurredAt: "2026-01-02T09:00:00.000Z", name: "writeback.outcome", data: { writebackId: "write-2", outcome: "Written", fieldName: "contact_title" } });
+    event({ ...base(index), retentionClass: "writeback_audit_24_months", idempotencyKey: "rollback-late", occurredAt: "2026-02-05T09:00:00.000Z", name: "writeback.rollback", data: { writebackId: "write-2", rollbackId: "rollback-2", fieldName: "contact_title" } });
+
+    event({ ...base(rescore), idempotencyKey: "rescore-run", occurredAt: "2026-01-02T09:00:00.000Z", name: "evaluation.run", data: { outcome: "complete", priorityScore: 94, priorityBand: "Hot" } });
+    event({ ...base(rescore), idempotencyKey: "rescore-view", occurredAt: "2026-01-02T09:01:00.000Z", name: "lead.viewed", data: { surface: "dashboard" } });
+    event({ ...base(rescore), idempotencyKey: "rescore-action", occurredAt: "2026-01-02T09:06:00.000Z", name: "action.first_meaningful", data: { actionType: "call" } });
+    event({ ...base(rescore), idempotencyKey: "rescore-meeting", occurredAt: "2026-01-25T09:00:00.000Z", name: "meeting.attribution", data: { meetingId: "meeting-rescore", attribution: "crm_association" } });
+    event({ ...base(rescore), evidenceRefs: ["gn-intent"], idempotencyKey: "rescore-weak", occurredAt: "2026-01-02T09:00:01.000Z", name: "source.contribution", data: { sourceType: "engagement", contribution: "supporting", weakSignal: true, hotMaking: true } });
+    event({ ...base(outsideEnrollment), idempotencyKey: "outside-run", occurredAt: "2026-01-03T09:00:00.000Z", name: "evaluation.run", data: { outcome: "complete", priorityScore: outsideEnrollment.priority_score, priorityBand: outsideEnrollment.priority_band } });
+
+    const report = createPilotReport(store.database, "tenant-1", { cohort: "contextai" }, "2026-04-01T00:00:00.000Z");
+    assert.equal(report.leads.processed, 2);
+    assert.equal(report.leads.byBand.Hot, 2);
+    assert.equal(report.leads.byBand.Warm, 0);
+    assert.equal(report.researchTime.medianMinutes, 60);
+    assert.equal(report.researchTime.eligibleViews, 1);
+    assert.equal(report.meetings.total, 1);
+    assert.equal(report.hotFalsePositives.rate, 0);
+    assert.equal(report.writebacks.rate, 0.5);
+    assert.equal(report.writebacks.byField.contact_title!.Written, 2);
+    assert.equal(report.weakSignalContribution.rate, 0);
+  } finally {
+    store.close();
+  }
+});
