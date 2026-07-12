@@ -15,6 +15,7 @@ const record = {
   email: "ada@example.com",
   jobtitle: "VP Operations",
   owner: "rep-1",
+  assignedUserId: "rep-1",
   source: "Inbound",
   lifecycleStage: "lead",
   routingStatus: "open",
@@ -49,6 +50,7 @@ const setup = () => {
   const store = new RuntimeStore(":memory:");
   store.saveTenant("tenant-15", "Issue 15 fixture");
   store.saveConfigVersion(identity, defaultConfigVersion);
+  store.registerPilotParticipant({ tenantId: identity.tenantId, repId: "rep-1", cohort: "contextai", teamId: "team-1", activeFrom: "2026-01-01T00:00:00.000Z" });
   return store;
 };
 
@@ -68,6 +70,28 @@ test("ordered evaluation persists a complete run and replay is idempotent", asyn
   assert.equal(replay.replayed, true);
   assert.equal(replay.packet.evaluation_id, first.packet.evaluation_id);
   assert.equal(store.database.prepare("SELECT count(*) AS count FROM evaluation_runs").get().count, 1);
+  assert.deepEqual(
+    { ...(store.database.prepare("SELECT rep_id, evaluation_kind FROM pilot_evaluation_owners").get() as object) },
+    { rep_id: "rep-1", evaluation_kind: "exposure_index" }
+  );
+  const rescore = await evaluateLead({ ...options, idempotencyKey: "assignment:event-16", requestId: "event-16", evaluatedAt: "2026-07-13T09:00:00.000Z" });
+  assert.equal((store.database.prepare("SELECT evaluation_kind FROM pilot_evaluation_owners WHERE evaluation_id = ?").get(rescore.packet.evaluation_id) as { evaluation_kind: string }).evaluation_kind, "rescore");
+  store.close();
+});
+
+test("baseline history preserves the first exposure index", async () => {
+  const store = setup();
+  const run = (id: string, evaluatedAt: string, evaluationKind?: "baseline_anchor") => evaluateLead({
+    identity, idempotencyKey: id, contactId: record.id, store, dependencies: dependencies(), evaluatedAt,
+    ...(evaluationKind ? { evaluationKind } : {})
+  });
+  await run("baseline", "2026-07-10T09:00:00.000Z", "baseline_anchor");
+  await run("exposure", "2026-07-11T09:00:00.000Z");
+  await run("rescore", "2026-07-12T09:00:00.000Z");
+  assert.deepEqual(
+    (store.database.prepare("SELECT evaluation_kind FROM pilot_evaluation_owners ORDER BY recorded_at").all() as Array<{ evaluation_kind: string }>).map(({ evaluation_kind }) => evaluation_kind),
+    ["baseline_anchor", "exposure_index", "rescore"]
+  );
   store.close();
 });
 

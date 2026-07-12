@@ -102,7 +102,7 @@ Never commit `.env` or credentials.
 | Command | Description |
 | --- | --- |
 | `npm run dev` | Start the local Astro development server. |
-| `npm start` | Start the minimal Node server; `GET /health` reports runtime readiness. |
+| `npm start` | Start the Node server; `GET /health` reports runtime readiness. |
 | `npm test` | Run the native Node test suite. |
 | `npm run build` | Create a production Astro build. |
 | `npm run db:migrate` | Create or upgrade the SQLite store. |
@@ -157,6 +157,8 @@ Production security responsibilities, OAuth operations, disconnect/status comman
 Telemetry producers use the recorder in `instrumentation.ts`; they do not import metric aggregation or reporting. Event names, required linkage, PII exclusions, retention classes, and metric inputs are documented in [TELEMETRY.md](TELEMETRY.md).
 
 The HubSpot card project and deployment steps live in [hubspot/README.md](hubspot/README.md). It renders the latest cached evaluation and records views, score display, recommendation disposition, and observed rep actions without executing prospect-facing automation.
+
+Pilot reports are read-only: `GET /reports/pilot` returns JSON and `GET /reports/pilot.csv` returns an export. Both require a RevOps Admin bearer token and accept `from`, `to`, `cohort`, `teamId`, `repId`, `scoreVersion`, `configVersion`, `promptVersion`, `source`, and `band` query filters. Reports include metric/window metadata and explicit data-quality caveats; missing telemetry is never presented as a valid zero.
 
 ## Contributing
 

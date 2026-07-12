@@ -88,7 +88,7 @@ test("a clean store upgrades from a legacy schema and failed migrations roll bac
     `);
 
     migrateDatabase(store.database);
-    assert.equal((store.database.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 13);
+    assert.equal((store.database.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, migrations.at(-1)!.version);
     assert.deepEqual(
       { ...(store.database.prepare("SELECT status, last_error FROM integrations WHERE integration_id = 'legacy-hubspot'").get() as object) },
       { status: "disabled", last_error: "oauth_reconnect_required" }
@@ -101,11 +101,12 @@ test("a clean store upgrades from a legacy schema and failed migrations roll bac
     assert.ok(store.database.prepare("PRAGMA table_info(claim_evidence)").all().some((column) => (column as { name: string }).name === "tenant_id"));
     store.saveEvaluation({ tenantId: "legacy-tenant", idempotencyKey: "post-upgrade", packet: legacyPacket });
 
+    const brokenVersion = migrations.at(-1)!.version + 1;
     assert.throws(() => migrateDatabase(store.database, [
       ...migrations,
-      { version: 14, name: "broken", sql: "CREATE TABLE should_rollback (id TEXT); INVALID SQL;" }
-    ]), /Migration 14.*failed/);
-    assert.equal((store.database.prepare("SELECT count(*) AS count FROM schema_migrations WHERE version = 14").get() as { count: number }).count, 0);
+      { version: brokenVersion, name: "broken", sql: "CREATE TABLE should_rollback (id TEXT); INVALID SQL;" }
+    ]), new RegExp(`Migration ${brokenVersion}.*failed`));
+    assert.equal((store.database.prepare("SELECT count(*) AS count FROM schema_migrations WHERE version = ?").get(brokenVersion) as { count: number }).count, 0);
     assert.throws(() => store.database.prepare("SELECT * FROM should_rollback").all(), /no such table/i);
   } finally {
     store.close();
@@ -128,6 +129,10 @@ test("complete and partial-failure evaluations persist with idempotency", () => 
     const skipped = structuredClone(lead("no-public-signal"));
     skipped.evaluation_id = "eval-skipped";
     skipped.tool_status.fetch_public_signals = { status: "skipped", detail: "Skipped for test.", completed_at: skipped.evaluation_timestamp };
+    const offsetTimestamp = structuredClone(complete);
+    offsetTimestamp.evaluation_id = "eval-offset-timestamp";
+    offsetTimestamp.request_id = "request-offset-timestamp";
+    offsetTimestamp.evaluation_timestamp = "2026-07-09T05:00:00-04:00";
 
     store.saveTenant("tenant-without-config", "No config tenant");
     assert.throws(
@@ -141,6 +146,7 @@ test("complete and partial-failure evaluations persist with idempotency", () => 
     });
     assert.equal(store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "partial", packet: partial }).created, true);
     assert.equal(store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "skipped", packet: skipped }).created, true);
+    assert.equal(store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "offset", packet: offsetTimestamp }).created, true);
     assert.equal(store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "golden", packet: complete }).created, false);
     assert.throws(
       () => store.saveEvaluation({ tenantId: "tenant-1", idempotencyKey: "golden", packet: partial }),
@@ -154,6 +160,7 @@ test("complete and partial-failure evaluations persist with idempotency", () => 
     assert.equal(savedPartial?.outcome, "partial_failure");
     assert.equal(savedPartial?.packet.tool_status.fetch_intent_triggers.status, "timeout");
     assert.equal(store.getEvaluation(admin("tenant-1"), skipped.evaluation_id)?.outcome, "partial_failure");
+    assert.equal((store.database.prepare("SELECT completed_at FROM evaluation_runs WHERE evaluation_id = ?").get(offsetTimestamp.evaluation_id) as { completed_at: string }).completed_at, "2026-07-09T09:00:00.000Z");
     assert.ok((store.database.prepare("SELECT count(*) AS count FROM evidence WHERE evaluation_id = ?").get(complete.evaluation_id) as { count: number }).count > 0);
     assert.ok((store.database.prepare("SELECT count(*) AS count FROM claims WHERE evaluation_id = ?").get(complete.evaluation_id) as { count: number }).count > 0);
     assert.equal((store.database.prepare("SELECT count(*) AS count FROM config_versions").get() as { count: number }).count, 2);

@@ -3,6 +3,7 @@ import { createConfigDraft, type ScoringConfig } from "./lib/config.ts";
 import { getHubSpotLeadRecord, listAssignedOpenHubSpotLeads, writeHubSpotProperties } from "./lib/integrations.ts";
 import { handleAssignmentEvent, parseHubSpotAssignmentEvents, runMorningEvaluation, verifyAssignmentSignature } from "./lib/orchestration.ts";
 import { RuntimeStore } from "./lib/persistence.ts";
+import { createPilotReport, exportPilotReport, reportFiltersFrom } from "./lib/reporting.ts";
 import { authenticateBearer, type RequestIdentity } from "./lib/security.ts";
 import { secretKeyFromEnv } from "./lib/secrets.ts";
 import { handleCrmExtensionRequest } from "./lib/crm-extension.ts";
@@ -74,6 +75,19 @@ const server = createServer(async (request, response) => {
     return;
   }
   try {
+    if (request.method === "GET" && (path === "/reports/pilot" || path === "/reports/pilot.csv")) {
+      const identity = adminIdentity(request, response);
+      if (!identity) return;
+      const url = new URL(request.url ?? path, `http://${request.headers.host ?? "localhost"}`);
+      const report = createPilotReport(store.database, identity.tenantId, reportFiltersFrom(url.searchParams));
+      store.recordReportAccess(identity, path.endsWith(".csv") ? "csv" : "json");
+      if (path === "/reports/pilot.csv") {
+        response.writeHead(200, { "content-type": "text/csv; charset=utf-8" });
+        response.end(exportPilotReport(report));
+        return;
+      }
+      return json(response, 200, report);
+    }
     if (request.method === "GET" && path === "/admin/config") {
       const identity = adminIdentity(request, response);
       if (!identity) return;

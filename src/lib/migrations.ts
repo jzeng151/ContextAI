@@ -410,6 +410,72 @@ export const migrations: readonly Migration[] = [
       JOIN claims ON claims.claim_id = legacy.claim_id AND claims.evaluation_id = legacy.evaluation_id;
       DROP TABLE claim_evidence_legacy;
     `
+  },
+  {
+    version: 14,
+    name: "frozen pilot reporting context",
+    sql: `
+      CREATE TABLE pilot_participants (
+        tenant_id TEXT NOT NULL REFERENCES tenants(tenant_id),
+        rep_id TEXT NOT NULL,
+        cohort TEXT NOT NULL CHECK (cohort IN ('control', 'contextai')),
+        team_id TEXT NOT NULL,
+        active_from TEXT NOT NULL,
+        active_to TEXT,
+        PRIMARY KEY (tenant_id, rep_id),
+        CHECK (active_to IS NULL OR active_to >= active_from)
+      );
+
+      CREATE TABLE pilot_evaluation_owners (
+        tenant_id TEXT NOT NULL,
+        evaluation_id TEXT NOT NULL,
+        rep_id TEXT NOT NULL,
+        recorded_at TEXT NOT NULL,
+        PRIMARY KEY (tenant_id, evaluation_id),
+        FOREIGN KEY (tenant_id, evaluation_id) REFERENCES evaluation_runs(tenant_id, evaluation_id),
+        FOREIGN KEY (tenant_id, rep_id) REFERENCES pilot_participants(tenant_id, rep_id)
+      );
+
+      CREATE TRIGGER pilot_participants_no_update
+      BEFORE UPDATE ON pilot_participants BEGIN SELECT RAISE(ABORT, 'pilot participants are frozen'); END;
+      CREATE TRIGGER pilot_participants_no_delete
+      BEFORE DELETE ON pilot_participants BEGIN SELECT RAISE(ABORT, 'pilot participants are frozen'); END;
+      CREATE TRIGGER pilot_participants_no_duplicate
+      BEFORE INSERT ON pilot_participants
+      WHEN EXISTS (SELECT 1 FROM pilot_participants WHERE tenant_id = NEW.tenant_id AND rep_id = NEW.rep_id)
+      BEGIN SELECT RAISE(ABORT, 'pilot participants are frozen'); END;
+      CREATE TRIGGER pilot_evaluation_owners_no_update
+      BEFORE UPDATE ON pilot_evaluation_owners BEGIN SELECT RAISE(ABORT, 'pilot evaluation owners are append-only'); END;
+      CREATE TRIGGER pilot_evaluation_owners_no_delete
+      BEFORE DELETE ON pilot_evaluation_owners BEGIN SELECT RAISE(ABORT, 'pilot evaluation owners are append-only'); END;
+      CREATE TRIGGER pilot_evaluation_owners_no_duplicate
+      BEFORE INSERT ON pilot_evaluation_owners
+      WHEN EXISTS (SELECT 1 FROM pilot_evaluation_owners WHERE tenant_id = NEW.tenant_id AND evaluation_id = NEW.evaluation_id)
+      BEGIN SELECT RAISE(ABORT, 'pilot evaluation owners are append-only'); END;
+    `
+  },
+  {
+    version: 15,
+    name: "pilot evaluation phase",
+    sql: `
+      ALTER TABLE pilot_evaluation_owners ADD COLUMN evaluation_kind TEXT NOT NULL DEFAULT 'exposure_index'
+        CHECK (evaluation_kind IN ('baseline_anchor', 'exposure_index', 'rescore'));
+    `
+  },
+  {
+    version: 16,
+    name: "pilot participant departures",
+    sql: `
+      DROP TRIGGER pilot_participants_no_update;
+      CREATE TRIGGER pilot_participants_no_update
+      BEFORE UPDATE ON pilot_participants
+      WHEN NOT (
+        OLD.active_to IS NULL AND NEW.active_to IS NOT NULL
+        AND NEW.tenant_id = OLD.tenant_id AND NEW.rep_id = OLD.rep_id
+        AND NEW.cohort = OLD.cohort AND NEW.team_id = OLD.team_id AND NEW.active_from = OLD.active_from
+      )
+      BEGIN SELECT RAISE(ABORT, 'pilot participants are frozen'); END;
+    `
   }
 ];
 
