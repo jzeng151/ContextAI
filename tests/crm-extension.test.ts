@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { defaultConfigVersion } from "../src/lib/config.ts";
 import { crmCardView, handleCrmExtensionRequest } from "../src/lib/crm-extension.ts";
@@ -28,6 +29,15 @@ const signed = (body: unknown, timestamp = String(Date.now())) => {
   const signature = createHmac("sha256", secret).update(`POST${baseUrl}${url}${raw}${timestamp}`).digest("base64");
   return { method: "POST", url, body: raw, headers: { "x-hubspot-signature-v3": signature, "x-hubspot-request-timestamp": timestamp } };
 };
+
+test("CRM card uses narrow-safe native controls and clears stale record state", () => {
+  const card = readFileSync(new URL("../hubspot/src/app/cards/ContextAICard.tsx", import.meta.url), "utf8");
+  assert.match(card, /<ToggleGroup[\s\S]*toggleType="radioButtonList"/);
+  assert.match(card, /<DescriptionList direction="column">/);
+  assert.match(card, /<LoadingButton/);
+  assert.match(card, /let active = true;[\s\S]*setData\(null\);[\s\S]*return \(\) => \{ active = false; \};/);
+  assert.match(card, /recordGeneration[\s\S]*recordGeneration\.current\.value === generation/);
+});
 
 test("HubSpot v3 signatures reject tampering and stale requests", () => {
   const request = signed({ operation: "view", objectId: "golden-normal", objectTypeId: "0-1" });
