@@ -4,7 +4,8 @@ import { leads } from "../src/data/leads.ts";
 import { RuntimeStore } from "../src/lib/persistence.ts";
 
 const store = new RuntimeStore();
-const identity = { requestId: "local-seed", tenantId: "local-demo", actorId: "local-admin", role: "revops_admin" } as const;
+const tenantId = process.env.CONTEXTAI_TENANT_ID ?? "local";
+const identity = { requestId: "local-seed", tenantId, actorId: "local-admin", role: "revops_admin" } as const;
 try {
   if (process.argv[2] === "purge") {
     const tenantId = process.argv[3];
@@ -14,7 +15,7 @@ try {
     const count = store.purgeExpiredEvaluations({ requestId: randomUUID(), tenantId, actorId, role: "revops_admin" }, before);
     console.log(`Purged ${count} expired evaluations for ${tenantId}.`);
   } else if (process.argv.includes("seed")) {
-    store.saveTenant("local-demo", "Local demo");
+    store.saveTenant(tenantId, "Local demo");
     try {
       store.saveConfigVersion(identity, defaultConfigVersion);
     } catch (error) {
@@ -22,7 +23,7 @@ try {
     }
     for (const packet of leads) {
       store.saveEvaluation({
-        tenantId: "local-demo",
+        tenantId,
         idempotencyKey: `fixture:${packet.evaluation_id}`,
         packet
       });
