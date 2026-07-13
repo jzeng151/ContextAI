@@ -16,6 +16,7 @@ const store = new RuntimeStore();
 const host = process.env.HOST ?? "127.0.0.1";
 const port = Number(process.env.PORT ?? 4000);
 const adminOrigins = adminOriginsFromEnv(process.env.CONTEXTAI_ADMIN_ORIGIN);
+const localDemo = process.env.CONTEXTAI_LOCAL_DEMO === "1";
 if (!Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error("PORT must be an integer from 1 to 65535");
 
 const json = (response: Parameters<Parameters<typeof createServer>[0]>[1], status: number, body: unknown) => {
@@ -62,7 +63,7 @@ const dashboardIdentity = (request: Parameters<Parameters<typeof createServer>[0
   if (request.headers.authorization) return adminIdentity(request, response);
   const forwarded = ["forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto"].some((name) => request.headers[name]);
   const directLoopback = isLoopbackAddress(host) && isLoopbackAddress(request.socket.localAddress) && isLoopbackAddress(request.socket.remoteAddress) && !forwarded;
-  if (directLoopback && (!request.headers.origin || adminOrigins.has(request.headers.origin))) {
+  if (localDemo && directLoopback && (!request.headers.origin || adminOrigins.has(request.headers.origin))) {
     return { requestId: `dashboard-${Date.now()}`, tenantId, actorId: "local-demo", role: "revops_admin" as const };
   }
   json(response, 401, { error: "Authentication required" });
@@ -96,7 +97,7 @@ const server = createServer(async (request, response) => {
       const identity = dashboardIdentity(request, response);
       if (!identity) return;
       const { contacts } = await dashboardContacts(identity);
-      return json(response, 200, { leads: hubSpotDashboardPackets(store, identity, contacts.map(({ id }) => id)), contacts: contacts.length });
+      return json(response, 200, { leads: hubSpotDashboardPackets(store, identity, contacts.map(({ id }) => id)), contacts: contacts.length, tenantId: identity.tenantId });
     }
     if (request.method === "POST" && path === "/dashboard/refresh") {
       const identity = dashboardIdentity(request, response);
@@ -143,6 +144,7 @@ const server = createServer(async (request, response) => {
         failed: results.filter(({ status }) => status === "rejected").length,
         errors: results.flatMap((result) => result.status === "rejected" ? [result.reason instanceof Error ? result.reason.message : "Analysis failed"] : []),
         refreshedAt,
+        tenantId: identity.tenantId,
       });
     }
     if (request.method === "GET" && (path === "/reports/pilot" || path === "/reports/pilot.csv")) {

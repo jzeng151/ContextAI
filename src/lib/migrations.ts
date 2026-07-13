@@ -487,8 +487,8 @@ export const migrations: readonly Migration[] = [
       ALTER TABLE grounding_audit_records RENAME TO grounding_audit_records_legacy;
       CREATE TABLE grounding_audit_records (
         grounding_audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        tenant_id TEXT NOT NULL REFERENCES tenants(tenant_id),
-        evaluation_id TEXT NOT NULL REFERENCES evaluation_runs(evaluation_id),
+        tenant_id TEXT NOT NULL,
+        evaluation_id TEXT NOT NULL,
         prompt_version TEXT NOT NULL,
         model_id TEXT NOT NULL,
         allowed_claim_ids_json TEXT NOT NULL,
@@ -499,7 +499,8 @@ export const migrations: readonly Migration[] = [
         outcome TEXT NOT NULL CHECK (outcome IN ('validated', 'fallback')),
         failure TEXT CHECK (failure IN ('invalid_output', 'provider_failure')),
         recorded_at TEXT NOT NULL,
-        CHECK (outcome = 'fallback' OR failure IS NULL)
+        CHECK (outcome = 'fallback' OR failure IS NULL),
+        FOREIGN KEY (tenant_id, evaluation_id) REFERENCES evaluation_runs(tenant_id, evaluation_id)
       );
       INSERT INTO grounding_audit_records SELECT * FROM grounding_audit_records_legacy;
       DROP TABLE grounding_audit_records_legacy;

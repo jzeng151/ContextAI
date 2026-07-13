@@ -16,12 +16,14 @@ import {
 const dashboardApiUrl = (import.meta.env.PUBLIC_CONTEXTAI_API_URL ?? "http://127.0.0.1:4000").replace(/\/$/, "");
 let leads: LeadPacket[] = [];
 let dashboardError = "";
+let dashboardTenantId = "";
 if (import.meta.env.DEV) {
   try {
     const response = await fetch(`${dashboardApiUrl}/dashboard`);
-    const result = await response.json() as { leads?: LeadPacket[]; error?: string };
+    const result = await response.json() as { leads?: LeadPacket[]; tenantId?: string; error?: string };
     if (!response.ok) throw new Error(result.error || "HubSpot dashboard request failed");
     leads = result.leads ?? [];
+    dashboardTenantId = result.tenantId ?? "";
   } catch (error) {
     leads = fixtureLeads;
     dashboardError = error instanceof Error ? error.message : "HubSpot dashboard is unavailable";
@@ -111,7 +113,7 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
     <meta name="color-scheme" content="light" />
     <title>ContextAI Lead Triage</title>
   </head>
-  <body data-api-origin={dashboardApiUrl} data-config-version={defaultConfigVersion.id} data-prompt-version={dashboardPromptVersion}>
+  <body data-api-origin={dashboardApiUrl} data-tenant-id={dashboardTenantId} data-prompt-version={dashboardPromptVersion}>
     <a class="skip-link" href="#queue-workspace">Skip to lead queue</a>
     <div class="app-shell" data-app-shell>
       <aside class="app-nav" aria-label="ContextAI navigation">
@@ -390,7 +392,7 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
   import type { ActionType, PilotEvent } from "../lib/instrumentation.ts";
 
   type EventPacket = Parameters<typeof dashboardViewEvents>[0]["packet"];
-  type DashboardResponse = { leads?: LeadPacket[]; analyzed?: number; failed?: number; error?: string };
+  type DashboardResponse = { leads?: LeadPacket[]; analyzed?: number; failed?: number; tenantId?: string; error?: string };
   const packetElement = document.querySelector<HTMLScriptElement>("#event-packets");
   const packets = JSON.parse(packetElement?.textContent ?? "{}") as Record<string, EventPacket>;
   const shell = document.querySelector<HTMLElement>("[data-app-shell]");
@@ -407,6 +409,7 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
   const mobile = matchMedia("(max-width: 820px)");
   const eventSessionId = crypto.randomUUID();
   const emittedViews = new Set<string>();
+  let eventTenantId = document.body.dataset.tenantId ?? "";
   let selectedId = detailPanels.find((panel) => !panel.hidden)?.dataset.leadDetail ?? null;
   let activeTab = "decision";
   let originButton: HTMLButtonElement | null = null;
@@ -608,9 +611,10 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
     article.append(header, tabList, scroll);
     return article;
   };
-  const renderClientLeads = (leads: LeadPacket[]) => {
+  const renderClientLeads = (leads: LeadPacket[], tenantId?: string) => {
     const empty = document.querySelector<HTMLElement>("[data-empty-state]");
     if (!empty) return;
+    eventTenantId = tenantId ?? "";
     clientQueueActive = true;
     const ordered = rankDashboardLeads(leads);
     const list = document.createElement("ol");
@@ -686,14 +690,14 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
   };
   const emit = (events: PilotEvent[]) => events.forEach((event) => window.dispatchEvent(new CustomEvent("contextai:pilot-event", { detail: event })));
   const emitView = (leadId: string) => {
-    if (emittedViews.has(leadId) || !packets[leadId]) return;
+    if (emittedViews.has(leadId) || !packets[leadId] || !eventTenantId) return;
     emittedViews.add(leadId);
     emit(dashboardViewEvents({
       packet: packets[leadId],
-      tenantId: "pilot-workspace",
+      tenantId: eventTenantId,
       actorType: "rep",
       actorId: "dashboard-user",
-      configVersion: document.body.dataset.configVersion ?? "score-v0.1",
+      configVersion: packets[leadId].score_version,
       occurredAt: new Date().toISOString(),
       idempotencySeed: `dashboard:${eventSessionId}:${packets[leadId].evaluation_id}:view`
     }));
@@ -841,7 +845,7 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
         const leadId = form.dataset.outcomeForm ?? "";
         const packet = packets[leadId];
         const disposition = new FormData(form).get(`disposition-${leadId}`);
-        if (!packet || !["accepted", "ignored", "overridden"].includes(String(disposition))) return;
+        if (!packet || !eventTenantId || !["accepted", "ignored", "overridden"].includes(String(disposition))) return;
         const button = form.querySelector<HTMLButtonElement>("button[type=submit]");
         const output = form.querySelector<HTMLOutputElement>("[data-outcome-status]");
         const actionType = action?.value ? action.value as ActionType : undefined;
@@ -851,10 +855,10 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
             packet,
             disposition: disposition as "accepted" | "ignored" | "overridden",
             actionType,
-            tenantId: "pilot-workspace",
+            tenantId: eventTenantId,
             actorType: "rep",
             actorId: "dashboard-user",
-            configVersion: document.body.dataset.configVersion ?? "score-v0.1",
+            configVersion: packet.score_version,
             occurredAt: new Date().toISOString(),
             idempotencySeed: `dashboard:${eventSessionId}:${packet.evaluation_id}:${String(disposition)}:${actionType ?? "none"}`
           });
@@ -888,7 +892,7 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
     try {
       const result = await fetchDashboard("/dashboard/refresh", { method: "POST" });
       announce(`Analyzed ${result.analyzed ?? 0} HubSpot contacts${result.failed ? `; ${result.failed} failed` : ""}.`);
-      renderClientLeads(result.leads ?? []);
+      renderClientLeads(result.leads ?? [], result.tenantId);
       if (loading) loading.hidden = true;
       queuePane?.setAttribute("aria-busy", "false");
       shell?.classList.remove("is-loading");
@@ -910,8 +914,8 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
     button.addEventListener("click", () => refreshQueue(button))
   );
 
-  if (!desktopRows.length) void fetchDashboard("/dashboard")
-    .then(({ leads }) => { if (leads?.length) renderClientLeads(leads); })
+  if (!eventTenantId || !desktopRows.length) void fetchDashboard("/dashboard")
+    .then(({ leads, tenantId }) => { if (leads?.length) renderClientLeads(leads, tenantId); })
     .catch((error) => announce(error instanceof Error ? error.message : "HubSpot dashboard is unavailable"));
 
   const hash = new URLSearchParams(location.hash.slice(1));
