@@ -1,4 +1,6 @@
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
+import { pathToFileURL } from "node:url";
 import { createConfigDraft, type ScoringConfig, type ScoringRunContext } from "./lib/config.ts";
 import { getHubSpotLeadRecord, listAllHubSpotContacts, listAssignedOpenHubSpotLeads, writeHubSpotProperties } from "./lib/integrations.ts";
 import { evaluateLead, handleAssignmentEvent, parseHubSpotAssignmentEvents, runMorningEvaluation, verifyAssignmentSignature } from "./lib/orchestration.ts";
@@ -11,6 +13,7 @@ import { hubSpotWritebackPolicy, hubSpotWritebackPolicyFor, rollbackLeadWritebac
 import { hubSpotDashboardPackets } from "./lib/dashboard.ts";
 import { compileAllowedClaims, fallbackGroundedExplanation, groundingPromptVersion } from "./lib/grounding.ts";
 import type { ScoredLeadPacket } from "./lib/scoring.ts";
+import { completeHubSpotOAuth, createAdminSession, OnboardingError, startHubSpotOAuth } from "./lib/onboarding.ts";
 
 const store = new RuntimeStore();
 const host = process.env.HOST ?? "127.0.0.1";
@@ -33,6 +36,18 @@ const body = async (request: Parameters<Parameters<typeof createServer>[0]>[0]) 
   }
   return Buffer.concat(chunks).toString("utf8");
 };
+const oauthFailure = (response: Parameters<Parameters<typeof createServer>[0]>[1], status: number) => {
+  let returnUrl = "/";
+  try {
+    const appUrl = new URL(process.env.CONTEXTAI_APP_URL ?? "");
+    if (/^https?:$/.test(appUrl.protocol) && !appUrl.username && !appUrl.password && !appUrl.search && !appUrl.hash) {
+      returnUrl = `${appUrl.toString().replace(/\/+$/, "")}/admin?hubspot=error`;
+    }
+  } catch { /* A fixed relative fallback keeps configuration errors safe. */ }
+  const href = returnUrl.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+  response.writeHead(status, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" });
+  response.end(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>HubSpot connection failed</title><body><main><h1>HubSpot connection failed</h1><p>The connection could not be completed. Return to ContextAI and try again.</p><a href="${href}">Return to ContextAI</a></main></body></html>`);
+};
 const tenantId = process.env.CONTEXTAI_TENANT_ID ?? "local";
 const adminIdentity = (request: Parameters<Parameters<typeof createServer>[0]>[0], response: Parameters<Parameters<typeof createServer>[0]>[1]) => {
   let identity: RequestIdentity;
@@ -46,7 +61,7 @@ const adminIdentity = (request: Parameters<Parameters<typeof createServer>[0]>[0
     json(response, 403, { error: "RevOps Admin access required" });
     return null;
   }
-  return identity;
+  return { ...identity, requestId: randomUUID() };
 };
 const hubSpotConfigFor = async (identity: RequestIdentity) => {
   const integrationId = process.env.HUBSPOT_INTEGRATION_ID;
@@ -74,7 +89,7 @@ const dashboardContacts = async (identity: RequestIdentity) => {
   return { worker, contacts: await listAllHubSpotContacts(await hubSpotConfigFor(worker)) };
 };
 
-const server = createServer(async (request, response) => {
+export const handleRequest = async (request: Parameters<Parameters<typeof createServer>[0]>[0], response: Parameters<Parameters<typeof createServer>[0]>[1]) => {
   const origin = request.headers.origin;
   if (origin && adminOrigins.has(origin)) {
     response.setHeader("Access-Control-Allow-Origin", origin);
@@ -87,12 +102,53 @@ const server = createServer(async (request, response) => {
     response.writeHead(204).end();
     return;
   }
-  const path = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`).pathname;
+  const requestUrl = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
+  const path = requestUrl.pathname;
   if (request.method === "GET" && path === "/health") {
     json(response, 200, { status: "ok" });
     return;
   }
   try {
+    if (request.method === "POST" && path === "/auth/session") {
+      response.setHeader("Cache-Control", "no-store");
+      let bootstrapToken: unknown;
+      try {
+        const input = JSON.parse(await body(request)) as { bootstrapToken?: unknown };
+        bootstrapToken = input?.bootstrapToken;
+      } catch {
+        return json(response, 401, { error: "Authentication failed" });
+      }
+      try {
+        return json(response, 200, createAdminSession(bootstrapToken));
+      } catch (error) {
+        return json(response, error instanceof OnboardingError ? error.status : 503, {
+          error: error instanceof OnboardingError ? error.publicMessage : "Authentication is unavailable"
+        });
+      }
+    }
+    if (request.method === "POST" && path === "/oauth/hubspot/start") {
+      response.setHeader("Cache-Control", "no-store");
+      const identity = adminIdentity(request, response);
+      if (!identity) return;
+      try {
+        return json(response, 200, startHubSpotOAuth(identity, store));
+      } catch (error) {
+        return json(response, error instanceof OnboardingError ? error.status : 503, { error: "HubSpot OAuth is unavailable" });
+      }
+    }
+    if (request.method === "GET" && path === "/oauth/hubspot/callback") {
+      try {
+        const redirect = await completeHubSpotOAuth({
+          code: requestUrl.searchParams.get("code"),
+          state: requestUrl.searchParams.get("state"),
+          error: requestUrl.searchParams.get("error"),
+        }, store);
+        response.writeHead(302, { Location: redirect, "Cache-Control": "no-store" }).end();
+      } catch (error) {
+        oauthFailure(response, error instanceof OnboardingError ? error.status : 400);
+      }
+      return;
+    }
     if (request.method === "GET" && path === "/dashboard") {
       const identity = dashboardIdentity(request, response);
       if (!identity) return;
@@ -262,13 +318,17 @@ const server = createServer(async (request, response) => {
   } catch (error) {
     json(response, 400, { error: error instanceof Error ? error.message : "Request failed" });
   }
-});
+};
 
-server.listen(port, host, () => console.log(`ContextAI server listening on http://${host}:${port}`));
+export const closeRuntimeStore = () => store.close();
 
-for (const signal of ["SIGINT", "SIGTERM"] as const) {
-  process.once(signal, () => server.close(() => {
-    store.close();
-    process.exit(0);
-  }));
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const server = createServer(handleRequest);
+  server.listen(port, host, () => console.log(`ContextAI server listening on http://${host}:${port}`));
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.once(signal, () => server.close(() => {
+      store.close();
+      process.exit(0);
+    }));
+  }
 }

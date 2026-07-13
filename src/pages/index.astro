@@ -1,7 +1,6 @@
 ---
 import { dashboardDetailTabs, dashboardPromptVersion, dashboardSummary, rankDashboardLeads } from "../lib/dashboard";
 import { defaultConfigVersion } from "../lib/config";
-import { leads as fixtureLeads } from "../data/leads";
 import {
   groundedHook,
   groundedHookEvidence,
@@ -14,21 +13,9 @@ import {
 } from "../lib/contextai";
 
 const dashboardApiUrl = (import.meta.env.PUBLIC_CONTEXTAI_API_URL ?? "http://127.0.0.1:4000").replace(/\/$/, "");
-let leads: LeadPacket[] = [];
-let dashboardError = "";
-let dashboardTenantId = "";
-if (import.meta.env.DEV) {
-  try {
-    const response = await fetch(`${dashboardApiUrl}/dashboard`);
-    const result = await response.json() as { leads?: LeadPacket[]; tenantId?: string; error?: string };
-    if (!response.ok) throw new Error(result.error || "HubSpot dashboard request failed");
-    leads = result.leads ?? [];
-    dashboardTenantId = result.tenantId ?? "";
-  } catch (error) {
-    leads = fixtureLeads;
-    dashboardError = error instanceof Error ? error.message : "HubSpot dashboard is unavailable";
-  }
-}
+const leads: LeadPacket[] = [];
+const dashboardError = "";
+const dashboardTenantId = "";
 
 const queueLeads = rankDashboardLeads(leads);
 const selected = queueLeads[0];
@@ -424,6 +411,11 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
       ...init,
       headers: { ...init?.headers, ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}) },
     });
+    if (response.status === 401) {
+      sessionStorage.removeItem("contextai.session-token");
+      location.assign(`/login?returnTo=${encodeURIComponent(location.pathname + location.search + location.hash)}`);
+      throw new Error("Authentication required");
+    }
     const result = await response.json() as DashboardResponse;
     if (!response.ok) throw new Error(result.error || "HubSpot dashboard request failed");
     return result;

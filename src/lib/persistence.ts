@@ -148,6 +148,53 @@ export class RuntimeStore {
       .run(nonEmpty(tenantId, "tenantId"), nonEmpty(name, "tenant name"), new Date().toISOString());
   }
 
+  saveOAuthState(identity: RequestIdentity, integrationId: string, stateHash: string, expiresAt: string, createdAt = new Date().toISOString()) {
+    this.requireAdmin(identity, "oauth.state.create", "integration", integrationId);
+    if (!/^[a-f0-9]{64}$/.test(stateHash)) throw new Error("OAuth state hash is invalid");
+    const created = isoDate(createdAt, "createdAt");
+    const expires = isoDate(expiresAt, "expiresAt");
+    if (expires <= created) throw new Error("OAuth state expiry must follow creation");
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      this.database.prepare(`
+        INSERT INTO oauth_state_records (state_hash, tenant_id, actor_id, integration_id, expires_at, consumed_at, created_at)
+        VALUES (?, ?, ?, ?, ?, NULL, ?)
+      `).run(stateHash, identity.tenantId, identity.actorId, nonEmpty(integrationId, "integrationId"), expires, created);
+      this.recordAccess(identity, "oauth.state.create", "integration", integrationId, "allowed");
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  consumeOAuthState(requestId: string, tenantId: string, integrationId: string, stateHash: string, now = new Date().toISOString()) {
+    if (!/^[a-f0-9]{64}$/.test(stateHash)) return null;
+    const consumedAt = isoDate(now, "now");
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.database.prepare(`
+        UPDATE oauth_state_records SET consumed_at = ?
+        WHERE state_hash = ? AND tenant_id = ? AND integration_id = ?
+          AND consumed_at IS NULL AND expires_at > ?
+        RETURNING actor_id
+      `).get(
+        consumedAt, stateHash, nonEmpty(tenantId, "tenantId"), nonEmpty(integrationId, "integrationId"), consumedAt
+      ) as { actor_id: string } | undefined;
+      if (row) this.recordAccess({ requestId: nonEmpty(requestId, "requestId"), tenantId, actorId: row.actor_id, role: "revops_admin" }, "oauth.state.consume", "integration", integrationId, "allowed");
+      this.database.exec("COMMIT");
+      return row ? { actorId: row.actor_id } as const : null;
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  purgeExpiredOAuthStates(before = new Date().toISOString()) {
+    return this.database.prepare("DELETE FROM oauth_state_records WHERE expires_at <= ?")
+      .run(isoDate(before, "before")).changes;
+  }
+
   saveIntegration(identity: RequestIdentity, input: Readonly<{ integrationId: string; provider: string; externalAccountId: string; status: "active" | "disabled" | "error" }>) {
     this.requireAdmin(identity, "integration.create", "integration", input.integrationId);
     if (input.status === "active") throw new Error("Active integrations require encrypted OAuth credentials");
@@ -159,6 +206,31 @@ export class RuntimeStore {
     this.recordAccess(identity, "integration.create", "integration", input.integrationId, "allowed");
   }
 
+  ensureHubSpotIntegration(identity: RequestIdentity, integrationId: string, externalAccountId: string) {
+    this.requireAdmin(identity, "integration.connect", "integration", integrationId);
+    nonEmpty(integrationId, "integrationId");
+    nonEmpty(externalAccountId, "externalAccountId");
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const matches = this.database.prepare(`
+        SELECT integration_id, tenant_id, provider, external_account_id FROM integrations
+        WHERE integration_id = ? OR (tenant_id = ? AND provider = 'hubspot' AND external_account_id = ?)
+      `).all(integrationId, identity.tenantId, externalAccountId) as Array<{ integration_id: string; tenant_id: string; provider: string; external_account_id: string }>;
+      const existing = matches.find((row) => row.integration_id === integrationId && row.tenant_id === identity.tenantId && row.provider === "hubspot" && row.external_account_id === externalAccountId);
+      if (matches.length && (matches.length !== 1 || !existing)) {
+        this.recordAccess(identity, "integration.connect", "integration", integrationId, "denied");
+        this.database.exec("COMMIT");
+        return "conflict" as const;
+      }
+      if (!existing) this.saveIntegration(identity, { integrationId, provider: "hubspot", externalAccountId, status: "disabled" });
+      this.database.exec("COMMIT");
+      return existing ? "existing" as const : "created" as const;
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   activateHubSpotIntegration(identity: RequestIdentity, integrationId: string, credentials: Readonly<{
     accessToken: string;
     refreshToken: string;
@@ -168,17 +240,24 @@ export class RuntimeStore {
   }>, key: Buffer) {
     this.requireAdmin(identity, "integration.connect", "integration", integrationId);
     if (hubSpotRequiredScopes.some((scope) => !credentials.scopes.includes(scope))) throw new Error("HubSpot OAuth scopes are insufficient");
-    const result = this.database.prepare(`
-      UPDATE integrations SET
-        status = 'active', access_token_ciphertext = ?, refresh_token_ciphertext = ?, scopes_json = ?,
-        token_expires_at = ?, last_error = NULL, rate_limited_until = NULL, revoked_at = NULL
-      WHERE tenant_id = ? AND integration_id = ? AND provider = 'hubspot' AND external_account_id = ?
-    `).run(
-      encryptSecret(credentials.accessToken, key), encryptSecret(credentials.refreshToken, key), json(credentials.scopes),
-      isoDate(credentials.expiresAt, "expiresAt"), identity.tenantId, integrationId, credentials.externalAccountId
-    );
-    if (result.changes !== 1) throw new Error("HubSpot integration not found");
-    this.recordAccess(identity, "integration.connect", "integration", integrationId, "allowed");
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const result = this.database.prepare(`
+        UPDATE integrations SET
+          status = 'active', access_token_ciphertext = ?, refresh_token_ciphertext = ?, scopes_json = ?,
+          token_expires_at = ?, last_error = NULL, rate_limited_until = NULL, revoked_at = NULL
+        WHERE tenant_id = ? AND integration_id = ? AND provider = 'hubspot' AND external_account_id = ?
+      `).run(
+        encryptSecret(credentials.accessToken, key), encryptSecret(credentials.refreshToken, key), json(credentials.scopes),
+        isoDate(credentials.expiresAt, "expiresAt"), identity.tenantId, integrationId, credentials.externalAccountId
+      );
+      if (result.changes !== 1) throw new Error("HubSpot integration not found");
+      this.recordAccess(identity, "integration.connect", "integration", integrationId, "allowed");
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   async getHubSpotAccessToken(
