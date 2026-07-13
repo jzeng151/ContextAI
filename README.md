@@ -77,6 +77,7 @@ Astro normally serves the app at `http://localhost:4321`; use the URL printed by
 
 Live integration credentials are optional for local UI development and automated tests.
 When browser authentication is enabled, add `CONTEXTAI_ADMIN_BOOTSTRAP_TOKEN` to `.env` and set it and `SESSION_SECRET` to distinct values of at least 32 bytes.
+HubSpot OAuth requires `HUBSPOT_REDIRECT_URI` to equal `${CONTEXTAI_API_URL}/oauth/hubspot/callback` exactly; for a tunneled demo, use the public HTTPS API origin in both values.
 
 ## Environment Variables
 
@@ -96,6 +97,7 @@ When browser authentication is enabled, add `CONTEXTAI_ADMIN_BOOTSTRAP_TOKEN` to
 | `HUBSPOT_ACCESS_TOKEN` | No | Enables live HubSpot contact checks. |
 | `HUBSPOT_WEBHOOK_SECRET` | No | Authenticates `POST /webhooks/hubspot/assignments`. |
 | `HUBSPOT_INTEGRATION_ID` | No | Selects the encrypted HubSpot OAuth integration used by server-triggered evaluations. |
+| `HUBSPOT_REDIRECT_URI` | Required for HubSpot OAuth | Must equal `${CONTEXTAI_API_URL}/oauth/hubspot/callback` exactly; use the public HTTPS API origin for tunneled demos. |
 | `SESSION_SECRET` | Required for browser admin | At least 32 bytes; signs and verifies browser and internal bearer sessions. |
 | `CONTEXTAI_TENANT_ID` | No | Selects the configured tenant for server-triggered evaluations; defaults to `local`. |
 | `DATABASE_PATH` | No | SQLite file used by the server; defaults to `.contextai/contextai.sqlite`. |

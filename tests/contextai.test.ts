@@ -868,6 +868,32 @@ test("HubSpot OAuth revokes issued credentials when introspection rejects them",
   }
 });
 
+test("HubSpot OAuth revokes issued credentials rejected by initial scope validation", async () => {
+  const config = { clientId: "client-id", clientSecret: "client-secret", redirectUri: "https://app.example/oauth/callback" };
+  const originalFetch = globalThis.fetch;
+  const requests: Array<{ url: string; body: string }> = [];
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    requests.push({ url, body: String(init?.body) });
+    if (url.endsWith("/revoke")) return new Response(null, { status: 204 });
+    return new Response(JSON.stringify({
+      access_token: "access-secret",
+      refresh_token: "refresh-secret",
+      expires_in: 1800,
+      scopes: ["oauth"],
+    }), { status: 200 });
+  };
+  try {
+    await assert.rejects(exchangeHubSpotAuthorizationCode("authorization-code", config), /insufficiently scoped/i);
+    assert.deepEqual(requests.map(({ url }) => url.split("/").at(-1)), ["token", "revoke"]);
+    assert.ok(requests.every(({ url }) => !url.includes("secret") && !url.includes("authorization-code")));
+    assert.match(requests[1]!.body, /token=refresh-secret/);
+    assert.match(requests[1]!.body, /token_type_hint=refresh_token/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("HubSpot first call lists contacts instead of requiring a contact id", async () => {
   const originalFetch = globalThis.fetch;
   let requested = "";

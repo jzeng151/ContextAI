@@ -138,8 +138,9 @@ export const exchangeHubSpotAuthorizationCode = async (code: string, config: Hub
       client_secret: config.clientSecret,
     }),
   });
-  const tokens = validateHubSpotTokens(await readJson<HubSpotOAuthTokens>(response));
+  const tokens = await readJson<HubSpotOAuthTokens>(response);
   try {
+    validateHubSpotTokens(tokens);
     const metadata = await readJson<HubSpotTokenMetadata>(await fetch(`${hubSpotOAuthEndpoint}/introspect`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -154,7 +155,9 @@ export const exchangeHubSpotAuthorizationCode = async (code: string, config: Hub
     if (metadata.active !== true || metadata.token_use !== "access_token") throw new Error("HubSpot returned invalid OAuth token metadata");
     return validateHubSpotTokens({ ...tokens, hub_id: metadata.hub_id, scopes: metadata.scopes }, true);
   } catch (error) {
-    try { await revokeHubSpotRefreshToken(tokens.refresh_token, config); } catch { /* Preserve the original exchange failure. */ }
+    if (typeof tokens?.refresh_token === "string" && tokens.refresh_token) {
+      try { await revokeHubSpotRefreshToken(tokens.refresh_token, config); } catch { /* Preserve the original exchange failure. */ }
+    }
     throw error;
   }
 };

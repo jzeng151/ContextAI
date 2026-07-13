@@ -51,6 +51,7 @@ test("admin session creation validates bootstrap configuration, identity, and ei
   assert.throws(() => createAdminSession(env.CONTEXTAI_ADMIN_BOOTSTRAP_TOKEN, { ...env, CONTEXTAI_ADMIN_BOOTSTRAP_TOKEN: undefined }, now), (error) => error instanceof OnboardingError && error.status === 503);
   assert.throws(() => createAdminSession("short", { ...env, CONTEXTAI_ADMIN_BOOTSTRAP_TOKEN: "short" }, now), (error) => error instanceof OnboardingError && error.status === 503);
   assert.throws(() => createAdminSession(env.CONTEXTAI_ADMIN_BOOTSTRAP_TOKEN, { ...env, SESSION_SECRET: undefined }, now), (error) => error instanceof OnboardingError && error.status === 503);
+  assert.throws(() => createAdminSession(env.CONTEXTAI_ADMIN_BOOTSTRAP_TOKEN, { ...env, SESSION_SECRET: env.CONTEXTAI_ADMIN_BOOTSTRAP_TOKEN }, now), (error) => error instanceof OnboardingError && error.status === 503 && error.publicMessage === "Authentication is unavailable");
 });
 
 test("OAuth state is random, hashed at rest, tenant-bound, expiring, purgeable, and single-use", () => {

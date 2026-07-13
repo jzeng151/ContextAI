@@ -55,6 +55,7 @@ export const createAdminSession = (
   try {
     configured = bootstrapTokenFromEnv(env.CONTEXTAI_ADMIN_BOOTSTRAP_TOKEN);
     secret = sessionSecretFromEnv(env.SESSION_SECRET);
+    if (verifyBootstrapToken(configured, secret)) throw new Error("Authentication secrets must be distinct");
     tenantId = env.CONTEXTAI_TENANT_ID ?? "local";
   } catch {
     throw new OnboardingError(503, "Authentication is unavailable");
