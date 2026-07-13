@@ -516,6 +516,23 @@ export const migrations: readonly Migration[] = [
       WHEN EXISTS (SELECT 1 FROM grounding_audit_records WHERE grounding_audit_id = NEW.grounding_audit_id)
       BEGIN SELECT RAISE(ABORT, 'grounding audit records are append-only'); END;
     `
+  },
+  {
+    version: 18,
+    name: "single-use OAuth states",
+    sql: `
+      CREATE TABLE oauth_state_records (
+        state_hash TEXT PRIMARY KEY CHECK (length(state_hash) = 64),
+        tenant_id TEXT NOT NULL REFERENCES tenants(tenant_id),
+        actor_id TEXT NOT NULL,
+        integration_id TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        consumed_at TEXT,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE INDEX oauth_state_records_expires ON oauth_state_records (expires_at);
+    `
   }
 ];
 

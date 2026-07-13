@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { isIP } from "node:net";
 
 export type ActorRole = "revops_admin" | "rep" | "system" | "integration";
@@ -51,6 +51,19 @@ export const sessionSecretFromEnv = (value = process.env.SESSION_SECRET) => {
   if (!value || Buffer.byteLength(value) < 32) throw new Error("SESSION_SECRET must be at least 32 bytes");
   return value;
 };
+
+export const bootstrapTokenFromEnv = (value = process.env.CONTEXTAI_ADMIN_BOOTSTRAP_TOKEN) => {
+  if (!value || Buffer.byteLength(value) < 32) throw new Error("CONTEXTAI_ADMIN_BOOTSTRAP_TOKEN must be at least 32 bytes");
+  return value;
+};
+
+const sha256 = (value: string) => createHash("sha256").update(value).digest();
+
+export const verifyBootstrapToken = (supplied: string, configured: string) =>
+  timingSafeEqual(sha256(supplied), sha256(configured));
+
+export const createOAuthState = () => randomBytes(32).toString("base64url");
+export const hashOAuthState = (state: string) => createHash("sha256").update(state).digest("hex");
 
 const signatureFor = (payload: string, secret: string) => createHmac("sha256", secret).update(payload).digest("base64url");
 

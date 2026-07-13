@@ -165,6 +165,7 @@ const requiredSources = new Set(["crm", "intent", "engagement", "public_signal"]
 
         <section id="integrations" aria-labelledby="integrations-title">
           <div class="section-heading"><div><h2 id="integrations-title">Integration health</h2><p>Connection health is visible here; credential revocation remains in the security-owned control.</p></div></div>
+          <div class="integration-actions"><button type="button" data-connect-hubspot>Connect HubSpot</button><output data-hubspot-status role="status" aria-live="polite"></output></div>
           <div data-integration-list><article class="integration-row"><div class="provider"><span aria-hidden="true">H</span><div><strong>HubSpot</strong><small>Pilot CRM · OAuth reconnect required</small></div></div><div><span class="status warning">Disconnected</span><small>Last error: oauth_reconnect_required</small></div><a href="https://github.com/jzeng151/ContextAI/blob/main/SECURITY.md">Disconnect and revoke controls</a></article></div>
         </section>
       </main>
@@ -183,16 +184,41 @@ const requiredSources = new Set(["crm", "intent", "engagement", "public_signal"]
       const auditBody = document.querySelector<HTMLTableSectionElement>("[data-audit-body]")!;
       const historyBody = document.querySelector<HTMLTableSectionElement>("[data-history-body]")!;
       const integrationList = document.querySelector<HTMLElement>("[data-integration-list]")!;
+      const connectHubSpot = document.querySelector<HTMLButtonElement>("[data-connect-hubspot]")!;
+      const hubSpotStatus = document.querySelector<HTMLOutputElement>("[data-hubspot-status]")!;
       const apiOrigin = document.body.dataset.apiOrigin?.replace(/\/$/, "") ?? "";
       const token = () => sessionStorage.getItem("contextai.session-token");
+      let redirectingToLogin = false;
+      const redirectToLogin = () => {
+        if (redirectingToLogin) return;
+        redirectingToLogin = true;
+        sessionStorage.removeItem("contextai.session-token");
+        location.assign(`/login?returnTo=${encodeURIComponent(location.pathname + location.search + location.hash)}`);
+      };
       const api = async <T,>(path: string, init: RequestInit = {}) => {
         const sessionToken = token();
-        if (!sessionToken) throw new Error("Sign in again to use governance controls.");
+        if (!sessionToken) { redirectToLogin(); throw new Error("Authentication required"); }
         const response = await fetch(`${apiOrigin}${path}`, { ...init, headers: { "Authorization": `Bearer ${sessionToken}`, ...(init.body ? { "Content-Type": "application/json" } : {}), ...(init.headers ?? {}) } });
+        if (response.status === 401) { redirectToLogin(); throw new Error("Authentication required"); }
         const result = await response.json() as T & { error?: string };
         if (!response.ok) throw new Error(result.error || "Governance request failed.");
         return result;
       };
+      const callbackStatus = new URLSearchParams(location.search).get("hubspot");
+      if (callbackStatus === "connected") hubSpotStatus.value = "HubSpot connected successfully.";
+      else if (callbackStatus === "error") hubSpotStatus.value = "HubSpot could not be connected. Try again.";
+      connectHubSpot.addEventListener("click", async () => {
+        connectHubSpot.disabled = true;
+        hubSpotStatus.value = "Opening HubSpot authorization…";
+        try {
+          const { authorizationUrl } = await api<{ authorizationUrl: string }>("/oauth/hubspot/start", { method: "POST" });
+          const destination = new URL(authorizationUrl);
+          if (destination.origin !== "https://app.hubspot.com") throw new Error("Unexpected authorization destination");
+          location.assign(destination.toString());
+        } catch {
+          if (!redirectingToLogin) { connectHubSpot.disabled = false; hubSpotStatus.value = "HubSpot connection could not start."; }
+        }
+      });
       let activeConfig = JSON.parse(configForm.dataset.activeConfig || "{}") as Record<string, any>;
       const changedSections = new Set(Array.from(document.querySelectorAll<HTMLElement>("[data-change]")).map((item) => item.dataset.change));
       const refreshWeights = () => {
@@ -392,6 +418,7 @@ const requiredSources = new Set(["crm", "intent", "engagement", "public_signal"]
   .review-list { background: var(--surface); }.review-list article { display: grid; grid-template-columns: 1fr 1.3fr minmax(390px, 1.7fr); align-items: center; gap: 16px; padding: 13px; border-bottom: 1px solid var(--line); }.review-list article > div { display: grid; }.review-list article span { color: var(--muted); font-size: 10px; }.review-list form { display: grid; grid-template-columns: 1fr auto auto; align-items: end; gap: 7px; }.review-list form output { grid-column: 1 / -1; color: var(--muted); font-size: 10px; }.review-list button.secondary, .row-actions button.secondary { color: var(--accent-dark); background: transparent; }.review-list article[data-closed="true"] { opacity: .55; background: var(--soft); }.empty { padding: 32px; text-align: center; }.empty p { color: var(--muted); }
   .row-actions { display: flex; gap: 5px; }.row-actions button { min-height: 30px; padding-inline: 8px; font-size: 10px; }.row-actions button:disabled { color: #718079; border-color: var(--line); cursor: not-allowed; opacity: .65; }
   .integration-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 17px; background: var(--surface); }.integration-row > div { display: grid; }.provider { display: flex !important; align-items: center; gap: 11px; }.provider > span { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 6px; color: white; background: #ff6c35; font-weight: 900; }.provider div { display: grid; }.integration-row small { color: var(--muted); }.integration-row a { color: var(--accent-dark); font-weight: 800; }
+  .integration-actions { display: flex; align-items: center; gap: 12px; padding: 12px 0; }.integration-actions button { min-height: 38px; padding: 0 12px; border: 1px solid var(--accent); border-radius: 5px; color: white; background: var(--accent); font-weight: 800; }.integration-actions button:hover { background: var(--accent-dark); }.integration-actions button:disabled { cursor: wait; opacity: .65; }.integration-actions output { color: var(--muted); font-size: 12px; }
   @media (max-width: 1050px) { #config-form { grid-template-columns: 1fr; }.publish-panel { position: static; }.review-list article { grid-template-columns: 1fr 1fr; }.review-list form { grid-column: 1 / -1; } }
   @media (max-width: 760px) { .shell { display: block; }.nav { height: auto; position: static; flex-direction: row; align-items: center; gap: 14px; padding: 9px 12px; }.brand { padding: 0; }.nav nav { display: flex; }.account { display: none; }main { padding: 0 12px 48px; }.page-header { align-items: flex-start; flex-direction: column; padding: 20px 0; }.active-version { width: 100%; }.section-nav { gap: 16px; overflow-x: auto; }.summary { grid-template-columns: 1fr 1fr; }.summary div:nth-child(2) { border-right: 0; }.summary div:nth-child(-n+2) { border-bottom: 1px solid var(--line); }.field-grid, .field-grid.three, .split-fields { grid-template-columns: 1fr 1fr; }.review-list article { grid-template-columns: 1fr; }.review-list form { grid-column: auto; grid-template-columns: 1fr 1fr; }.review-list form label { grid-column: 1 / -1; }.integration-row { align-items: flex-start; flex-direction: column; } }
   @media (max-width: 460px) { .field-grid, .field-grid.three, .split-fields { grid-template-columns: 1fr; }.summary { grid-template-columns: 1fr; }.summary div { border-right: 0; border-bottom: 1px solid var(--line); }.review-list form { grid-template-columns: 1fr; }.review-list form label { grid-column: auto; }.review-list button { width: 100%; }.section-heading { align-items: flex-start; flex-direction: column; } }

@@ -172,6 +172,7 @@ test("dashboard runtime keeps refresh secure, bounded, auditable, and current", 
   assert.doesNotMatch(page, /tenantId: "pilot-workspace"/);
   assert.doesNotMatch(page, /dataset\.configVersion/);
   assert.match(page, /data-summary-total/);
-  assert.match(page, /leads = fixtureLeads/);
+  assert.doesNotMatch(page, /fixtureLeads|import\.meta\.env\.DEV[\s\S]*fetch\(`/);
+  assert.match(page, /response\.status === 401[\s\S]*\/login\?returnTo=/);
   assert.doesNotMatch(page, /location\.reload\(\)/);
 });

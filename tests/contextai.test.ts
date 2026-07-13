@@ -812,14 +812,19 @@ test("HubSpot OAuth requests least privilege and keeps secrets in request bodies
   const originalFetch = globalThis.fetch;
   const requests: Array<{ url: string; body: string }> = [];
   globalThis.fetch = async (input, init) => {
-    requests.push({ url: String(input), body: String(init?.body) });
-    if (String(input).endsWith("/revoke")) return new Response(null, { status: 204 });
+    const url = String(input);
+    requests.push({ url, body: String(init?.body) });
+    if (url.endsWith("/revoke")) return new Response(null, { status: 204 });
+    if (url.endsWith("/introspect")) return new Response(JSON.stringify({
+      active: true,
+      token_use: "access_token",
+      hub_id: 123,
+      scopes: [...hubSpotRequiredScopes],
+    }), { status: 200 });
     return new Response(JSON.stringify({
       access_token: "access-secret",
       refresh_token: "refresh-secret",
       expires_in: 1800,
-      hub_id: 123,
-      scopes: [...hubSpotRequiredScopes],
     }), { status: 200 });
   };
   try {
@@ -827,12 +832,63 @@ test("HubSpot OAuth requests least privilege and keeps secrets in request bodies
     assert.equal(tokens.hub_id, 123);
     await refreshHubSpotAccessToken(tokens.refresh_token, config);
     await revokeHubSpotRefreshToken(tokens.refresh_token, config);
-    assert.equal(requests.length, 3);
+    assert.equal(requests.length, 4);
     assert.ok(requests.every(({ url }) => !url.includes("secret") && !url.includes("authorization-code")));
     assert.match(requests[0]!.body, /client_secret=client-secret/);
-    assert.match(requests[1]!.body, /grant_type=refresh_token/);
-    assert.match(requests[1]!.body, /refresh_token=refresh-secret/);
+    assert.match(requests[1]!.body, /client_secret=client-secret/);
+    assert.match(requests[1]!.body, /token=access-secret/);
+    assert.match(requests[1]!.body, /token_type_hint=access_token/);
+    assert.match(requests[2]!.body, /grant_type=refresh_token/);
+    assert.match(requests[2]!.body, /refresh_token=refresh-secret/);
+    assert.match(requests[3]!.body, /token=refresh-secret/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("HubSpot OAuth revokes issued credentials when introspection rejects them", async () => {
+  const config = { clientId: "client-id", clientSecret: "client-secret", redirectUri: "https://app.example/oauth/callback" };
+  const originalFetch = globalThis.fetch;
+  const requests: Array<{ url: string; body: string }> = [];
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    requests.push({ url, body: String(init?.body) });
+    if (url.endsWith("/introspect")) return new Response(JSON.stringify({ active: false, token_use: "access_token" }), { status: 200 });
+    if (url.endsWith("/revoke")) return new Response(null, { status: 204 });
+    return new Response(JSON.stringify({ access_token: "access-secret", refresh_token: "refresh-secret", expires_in: 1800 }), { status: 200 });
+  };
+  try {
+    await assert.rejects(exchangeHubSpotAuthorizationCode("authorization-code", config), /metadata/i);
+    assert.deepEqual(requests.map(({ url }) => url.split("/").at(-1)), ["token", "introspect", "revoke"]);
+    assert.ok(requests.every(({ url }) => !url.includes("secret") && !url.includes("authorization-code")));
     assert.match(requests[2]!.body, /token=refresh-secret/);
+    assert.match(requests[2]!.body, /token_type_hint=refresh_token/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("HubSpot OAuth revokes issued credentials rejected by initial scope validation", async () => {
+  const config = { clientId: "client-id", clientSecret: "client-secret", redirectUri: "https://app.example/oauth/callback" };
+  const originalFetch = globalThis.fetch;
+  const requests: Array<{ url: string; body: string }> = [];
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    requests.push({ url, body: String(init?.body) });
+    if (url.endsWith("/revoke")) return new Response(null, { status: 204 });
+    return new Response(JSON.stringify({
+      access_token: "access-secret",
+      refresh_token: "refresh-secret",
+      expires_in: 1800,
+      scopes: ["oauth"],
+    }), { status: 200 });
+  };
+  try {
+    await assert.rejects(exchangeHubSpotAuthorizationCode("authorization-code", config), /insufficiently scoped/i);
+    assert.deepEqual(requests.map(({ url }) => url.split("/").at(-1)), ["token", "revoke"]);
+    assert.ok(requests.every(({ url }) => !url.includes("secret") && !url.includes("authorization-code")));
+    assert.match(requests[1]!.body, /token=refresh-secret/);
+    assert.match(requests[1]!.body, /token_type_hint=refresh_token/);
   } finally {
     globalThis.fetch = originalFetch;
   }

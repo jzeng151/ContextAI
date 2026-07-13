@@ -76,6 +76,8 @@ npm run dev
 Astro normally serves the app at `http://localhost:4321`; use the URL printed by the development server if the port changes.
 
 Live integration credentials are optional for local UI development and automated tests.
+When browser authentication is enabled, add `CONTEXTAI_ADMIN_BOOTSTRAP_TOKEN` to `.env` and set it and `SESSION_SECRET` to distinct values of at least 32 bytes.
+HubSpot OAuth requires `HUBSPOT_REDIRECT_URI` to equal `${CONTEXTAI_API_URL}/oauth/hubspot/callback` exactly; for a tunneled demo, use the public HTTPS API origin in both values.
 
 ## Environment Variables
 
@@ -91,10 +93,12 @@ Live integration credentials are optional for local UI development and automated
 | `CONTEXTAI_ALLOW_MODEL_DATA` | No | Set to `1` only after approving HubSpot-derived claims for OpenRouter analysis; local grounded fallback is the default. |
 | `CONTEXTAI_ADMIN_ORIGIN` | No | Allows the Astro governance origin to call the runtime API; defaults to `http://127.0.0.1:4321`. |
 | `CONTEXTAI_LOCAL_DEMO` | No | Set to `1` to allow the unauthenticated dashboard only over a direct loopback connection; bearer authentication is required by default. |
+| `CONTEXTAI_ADMIN_BOOTSTRAP_TOKEN` | Required for browser admin | At least 32 bytes; exchanged by `POST /auth/session` for an eight-hour admin session. |
 | `HUBSPOT_ACCESS_TOKEN` | No | Enables live HubSpot contact checks. |
 | `HUBSPOT_WEBHOOK_SECRET` | No | Authenticates `POST /webhooks/hubspot/assignments`. |
 | `HUBSPOT_INTEGRATION_ID` | No | Selects the encrypted HubSpot OAuth integration used by server-triggered evaluations. |
-| `SESSION_SECRET` | No | Verifies signed bearer sessions for `POST /internal/morning-run`. |
+| `HUBSPOT_REDIRECT_URI` | Required for HubSpot OAuth | Must equal `${CONTEXTAI_API_URL}/oauth/hubspot/callback` exactly; use the public HTTPS API origin for tunneled demos. |
+| `SESSION_SECRET` | Required for browser admin | At least 32 bytes; signs and verifies browser and internal bearer sessions. |
 | `CONTEXTAI_TENANT_ID` | No | Selects the configured tenant for server-triggered evaluations; defaults to `local`. |
 | `DATABASE_PATH` | No | SQLite file used by the server; defaults to `.contextai/contextai.sqlite`. |
 | `HOST` / `PORT` | No | Server bind address and port; defaults to `127.0.0.1:4000`. |
