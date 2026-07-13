@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { exchangeHubSpotAuthorizationCode, hubSpotAuthorizationUrl, hubSpotOAuthConfigFromEnv, hubSpotRequiredScopes, type HubSpotOAuthConfig, type HubSpotOAuthTokens } from "./integrations.ts";
+import { exchangeHubSpotAuthorizationCode, hubSpotAuthorizationUrl, hubSpotOAuthConfigFromEnv, hubSpotRequiredScopes, revokeHubSpotRefreshToken, type HubSpotOAuthConfig, type HubSpotOAuthTokens } from "./integrations.ts";
 import type { RuntimeStore } from "./persistence.ts";
 import { assertAdminAccess, bootstrapTokenFromEnv, createOAuthState, createSessionToken, hashOAuthState, sessionSecretFromEnv, verifyBootstrapToken, type RequestIdentity } from "./security.ts";
 import { secretKeyFromEnv } from "./secrets.ts";
@@ -91,6 +91,7 @@ export const completeHubSpotOAuth = async (
   now = Date.now(),
   exchange: (code: string, config: HubSpotOAuthConfig) => Promise<HubSpotOAuthTokens> = exchangeHubSpotAuthorizationCode,
   requestId = randomUUID(),
+  revoke: (refreshToken: string, config: HubSpotOAuthConfig) => Promise<void> = revokeHubSpotRefreshToken,
 ) => {
   const config = oauthRuntimeConfigFromEnv(env);
   if (!input.state) throw new OnboardingError(400, "HubSpot connection could not be completed");
@@ -112,6 +113,11 @@ export const completeHubSpotOAuth = async (
   const identity = { requestId, tenantId: config.tenantId, actorId: state.actorId, role: "revops_admin" } as const;
   const portalId = String(tokens.hub_id);
   if (store.ensureHubSpotIntegration(identity, config.integrationId, portalId) === "conflict") {
+    try {
+      await revoke(tokens.refresh_token, config.oauth);
+    } catch {
+      throw new OnboardingError(502, "HubSpot connection could not be completed");
+    }
     throw new OnboardingError(409, "HubSpot account does not match this integration");
   }
   store.activateHubSpotIntegration(identity, config.integrationId, {

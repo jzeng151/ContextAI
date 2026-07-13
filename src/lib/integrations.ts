@@ -41,6 +41,13 @@ export type HubSpotOAuthTokens = {
   scopes?: string[];
 };
 
+type HubSpotTokenMetadata = {
+  active?: boolean;
+  token_use?: string;
+  hub_id?: number;
+  scopes?: string[];
+};
+
 export type HubSpotContact = {
   id: string;
   properties: Record<string, string | null>;
@@ -111,7 +118,7 @@ export const hubSpotAuthorizationUrl = (config: Omit<HubSpotOAuthConfig, "client
 
 const validateHubSpotTokens = (tokens: HubSpotOAuthTokens, requireMetadata = false) => {
   if (!tokens.access_token || !tokens.refresh_token || !Number.isSafeInteger(tokens.expires_in) || tokens.expires_in <= 0 ||
-    (requireMetadata && (!Number.isSafeInteger(tokens.hub_id) || !Array.isArray(tokens.scopes))) ||
+    (requireMetadata && (!Number.isSafeInteger(tokens.hub_id) || tokens.hub_id! <= 0 || !Array.isArray(tokens.scopes))) ||
     (tokens.scopes && hubSpotRequiredScopes.some((scope) => !tokens.scopes!.includes(scope)))) {
     throw new Error("HubSpot returned invalid or insufficiently scoped OAuth tokens");
   }
@@ -131,7 +138,25 @@ export const exchangeHubSpotAuthorizationCode = async (code: string, config: Hub
       client_secret: config.clientSecret,
     }),
   });
-  return validateHubSpotTokens(await readJson<HubSpotOAuthTokens>(response), true);
+  const tokens = validateHubSpotTokens(await readJson<HubSpotOAuthTokens>(response));
+  try {
+    const metadata = await readJson<HubSpotTokenMetadata>(await fetch(`${hubSpotOAuthEndpoint}/introspect`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      signal: AbortSignal.timeout(timeoutMs),
+      body: new URLSearchParams({
+        client_id: config.clientId,
+        client_secret: config.clientSecret,
+        token: tokens.access_token,
+        token_type_hint: "access_token",
+      }),
+    }));
+    if (metadata.active !== true || metadata.token_use !== "access_token") throw new Error("HubSpot returned invalid OAuth token metadata");
+    return validateHubSpotTokens({ ...tokens, hub_id: metadata.hub_id, scopes: metadata.scopes }, true);
+  } catch (error) {
+    try { await revokeHubSpotRefreshToken(tokens.refresh_token, config); } catch { /* Preserve the original exchange failure. */ }
+    throw error;
+  }
 };
 
 export const refreshHubSpotAccessToken = async (refreshToken: string, config = hubSpotOAuthConfigFromEnv()) => {
@@ -149,7 +174,7 @@ export const refreshHubSpotAccessToken = async (refreshToken: string, config = h
   return validateHubSpotTokens(await readJson<HubSpotOAuthTokens>(response));
 };
 
-export const revokeHubSpotRefreshToken = async (refreshToken: string, config: HubSpotOAuthConfig) => {
+export async function revokeHubSpotRefreshToken(refreshToken: string, config: HubSpotOAuthConfig) {
   const response = await fetch(`${hubSpotOAuthEndpoint}/revoke`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -162,7 +187,7 @@ export const revokeHubSpotRefreshToken = async (refreshToken: string, config: Hu
     }),
   });
   if (!response.ok) throw new Error(`HubSpot token revocation failed (${response.status})`);
-};
+}
 
 export const explainLeadWithOpenRouter = async (
   lead: ScoredLeadPacket,

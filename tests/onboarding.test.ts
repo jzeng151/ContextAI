@@ -200,7 +200,9 @@ test("HubSpot callback safely rejects provider errors, bad or expired state, rep
     try {
       store.saveIntegration(admin, { integrationId: env.HUBSPOT_INTEGRATION_ID, provider: "hubspot", externalAccountId: "999", status: "disabled" });
       startHubSpotOAuth(admin, store, env, now, "portal-state");
-      await assert.rejects(completeHubSpotOAuth({ code: "code", state: "portal-state" }, store, env, now, async () => tokens()), (error) => error instanceof OnboardingError && error.status === 409);
+      let revoked = "";
+      await assert.rejects(completeHubSpotOAuth({ code: "code", state: "portal-state" }, store, env, now, async () => tokens(), "portal-callback", async (token) => { revoked = token; }), (error) => error instanceof OnboardingError && error.status === 409);
+      assert.equal(revoked, "refresh-token");
       assert.equal((store.database.prepare("SELECT status FROM integrations WHERE integration_id = ?").get(env.HUBSPOT_INTEGRATION_ID) as { status: string }).status, "disabled");
     } finally { store.close(); }
 
@@ -208,8 +210,22 @@ test("HubSpot callback safely rejects provider errors, bad or expired state, rep
     try {
       duplicate.saveIntegration(admin, { integrationId: "other-hubspot", provider: "hubspot", externalAccountId: "123", status: "disabled" });
       startHubSpotOAuth(admin, duplicate, env, now, "duplicate-portal-state");
-      await assert.rejects(completeHubSpotOAuth({ code: "code", state: "duplicate-portal-state" }, duplicate, env, now, async () => tokens()), (error) => error instanceof OnboardingError && error.status === 409);
+      let revoked = "";
+      await assert.rejects(completeHubSpotOAuth({ code: "code", state: "duplicate-portal-state" }, duplicate, env, now, async () => tokens(), "duplicate-callback", async (token) => { revoked = token; }), (error) => error instanceof OnboardingError && error.status === 409);
+      assert.equal(revoked, "refresh-token");
     } finally { duplicate.close(); }
+
+    const failedRevocation = storeFor();
+    try {
+      failedRevocation.saveIntegration(admin, { integrationId: env.HUBSPOT_INTEGRATION_ID, provider: "hubspot", externalAccountId: "999", status: "disabled" });
+      startHubSpotOAuth(admin, failedRevocation, env, now, "failed-revocation-state");
+      await assert.rejects(
+        completeHubSpotOAuth({ code: "code", state: "failed-revocation-state" }, failedRevocation, env, now, async () => tokens(), "failed-revocation", async () => { throw new Error("provider payload"); }),
+        (error) => error instanceof OnboardingError && error.status === 502 && !error.message.includes("provider")
+      );
+      const integration = failedRevocation.database.prepare("SELECT status, access_token_ciphertext, refresh_token_ciphertext FROM integrations WHERE integration_id = ?").get(env.HUBSPOT_INTEGRATION_ID) as Record<string, unknown>;
+      assert.deepEqual({ ...integration }, { status: "disabled", access_token_ciphertext: null, refresh_token_ciphertext: null });
+    } finally { failedRevocation.close(); }
   });
 
   await t.test("token exchange failure", async () => {
@@ -292,7 +308,13 @@ test("HTTP auth and OAuth routes enforce bearer access, no-store responses, and 
     assert.equal(replay.status, 400);
     assert.doesNotMatch(replay.body, /secret-code/);
 
-    globalThis.fetch = async () => new Response(JSON.stringify(tokens()), { status: 200 });
+    const hubSpotFetch = (hubId: number) => async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/introspect")) return new Response(JSON.stringify({ active: true, token_use: "access_token", hub_id: hubId, scopes: [...hubSpotRequiredScopes] }), { status: 200 });
+      if (url.endsWith("/revoke")) return new Response(null, { status: 204 });
+      return new Response(JSON.stringify({ access_token: "access-token", refresh_token: "refresh-token", expires_in: 1800 }), { status: 200 });
+    };
+    globalThis.fetch = hubSpotFetch(123);
     const successState = (await beginOAuth()).searchParams.get("state");
     assert.ok(successState);
     const success = await request("GET", `/oauth/hubspot/callback?code=authorization-code&state=${encodeURIComponent(successState)}`);
@@ -300,7 +322,7 @@ test("HTTP auth and OAuth routes enforce bearer access, no-store responses, and 
     assert.equal(success.headers.get("location"), "https://app.contextai.example/admin?hubspot=connected");
     assert.doesNotMatch(`${success.headers.get("location")}${success.body}`, /access-token|refresh-token|authorization-code/);
 
-    globalThis.fetch = async () => new Response(JSON.stringify(tokens({ hub_id: 999 })), { status: 200 });
+    globalThis.fetch = hubSpotFetch(999);
     const mismatchState = (await beginOAuth()).searchParams.get("state");
     assert.ok(mismatchState);
     const mismatch = await request("GET", `/oauth/hubspot/callback?code=portal-code&state=${encodeURIComponent(mismatchState)}`);
