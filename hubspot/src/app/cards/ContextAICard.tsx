@@ -103,9 +103,9 @@ function ContextAICard({ context, notify }: Readonly<{ context: CardContext; not
       <Heading>{data.score ?? "—"}</Heading>
       <StatusTag variant={review ? "warning" : "default"}>{data.band}</StatusTag>
       <DescriptionList direction="column">
-        <DescriptionListItem label="Confidence">{data.confidence}</DescriptionListItem>
-        <DescriptionListItem label="Evaluated">{new Date(data.evaluatedAt).toLocaleString()}</DescriptionListItem>
-        <DescriptionListItem label="Score version">{data.scoreVersion}</DescriptionListItem>
+        <DescriptionListItem label="Confidence"><Text>{data.confidence}</Text></DescriptionListItem>
+        <DescriptionListItem label="Evaluated"><Text>{new Date(data.evaluatedAt).toLocaleString()}</Text></DescriptionListItem>
+        <DescriptionListItem label="Score version"><Text>{data.scoreVersion}</Text></DescriptionListItem>
       </DescriptionList>
     </Flex>
     {review && <Alert title="Manual review required" variant="warning">The available context remains visible below.</Alert>}
@@ -122,16 +122,16 @@ function ContextAICard({ context, notify }: Readonly<{ context: CardContext; not
     <Divider />
     <Heading>Data quality</Heading>
     <DescriptionList direction="column">
-      <DescriptionListItem label="Review reasons">{list(data.dataQuality.manualReview)}</DescriptionListItem>
-      <DescriptionListItem label="Missing">{list(data.dataQuality.missing)}</DescriptionListItem>
-      <DescriptionListItem label="Stale">{list(data.dataQuality.stale)}</DescriptionListItem>
-      <DescriptionListItem label="Conflicts">{list(data.dataQuality.conflicts)}</DescriptionListItem>
-      <DescriptionListItem label="Failed sources">{list(data.dataQuality.failedSources.map(({ source, status }) => `${source} (${status})`))}</DescriptionListItem>
+      <DescriptionListItem label="Review reasons"><Text>{list(data.dataQuality.manualReview)}</Text></DescriptionListItem>
+      <DescriptionListItem label="Missing"><Text>{list(data.dataQuality.missing)}</Text></DescriptionListItem>
+      <DescriptionListItem label="Stale"><Text>{list(data.dataQuality.stale)}</Text></DescriptionListItem>
+      <DescriptionListItem label="Conflicts"><Text>{list(data.dataQuality.conflicts)}</Text></DescriptionListItem>
+      <DescriptionListItem label="Failed sources"><Text>{list(data.dataQuality.failedSources.map(({ source, status }) => `${source} (${status})`))}</Text></DescriptionListItem>
     </DescriptionList>
     <Heading>Writeback</Heading>
     <DescriptionList direction="column">
-      <DescriptionListItem label="Status">{data.writeback.status}</DescriptionListItem>
-      <DescriptionListItem label="Reason">{data.writeback.reason}</DescriptionListItem>
+      <DescriptionListItem label="Status"><Text>{data.writeback.status}</Text></DescriptionListItem>
+      <DescriptionListItem label="Reason"><Text>{data.writeback.reason}</Text></DescriptionListItem>
     </DescriptionList>
     <Divider />
     <Text>Select what you did or plan to do. ContextAI records the selection; it does not execute it.</Text>
@@ -141,7 +141,7 @@ function ContextAICard({ context, notify }: Readonly<{ context: CardContext; not
       label="Observed rep action"
       options={actionOptions.map((option) => ({ ...option, readonly: saving !== null }))}
       value={actionType}
-      onChange={(value) => setActionType(value as ActionType)}
+      onChange={(checkedOrValue: string | boolean, selectedValue?: string) => setActionType((selectedValue ?? (typeof checkedOrValue === "string" ? checkedOrValue : undefined)) as ActionType | undefined)}
     />
     <Heading>Recommendation</Heading>
     {review && <Text>Accept is unavailable until manual review is resolved.</Text>}

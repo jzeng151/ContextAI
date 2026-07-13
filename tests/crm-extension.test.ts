@@ -34,6 +34,8 @@ test("CRM card uses narrow-safe native controls and clears stale record state", 
   const card = readFileSync(new URL("../hubspot/src/app/cards/ContextAICard.tsx", import.meta.url), "utf8");
   assert.match(card, /<ToggleGroup[\s\S]*toggleType="radioButtonList"/);
   assert.match(card, /<DescriptionList direction="column">/);
+  assert.doesNotMatch(card, /<DescriptionListItem\b[^>]*>(?!\s*<Text\b)/);
+  assert.match(card, /onChange=\{\(checkedOrValue: string \| boolean, selectedValue\?: string\) => setActionType\(\(selectedValue \?\? \(typeof checkedOrValue === "string" \? checkedOrValue : undefined\)\) as ActionType \| undefined\)\}/);
   assert.match(card, /<LoadingButton/);
   assert.match(card, /let active = true;[\s\S]*setData\(null\);[\s\S]*return \(\) => \{ active = false; \};/);
   assert.match(card, /recordGeneration[\s\S]*recordGeneration\.current\.value === generation/);
