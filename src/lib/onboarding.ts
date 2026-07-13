@@ -76,6 +76,7 @@ export const startHubSpotOAuth = (
 ) => {
   const config = oauthRuntimeConfigFromEnv(env);
   assertAdminAccess(identity, config.tenantId);
+  store.saveTenant(config.tenantId, "ContextAI demo");
   const createdAt = new Date(now).toISOString();
   store.saveOAuthState(identity, config.integrationId, hashOAuthState(state), new Date(now + 10 * 60 * 1000).toISOString(), createdAt);
   return { authorizationUrl: hubSpotAuthorizationUrl(config.oauth, state) };

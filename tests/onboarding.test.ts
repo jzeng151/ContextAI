@@ -110,6 +110,21 @@ test("OAuth start requires a tenant admin and complete runtime configuration", (
   }
 });
 
+test("OAuth start initializes the configured tenant in a fresh database", () => {
+  const store = new RuntimeStore(":memory:");
+  try {
+    const result = startHubSpotOAuth(admin, store, env, now, "fresh-database-state");
+    assert.equal(new URL(result.authorizationUrl).searchParams.get("state"), "fresh-database-state");
+    assert.deepEqual(
+      { ...(store.database.prepare("SELECT tenant_id, name FROM tenants").get() as Record<string, string>) },
+      { tenant_id: admin.tenantId, name: "ContextAI demo" }
+    );
+    assert.equal((store.database.prepare("SELECT count(*) AS count FROM oauth_state_records").get() as { count: number }).count, 1);
+  } finally {
+    store.close();
+  }
+});
+
 test("successful HubSpot callback activates the expected portal with encrypted credentials", async () => {
   const store = storeFor();
   const state = "successful-oauth-state";
