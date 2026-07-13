@@ -1,7 +1,22 @@
-import React, { useEffect, useState } from "react";
-import { Button, Divider, Flex, Heading, Link, Text, hubspot } from "@hubspot/ui-extensions";
+import { useEffect, useRef, useState } from "react";
+import {
+  Alert,
+  DescriptionList,
+  DescriptionListItem,
+  Divider,
+  Flex,
+  Heading,
+  Link,
+  LoadingButton,
+  LoadingSpinner,
+  StatusTag,
+  Text,
+  ToggleGroup,
+  hubspot,
+} from "@hubspot/ui-extensions";
 
 type ActionType = "call" | "email" | "sequence" | "manual_enrichment" | "nurture" | "disqualify";
+type Disposition = "accepted" | "ignored" | "overridden";
 type CardData = {
   evaluatedAt: string;
   score: number | null;
@@ -26,16 +41,22 @@ hubspot.extend<"crm.record.sidebar">(({ context, actions }) => <ContextAICard co
 const labels: Record<ActionType, string> = {
   call: "Call", email: "Email", sequence: "Sequence", manual_enrichment: "Enrich manually", nurture: "Nurture", disqualify: "Disqualify",
 };
+const actionOptions = (Object.keys(labels) as ActionType[]).map((value) => ({ value, label: labels[value] }));
 const list = (items: string[]) => items.length ? items.join(", ") : "None";
 
 function ContextAICard({ context, notify }: Readonly<{ context: CardContext; notify: (input: { type: "success" | "danger"; message: string }) => void }>) {
   const [data, setData] = useState<CardData | null>(null);
   const [error, setError] = useState("");
   const [actionType, setActionType] = useState<ActionType>();
-  const [saving, setSaving] = useState(false);
+  const [saving, setSaving] = useState<Disposition | null>(null);
   const apiUrl = context.variables?.CONTEXTAI_API_URL;
   const endpoint = `${String(apiUrl ?? "").replace(/\/$/, "")}/hubspot/crm-card`;
   const record = { objectId: String(context.crm.objectId), objectTypeId: context.crm.objectTypeId };
+  const recordKey = `${record.objectTypeId}:${record.objectId}`;
+  const recordGeneration = useRef({ key: recordKey, value: 0 });
+  if (recordGeneration.current.key !== recordKey) {
+    recordGeneration.current = { key: recordKey, value: recordGeneration.current.value + 1 };
+  }
 
   const request = async (body: Record<string, unknown>) => {
     const response = await hubspot.fetch(endpoint, { method: "POST", body, timeout: 10_000 });
@@ -45,62 +66,89 @@ function ContextAICard({ context, notify }: Readonly<{ context: CardContext; not
   };
 
   useEffect(() => {
-    if (!apiUrl) return setError("CONTEXTAI_API_URL is not configured for this HubSpot project profile");
-    request({ operation: "view", ...record }).then(setData).catch((cause) => setError(cause instanceof Error ? cause.message : "ContextAI is unavailable"));
+    let active = true;
+    setData(null);
+    setError("");
+    setActionType(undefined);
+    setSaving(null);
+    if (!apiUrl) {
+      setError("CONTEXTAI_API_URL is not configured for this HubSpot project profile");
+      return () => { active = false; };
+    }
+    request({ operation: "view", ...record })
+      .then((result) => { if (active) setData(result); })
+      .catch((cause) => { if (active) setError(cause instanceof Error ? cause.message : "ContextAI is unavailable"); });
+    return () => { active = false; };
   }, [apiUrl, record.objectId, record.objectTypeId]);
 
-  const disposition = async (value: "accepted" | "ignored" | "overridden") => {
-    setSaving(true);
+  const disposition = async (value: Disposition) => {
+    const generation = recordGeneration.current.value;
+    setSaving(value);
     try {
       await request({ operation: "outcome", ...record, disposition: value, ...(actionType ? { actionType } : {}) });
-      notify({ type: "success", message: "Recommendation response recorded. No CRM action was executed." });
+      if (recordGeneration.current.value === generation) notify({ type: "success", message: "Recommendation response recorded. No CRM action was executed." });
     } catch (cause) {
-      notify({ type: "danger", message: cause instanceof Error ? cause.message : "Could not record response" });
+      if (recordGeneration.current.value === generation) notify({ type: "danger", message: cause instanceof Error ? cause.message : "Could not record response" });
     } finally {
-      setSaving(false);
+      if (recordGeneration.current.value === generation) setSaving(null);
     }
   };
 
-  if (error) return <Flex direction="column" gap="small"><Heading>ContextAI unavailable</Heading><Text>{error}</Text><Text>Use HubSpot normally; ContextAI never blocks record work.</Text></Flex>;
-  if (!data) return <Text>Loading latest ContextAI evaluation…</Text>;
+  if (error) return <Alert title="ContextAI unavailable" variant="danger"><Flex direction="column" gap="extra-small"><Text>{error}</Text><Text>Use HubSpot normally; ContextAI never blocks record work.</Text></Flex></Alert>;
+  if (!data) return <LoadingSpinner label="Loading latest ContextAI evaluation" showLabel layout="centered" />;
   const review = data.band === "Needs Manual Review" || data.dataQuality.manualReview.length > 0;
 
   return <Flex direction="column" gap="medium">
     <Flex direction="column" gap="extra-small">
-      <Heading>{data.score ?? "—"} · {data.band}</Heading>
-      <Text>{data.confidence} confidence · evaluated {new Date(data.evaluatedAt).toLocaleString()}</Text>
-      <Text>Score version {data.scoreVersion}</Text>
+      <Heading>{data.score ?? "—"}</Heading>
+      <StatusTag variant={review ? "warning" : "default"}>{data.band}</StatusTag>
+      <DescriptionList direction="column">
+        <DescriptionListItem label="Confidence"><Text>{data.confidence}</Text></DescriptionListItem>
+        <DescriptionListItem label="Evaluated"><Text>{new Date(data.evaluatedAt).toLocaleString()}</Text></DescriptionListItem>
+        <DescriptionListItem label="Score version"><Text>{data.scoreVersion}</Text></DescriptionListItem>
+      </DescriptionList>
     </Flex>
-    {review && <Text>Manual review required. The available context remains visible below.</Text>}
+    {review && <Alert title="Manual review required" variant="warning">The available context remains visible below.</Alert>}
     <Divider />
     <Heading>Why now</Heading>
     {data.drivers.length ? data.drivers.map((driver, index) => <Flex key={`${driver.text}-${index}`} direction="column" gap="extra-small">
-      <Text>{driver.text}</Text>
-      <Text>{driver.sources.map((source, sourceIndex) => <React.Fragment key={`${source.name}-${sourceIndex}`}>
-        {sourceIndex > 0 ? ", " : "Source: "}{source.url ? <Link href={source.url}>{source.name}</Link> : source.name}
-      </React.Fragment>)}</Text>
+      <Text format={{ fontWeight: "demibold" }}>{driver.text}</Text>
+      {driver.sources.map((source, sourceIndex) => <Text key={`${source.name}-${sourceIndex}`}>
+        Source: {source.url ? <Link href={source.url}>{source.name}</Link> : source.name}
+      </Text>)}
     </Flex>) : <Text>No approved score drivers are available.</Text>}
     <Heading>Grounded hook</Heading>
     <Text>{data.hook}</Text>
     <Divider />
     <Heading>Data quality</Heading>
-    <Text>Missing: {list(data.dataQuality.missing)}</Text>
-    <Text>Stale: {list(data.dataQuality.stale)}</Text>
-    <Text>Conflicts: {list(data.dataQuality.conflicts)}</Text>
-    <Text>Failed sources: {list(data.dataQuality.failedSources.map(({ source, status }) => `${source} (${status})`))}</Text>
+    <DescriptionList direction="column">
+      <DescriptionListItem label="Review reasons"><Text>{list(data.dataQuality.manualReview)}</Text></DescriptionListItem>
+      <DescriptionListItem label="Missing"><Text>{list(data.dataQuality.missing)}</Text></DescriptionListItem>
+      <DescriptionListItem label="Stale"><Text>{list(data.dataQuality.stale)}</Text></DescriptionListItem>
+      <DescriptionListItem label="Conflicts"><Text>{list(data.dataQuality.conflicts)}</Text></DescriptionListItem>
+      <DescriptionListItem label="Failed sources"><Text>{list(data.dataQuality.failedSources.map(({ source, status }) => `${source} (${status})`))}</Text></DescriptionListItem>
+    </DescriptionList>
     <Heading>Writeback</Heading>
-    <Text>{data.writeback.status}: {data.writeback.reason}</Text>
+    <DescriptionList direction="column">
+      <DescriptionListItem label="Status"><Text>{data.writeback.status}</Text></DescriptionListItem>
+      <DescriptionListItem label="Reason"><Text>{data.writeback.reason}</Text></DescriptionListItem>
+    </DescriptionList>
     <Divider />
-    <Heading>Observed rep action</Heading>
     <Text>Select what you did or plan to do. ContextAI records the selection; it does not execute it.</Text>
-    <Flex direction="column" gap="extra-small">
-      {(Object.keys(labels) as ActionType[]).map((value) => <Button key={value} variant={actionType === value ? "primary" : "secondary"} onClick={() => setActionType(value)}>{labels[value]}</Button>)}
-    </Flex>
+    <ToggleGroup
+      toggleType="radioButtonList"
+      name="observed-rep-action"
+      label="Observed rep action"
+      options={actionOptions.map((option) => ({ ...option, readonly: saving !== null }))}
+      value={actionType}
+      onChange={(checkedOrValue: string | boolean, selectedValue?: string) => setActionType((selectedValue ?? (typeof checkedOrValue === "string" ? checkedOrValue : undefined)) as ActionType | undefined)}
+    />
     <Heading>Recommendation</Heading>
+    {review && <Text>Accept is unavailable until manual review is resolved.</Text>}
     <Flex direction="column" gap="extra-small">
-      <Button disabled={saving || review} onClick={() => disposition("accepted")}>Accept</Button>
-      <Button disabled={saving} onClick={() => disposition("overridden")}>Override</Button>
-      <Button disabled={saving} onClick={() => disposition("ignored")}>Ignore</Button>
+      <LoadingButton variant="primary" loading={saving === "accepted"} disabled={saving !== null || review} onClick={() => disposition("accepted")}>Accept</LoadingButton>
+      <LoadingButton loading={saving === "overridden"} disabled={saving !== null} onClick={() => disposition("overridden")}>Override</LoadingButton>
+      <LoadingButton loading={saving === "ignored"} disabled={saving !== null} onClick={() => disposition("ignored")}>Ignore</LoadingButton>
     </Flex>
   </Flex>;
 }
