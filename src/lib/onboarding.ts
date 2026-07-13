@@ -31,7 +31,7 @@ const baseUrl = (value: string, name: string) => {
 
 const oauthRuntimeConfigFromEnv = (env: Env) => {
   try {
-    const tenantId = required(env, "CONTEXTAI_TENANT_ID");
+    const tenantId = env.CONTEXTAI_TENANT_ID ?? "local";
     const integrationId = required(env, "HUBSPOT_INTEGRATION_ID");
     const apiUrl = baseUrl(required(env, "CONTEXTAI_API_URL"), "CONTEXTAI_API_URL");
     const appUrl = baseUrl(required(env, "CONTEXTAI_APP_URL"), "CONTEXTAI_APP_URL");
@@ -55,7 +55,7 @@ export const createAdminSession = (
   try {
     configured = bootstrapTokenFromEnv(env.CONTEXTAI_ADMIN_BOOTSTRAP_TOKEN);
     secret = sessionSecretFromEnv(env.SESSION_SECRET);
-    tenantId = required(env, "CONTEXTAI_TENANT_ID");
+    tenantId = env.CONTEXTAI_TENANT_ID ?? "local";
   } catch {
     throw new OnboardingError(503, "Authentication is unavailable");
   }

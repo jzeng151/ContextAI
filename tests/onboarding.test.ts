@@ -8,7 +8,7 @@ import { hubSpotRequiredScopes, type HubSpotOAuthTokens } from "../src/lib/integ
 import { safeReturnTo } from "../src/lib/login.ts";
 import { completeHubSpotOAuth, createAdminSession, OnboardingError, startHubSpotOAuth } from "../src/lib/onboarding.ts";
 import { RuntimeStore } from "../src/lib/persistence.ts";
-import { authenticateBearer, createOAuthState, hashOAuthState, type RequestIdentity } from "../src/lib/security.ts";
+import { authenticateBearer, createOAuthState, createSessionToken, hashOAuthState, type RequestIdentity } from "../src/lib/security.ts";
 import { decryptSecret } from "../src/lib/secrets.ts";
 
 const now = Date.parse("2026-07-12T12:00:00.000Z");
@@ -87,7 +87,6 @@ test("OAuth start requires a tenant admin and complete runtime configuration", (
     const rep = { ...admin, role: "rep" as const, actorId: "rep-1" };
     assert.throws(() => startHubSpotOAuth(rep, store, env, now, "rep-state"), /RevOps Admin/i);
     for (const broken of [
-      { ...env, CONTEXTAI_TENANT_ID: undefined },
       { ...env, CONTEXTAI_API_URL: undefined },
       { ...env, CONTEXTAI_APP_URL: undefined },
       { ...env, HUBSPOT_CLIENT_ID: undefined },
@@ -251,11 +250,11 @@ test("HTTP auth and OAuth routes enforce bearer access, no-store responses, and 
   const directory = mkdtempSync(join(tmpdir(), "contextai-onboarding-"));
   const databasePath = join(directory, "runtime.sqlite");
   const seed = new RuntimeStore(databasePath);
-  seed.saveTenant(admin.tenantId, "HTTP route tenant");
   seed.close();
   const originalEnv = Object.fromEntries(Object.keys(env).concat("DATABASE_PATH").map((name) => [name, process.env[name]]));
   const originalFetch = globalThis.fetch;
   Object.assign(process.env, env, { DATABASE_PATH: databasePath });
+  delete process.env.CONTEXTAI_TENANT_ID;
   const { closeRuntimeStore, handleRequest } = await import(`../src/server.ts?onboarding=${Date.now()}`);
   const request = async (method: string, url: string, input?: Readonly<{ body?: string; authorization?: string }>) => {
     const incoming = Readable.from(input?.body ? [Buffer.from(input.body)] : []) as any;
@@ -288,6 +287,22 @@ test("HTTP auth and OAuth routes enforce bearer access, no-store responses, and 
     assert.equal(sessionResponse.status, 200);
     assert.equal(sessionResponse.headers.get("cache-control"), "no-store");
     const session = JSON.parse(sessionResponse.body) as { token: string };
+    const freshAdmin = await request("GET", "/admin/integrations", { authorization: `Bearer ${session.token}` });
+    assert.equal(freshAdmin.status, 200);
+    assert.deepEqual(JSON.parse(freshAdmin.body), { integrations: [] });
+
+    const browserMorningRun = await request("POST", "/internal/morning-run", { authorization: `Bearer ${session.token}`, body: JSON.stringify({ ownerId: "owner-1" }) });
+    assert.equal(browserMorningRun.status, 403);
+    assert.deepEqual(JSON.parse(browserMorningRun.body), { error: "Morning-run access denied" });
+    const runnerToken = createSessionToken(
+      { requestId: "morning-run", tenantId: "local", actorId: "scheduler", role: "system" },
+      new Date(Date.now() + 60_000).toISOString(),
+      env.SESSION_SECRET,
+    );
+    const runnerMissingOwner = await request("POST", "/internal/morning-run", { authorization: `Bearer ${runnerToken}`, body: "{}" });
+    assert.equal(runnerMissingOwner.status, 400);
+    assert.deepEqual(JSON.parse(runnerMissingOwner.body), { error: "ownerId is required" });
+
     const beginOAuth = async () => {
       const response = await request("POST", "/oauth/hubspot/start", { authorization: `Bearer ${session.token}` });
       assert.equal(response.status, 200);

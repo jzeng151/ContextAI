@@ -119,7 +119,9 @@ export const handleRequest = async (request: Parameters<Parameters<typeof create
         return json(response, 401, { error: "Authentication failed" });
       }
       try {
-        return json(response, 200, createAdminSession(bootstrapToken));
+        const session = createAdminSession(bootstrapToken);
+        store.saveTenant(tenantId, "ContextAI demo");
+        return json(response, 200, session);
       } catch (error) {
         return json(response, error instanceof OnboardingError ? error.status : 503, {
           error: error instanceof OnboardingError ? error.publicMessage : "Authentication is unavailable"
@@ -301,7 +303,7 @@ export const handleRequest = async (request: Parameters<Parameters<typeof create
     }
     if (request.method === "POST" && request.url === "/internal/morning-run") {
       const identity = authenticateBearer(request.headers.authorization);
-      if (identity.tenantId !== tenantId || identity.role === "rep") return json(response, 403, { error: "Morning-run access denied" });
+      if (identity.tenantId !== tenantId || (identity.role !== "system" && identity.role !== "integration")) return json(response, 403, { error: "Morning-run access denied" });
       const input = JSON.parse(await body(request)) as { ownerId?: string; scheduledFor?: string };
       if (!input.ownerId?.trim()) return json(response, 400, { error: "ownerId is required" });
       const tokenIdentity = { ...identity, actorId: "morning-runner", role: "system" as const };
