@@ -30,7 +30,7 @@ openssl rand -base64 32
 
 Copy the two different hex values into `CONTEXTAI_ADMIN_BOOTSTRAP_TOKEN` and `SESSION_SECRET`, and the base64 value into `INTEGRATION_SECRET_KEY`. Add the HubSpot app's `HUBSPOT_CLIENT_ID` and `HUBSPOT_CLIENT_SECRET`. Keep `CONTEXTAI_TENANT_ID=local` and `HUBSPOT_INTEGRATION_ID=hubspot-demo`.
 
-Do not share the generated values or commit `.env`. Leave `CONTEXTAI_API_URL`, `PUBLIC_CONTEXTAI_API_URL`, and `HUBSPOT_REDIRECT_URI` empty; `npm run demo` derives them from the current tunnel. The tunneled API always runs with `CONTEXTAI_LOCAL_DEMO=0`, and CRM writeback remains dry-run.
+Do not share the generated values or commit `.env`. Leave `CONTEXTAI_API_URL` and `HUBSPOT_REDIRECT_URI` empty and keep `PUBLIC_CONTEXTAI_API_URL` on its loopback default; `npm run demo` overrides all three from the current tunnel. The tunneled API always runs with `CONTEXTAI_LOCAL_DEMO=0`, and CRM writeback remains dry-run.
 
 ## 3. Start the demo
 

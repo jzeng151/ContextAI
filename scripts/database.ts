@@ -21,11 +21,17 @@ try {
     } catch (error) {
       if (!(error instanceof Error) || !error.message.includes("UNIQUE constraint failed")) throw error;
     }
+    const existingSeed = store.database.prepare("SELECT evaluation_id FROM evaluation_runs WHERE tenant_id = ? AND idempotency_key = ?");
+    const evaluationIdTaken = store.database.prepare("SELECT 1 FROM evaluation_runs WHERE evaluation_id = ?");
     for (const packet of leads) {
+      const idempotencyKey = `fixture:${packet.evaluation_id}`;
+      const existing = existingSeed.get(tenantId, idempotencyKey) as { evaluation_id: string } | undefined;
+      let evaluationId = existing?.evaluation_id ?? `${tenantId}:${packet.evaluation_id}`;
+      while (!existing && evaluationIdTaken.get(evaluationId)) evaluationId = randomUUID();
       store.saveEvaluation({
         tenantId,
-        idempotencyKey: `fixture:${packet.evaluation_id}`,
-        packet
+        idempotencyKey,
+        packet: evaluationId === packet.evaluation_id ? packet : { ...packet, evaluation_id: evaluationId }
       });
     }
     console.log(`Seeded ${leads.length} fixture evaluations.`);
