@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "ASTRO_TELEMETRY_DISABLED=1 astro dev",
     "start": "node --env-file-if-exists=.env --experimental-sqlite --experimental-strip-types src/server.ts",
+    "demo": "node --experimental-sqlite --experimental-strip-types scripts/demo.ts",
+    "demo:check": "node --experimental-sqlite --experimental-strip-types scripts/demo.ts check",
     "build": "ASTRO_TELEMETRY_DISABLED=1 astro build",
     "test": "node --experimental-sqlite --test --experimental-strip-types tests/*.test.ts",
     "db:migrate": "node --env-file-if-exists=.env --experimental-sqlite --experimental-strip-types scripts/database.ts",
