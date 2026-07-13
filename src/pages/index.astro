@@ -1,5 +1,5 @@
 ---
-import { dashboardPromptVersion, rankDashboardLeads } from "../lib/dashboard";
+import { dashboardDetailTabs, dashboardPromptVersion, dashboardSummary, rankDashboardLeads } from "../lib/dashboard";
 import { defaultConfigVersion } from "../lib/config";
 import { leads as fixtureLeads } from "../data/leads";
 import {
@@ -33,10 +33,7 @@ const selected = queueLeads[0];
 const scoreCaps = defaultConfigVersion.config.categoryWeights;
 const bandThresholds = defaultConfigVersion.config.bandThresholds;
 const scoreKeys = Object.keys(scoreCaps) as Array<keyof ScoreBreakdown>;
-const hot = leads.filter(({ priority_band }) => priority_band === "Hot").length;
-const review = leads.filter(({ priority_band }) => priority_band === "Needs Manual Review").length;
-const partial = leads.filter((lead) => Object.values(lead.tool_status).some(({ status }) => !["success", "no_result"].includes(status))).length;
-const writebackReview = leads.filter(({ writeback_plan }) => writeback_plan?.decision === "Review").length;
+const { hot, review, partial, writebackReview } = dashboardSummary(leads);
 
 const humanize = (value: string) => value
   .replaceAll("_", " ")
@@ -123,12 +120,12 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
           <strong>ContextAI</strong>
         </a>
         <nav>
-          <button type="button" class="nav-item active" data-nav-view="today" aria-current="page"><span>HubSpot</span><strong>{leads.length}</strong></button>
-          <button type="button" class="nav-item" data-nav-view="review"><span>Manual review</span><strong>{review}</strong></button>
-          <button type="button" class="nav-item" data-nav-tab="run"><span>Runs</span><strong>{partial}</strong></button>
+          <button type="button" class="nav-item active" data-nav-view="today" aria-current="page"><span>HubSpot</span><strong data-summary-total>{leads.length}</strong></button>
+          <button type="button" class="nav-item" data-nav-view="review"><span>Manual review</span><strong data-summary-review>{review}</strong></button>
+          <button type="button" class="nav-item" data-nav-tab="run"><span>Runs</span><strong data-summary-partial>{partial}</strong></button>
           <button type="button" class="nav-item" data-nav-tab="score"><span>Scoring</span></button>
           <button type="button" class="nav-item" data-nav-tab="evidence"><span>Sources</span></button>
-          <button type="button" class="nav-item" data-nav-tab="audit"><span>Writeback audit</span><strong>{writebackReview}</strong></button>
+          <button type="button" class="nav-item" data-nav-tab="audit"><span>Writeback audit</span><strong data-summary-writeback>{writebackReview}</strong></button>
           <a class="nav-item" href="/admin"><span>Governance</span></a>
         </nav>
         <div class="nav-account">
@@ -141,7 +138,7 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
         <header class="queue-toolbar">
           <div>
             <h1 id="queue-title">HubSpot lead queue</h1>
-            <p>{selected ? `Last analyzed ${formatTimestamp(selected.evaluation_timestamp)} · ${leads.length} evaluated` : "Refresh to analyze current HubSpot contacts"}</p>
+            <p data-summary-last>{selected ? `Last analyzed ${formatTimestamp(selected.evaluation_timestamp)} · ${leads.length} evaluated` : "Refresh to analyze current HubSpot contacts"}</p>
           </div>
           <div class="toolbar-controls">
             <label class="search-control">
@@ -163,10 +160,10 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
         </header>
 
         <section class="run-summary" aria-label="HubSpot analysis summary">
-          <p><strong>{hot}</strong><span>Hot leads</span></p>
-          <p><strong>{review}</strong><span>Needs manual review</span></p>
-          <p><strong>{partial}</strong><span>Partial source run</span></p>
-          <p class="run-complete"><strong>{leads.length ? "Run complete" : "Ready to sync"}</strong><span>{leads.length ? "All required steps are terminal" : "Only HubSpot contacts appear"}</span></p>
+          <p><strong data-summary-hot>{hot}</strong><span>Hot leads</span></p>
+          <p><strong data-summary-review>{review}</strong><span>Needs manual review</span></p>
+          <p><strong data-summary-partial>{partial}</strong><span>Partial source run</span></p>
+          <p class="run-complete"><strong data-summary-state>{leads.length ? "Run complete" : "Ready to sync"}</strong><span data-summary-state-detail>{leads.length ? "All required steps are terminal" : "Only HubSpot contacts appear"}</span></p>
         </section>
 
         <div class="queue-status" aria-live="polite">
@@ -252,7 +249,7 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
               </header>
 
               <div class="detail-tabs" role="tablist" aria-label={`${lead.lead_identity.company} details`}>
-                {(["decision", "evidence", "crm", "score", "run", "audit"] as const).map((tab, index) => (
+                {dashboardDetailTabs.map((tab, index) => (
                   <button
                     type="button"
                     role="tab"
@@ -388,8 +385,8 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
 </html>
 
 <script>
-  import { dashboardOutcomeEvents, dashboardViewEvents, rankDashboardLeads } from "../lib/dashboard.ts";
-  import { requiredToolSteps, type LeadPacket } from "../lib/contextai.ts";
+  import { dashboardDetailTabs, dashboardOutcomeEvents, dashboardSummary, dashboardViewEvents, rankDashboardLeads } from "../lib/dashboard.ts";
+  import { groundedHookEvidence, requiredToolSteps, type LeadPacket } from "../lib/contextai.ts";
   import type { ActionType, PilotEvent } from "../lib/instrumentation.ts";
 
   type EventPacket = Parameters<typeof dashboardViewEvents>[0]["packet"];
@@ -467,7 +464,7 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
     );
     header.append(back, identity, score);
 
-    const tabs = ["decision", "evidence", "crm", "run", "audit"] as const;
+    const tabs = dashboardDetailTabs;
     const tabList = document.createElement("div");
     tabList.className = "detail-tabs";
     tabList.setAttribute("role", "tablist");
@@ -502,10 +499,13 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
         const copy = textElement("button", "Copy");
         copy.type = "button";
         copy.dataset.copyHook = "";
+        const hookEvidence = groundedHookEvidence(lead);
+        copy.disabled = !hookEvidence;
+        hook.classList.toggle("unavailable", !hookEvidence);
         hookHeading.append(textElement("h3", "Grounded hook"), copy);
         const hookText = textElement("p", lead.hook);
         hookText.dataset.hookText = "";
-        hook.append(hookHeading, hookText);
+        hook.append(hookHeading, hookText, textElement("small", hookEvidence ? `${hookEvidence.source_name} · ${hookEvidence.confidence} confidence` : "No approved recent signal is available for outreach."));
 
         const form = document.createElement("form");
         form.className = "outcome-form";
@@ -562,6 +562,21 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
           ["Company association", lead.crm_context.company_association.status],
           ["Account ID", lead.account_id ?? "None"],
           ["Source", lead.crm_context.source ?? "Data unavailable"]
+        ]));
+      } else if (tab === "score") {
+        panel.append(textElement("h3", "Deterministic score"));
+        const breakdown = document.createElement("dl");
+        breakdown.className = "definition-grid";
+        for (const [category, points] of Object.entries(lead.score_breakdown)) {
+          const item = document.createElement("div");
+          item.append(textElement("dt", category.replaceAll("_", " ")), textElement("dd", String(points)));
+          breakdown.append(item);
+        }
+        panel.append(breakdown, definitionList([
+          ["Priority score", lead.priority_score === null ? "Manual review" : String(lead.priority_score)],
+          ["Band", lead.priority_band],
+          ["Confidence", lead.confidence],
+          ["Score version", lead.score_version]
         ]));
       } else if (tab === "run") {
         panel.append(textElement("h3", "Evaluation run"));
@@ -651,6 +666,16 @@ const safeJson = JSON.stringify(eventPackets).replaceAll("<", "\\u003c");
     bindDetailControls();
     const count = document.querySelector<HTMLElement>("[data-result-count]");
     if (count) count.textContent = String(ordered.length);
+    const summary = dashboardSummary(ordered);
+    const update = (selector: string, value: string | number) => document.querySelectorAll<HTMLElement>(selector).forEach((element) => element.textContent = String(value));
+    update("[data-summary-total]", summary.total);
+    update("[data-summary-hot]", summary.hot);
+    update("[data-summary-review]", summary.review);
+    update("[data-summary-partial]", summary.partial);
+    update("[data-summary-writeback]", summary.writebackReview);
+    update("[data-summary-state]", summary.total ? "Run complete" : "Ready to sync");
+    update("[data-summary-state-detail]", summary.total ? "All required steps are terminal" : "Only HubSpot contacts appear");
+    update("[data-summary-last]", ordered[0] ? `Last analyzed ${new Date(ordered[0].evaluation_timestamp).toLocaleString()} · ${summary.total} evaluated` : "Refresh to analyze current HubSpot contacts");
     if (noSelection) {
       noSelection.hidden = ordered.length > 0;
       noSelection.querySelector("h2")!.textContent = ordered.length ? "Live HubSpot results" : "Waiting for HubSpot";

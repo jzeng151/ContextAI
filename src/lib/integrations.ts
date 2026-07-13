@@ -209,7 +209,7 @@ export const explainLeadWithOpenRouter = async (
           additionalProperties: false,
           required: ["priority_score", "band", "confidence", "reason", "reason_claim_ids", "hook_recommendation", "hook_claim_ids", "missing_stale_data", "crm_writeback"],
           properties: {
-            priority_score: { type: fallback.priority_score === null ? "null" : "integer", enum: [fallback.priority_score] },
+            priority_score: { type: fallback.priority_score === null ? "null" : "number", enum: [fallback.priority_score] },
             band: { type: "string", enum: [fallback.band] },
             confidence: { type: "string", enum: [fallback.confidence] },
             reason: { type: "string", enum: reasonOptions.map(({ text }) => text) },

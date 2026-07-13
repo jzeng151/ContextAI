@@ -3,7 +3,9 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { leads } from "../src/data/leads.ts";
 import {
+  dashboardDetailTabs,
   dashboardOutcomeEvents,
+  dashboardSummary,
   hubSpotDashboardPackets,
   dashboardPromptVersion,
   dashboardViewEvents,
@@ -133,6 +135,11 @@ test("dashboard ranking keeps manual review above numeric lower bands", () => {
   ]);
 });
 
+test("dashboard tabs and summaries are shared by server and client rendering", () => {
+  assert.deepEqual(dashboardDetailTabs, ["decision", "evidence", "crm", "score", "run", "audit"]);
+  assert.deepEqual(dashboardSummary(leads), { total: 6, hot: 2, review: 2, partial: 1, writebackReview: 2 });
+});
+
 test("dashboard runtime keeps refresh secure, bounded, auditable, and current", () => {
   const server = readFileSync(new URL("../src/server.ts", import.meta.url), "utf8");
   const page = readFileSync(new URL("../src/pages/index.astro", import.meta.url), "utf8");
@@ -150,6 +157,8 @@ test("dashboard runtime keeps refresh secure, bounded, auditable, and current", 
   assert.match(page, /packets\[lead\.lead_id\]/);
   assert.match(page, /bindDetailControls/);
   assert.match(page, /dataset\.outcomeForm/);
+  assert.match(page, /groundedHookEvidence\(lead\)/);
+  assert.match(page, /data-summary-total/);
   assert.match(page, /leads = fixtureLeads/);
   assert.doesNotMatch(page, /location\.reload\(\)/);
 });

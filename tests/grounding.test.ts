@@ -9,7 +9,8 @@ import {
   validateGroundedExplanation,
 } from "../src/lib/grounding.ts";
 import { explainLeadWithOpenRouter } from "../src/lib/integrations.ts";
-import { createScoringRunContext, defaultConfigVersion } from "../src/lib/config.ts";
+import { createScoringRunContext, defaultConfigVersion, defaultScoringConfig } from "../src/lib/config.ts";
+import { applyDeterministicScore } from "../src/lib/scoring.ts";
 
 const defaultContext = createScoringRunContext(defaultConfigVersion);
 
@@ -202,6 +203,35 @@ test("OpenAI no-hook schema requires an empty array without an empty enum", asyn
     });
     assert.equal(hookClaimIds?.maxItems, 0);
     assert.equal(hookClaimIds?.items.enum, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("OpenAI schema accepts configured fractional priority scores", async () => {
+  const originalFetch = globalThis.fetch;
+  let priorityScore: { type: string; enum: number[] } | undefined;
+  globalThis.fetch = async (_input, init) => {
+    const body = JSON.parse(String(init?.body));
+    priorityScore = body.response_format.json_schema.schema.properties.priority_score;
+    return new Response(JSON.stringify({ choices: [{ message: { content: "{}" } }] }), { status: 200 });
+  };
+  const context = createScoringRunContext({
+    ...defaultConfigVersion,
+    id: "score-fractional",
+    config: {
+      ...defaultScoringConfig,
+      categoryWeights: { icp_fit: 50.68, high_intent_actions: 15.53, engagement_quality: 19.59, public_timing_signals: 8.47, crm_process_context: 1.81, data_confidence: 3.92 },
+    },
+  });
+  const lead = applyDeterministicScore(byId("golden-normal"), context);
+  assert.ok(lead.priority_score !== null && !Number.isInteger(lead.priority_score));
+  try {
+    await explainLeadWithOpenRouter(lead, context, {
+      apiKey: "test", model: "test", endpoint: "https://api.openai.com/v1/chat/completions", enforceZdr: false,
+    });
+    assert.equal(priorityScore?.type, "number");
+    assert.deepEqual(priorityScore?.enum, [lead.priority_score]);
   } finally {
     globalThis.fetch = originalFetch;
   }
