@@ -83,10 +83,14 @@ Live integration credentials are optional for local UI development and automated
 | --- | --- | --- |
 | `OPENROUTER_API_KEY` | No | Enables OpenRouter key checks and optional live explanation calls. |
 | `OPENROUTER_MODEL` | No | Overrides the default model, `openai/gpt-4.1-mini`. |
+| `OPENAI_API_KEY` | No | Uses the OpenAI API directly instead of OpenRouter when set. |
+| `OPENAI_MODEL` | No | Overrides the direct OpenAI model, `gpt-4.1-mini`. |
 | `CONTEXTAI_APP_URL` | No | Sets the application URL sent with OpenRouter requests. |
 | `CONTEXTAI_API_URL` | Required for CRM card | Public HTTPS origin used to validate signed HubSpot card requests. |
-| `PUBLIC_CONTEXTAI_API_URL` | No | Sets the runtime API origin used by the Astro governance page. |
+| `PUBLIC_CONTEXTAI_API_URL` | Local dashboard | Browser-facing ContextAI API origin; defaults to `http://127.0.0.1:4000`. |
+| `CONTEXTAI_ALLOW_MODEL_DATA` | No | Set to `1` only after approving HubSpot-derived claims for OpenRouter analysis; local grounded fallback is the default. |
 | `CONTEXTAI_ADMIN_ORIGIN` | No | Allows the Astro governance origin to call the runtime API; defaults to `http://127.0.0.1:4321`. |
+| `CONTEXTAI_LOCAL_DEMO` | No | Set to `1` to allow the unauthenticated dashboard only over a direct loopback connection; bearer authentication is required by default. |
 | `HUBSPOT_ACCESS_TOKEN` | No | Enables live HubSpot contact checks. |
 | `HUBSPOT_WEBHOOK_SECRET` | No | Authenticates `POST /webhooks/hubspot/assignments`. |
 | `HUBSPOT_INTEGRATION_ID` | No | Selects the encrypted HubSpot OAuth integration used by server-triggered evaluations. |

@@ -58,6 +58,7 @@ type EvaluationOptions = Readonly<{
   requestId?: string;
   evaluatedAt?: string;
   evaluationKind?: "baseline_anchor" | "exposure_index" | "rescore";
+  recordPilotOwner?: boolean;
 }>;
 
 const zeroBreakdown = { icp_fit: 0, high_intent_actions: 0, engagement_quality: 0, public_timing_signals: 0, crm_process_context: 0, data_confidence: 0 } as const;
@@ -297,7 +298,7 @@ export const evaluateLead = async (options: EvaluationOptions) => {
   };
   const saved = options.store.saveEvaluation({ tenantId: options.identity.tenantId, idempotencyKey: options.idempotencyKey, packet: finalPacket, assignedRepId: assignedUserId });
   if (!saved.created) return { ...options.store.getEvaluation(options.identity, saved.evaluationId)!, replayed: true as const };
-  if (assignedUserId) options.store.recordEvaluationOwner({
+  if (assignedUserId && options.recordPilotOwner !== false) options.store.recordEvaluationOwner({
     tenantId: options.identity.tenantId, evaluationId: saved.evaluationId, repId: assignedUserId,
     evaluationKind: options.evaluationKind, recordedAt: at
   });

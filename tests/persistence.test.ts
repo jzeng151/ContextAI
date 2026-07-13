@@ -459,6 +459,10 @@ test("retention purges customer data while preserving required audits", () => {
       evidence_ids: [...new Set(claims.flatMap((claim) => claim.evidence_ids))],
     };
     const groundingAuditId = store.appendGroundingAudit("tenant-1", explanation, claims, { ...groundingAudit, outcome: "validated" });
+    assert.throws(
+      () => store.appendGroundingAudit("tenant-2", explanation, claims, { ...groundingAudit, outcome: "validated" }),
+      /FOREIGN KEY constraint failed/i,
+    );
     store.appendGroundingAudit("tenant-1", fallbackGroundedExplanation(packet), claims, { ...groundingAudit, outcome: "fallback", failure: "invalid_output" });
     assert.doesNotThrow(() => store.appendGroundingAudit("tenant-1", fallbackGroundedExplanation(packet), claims, { ...groundingAudit, outcome: "fallback" }));
     assert.throws(

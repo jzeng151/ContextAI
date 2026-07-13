@@ -5,3 +5,4 @@ dist/
 .env
 .env.*
 !.env.example
+hubspot/src/hsprofile.dev.json

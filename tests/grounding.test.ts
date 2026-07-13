@@ -9,7 +9,8 @@ import {
   validateGroundedExplanation,
 } from "../src/lib/grounding.ts";
 import { explainLeadWithOpenRouter } from "../src/lib/integrations.ts";
-import { createScoringRunContext, defaultConfigVersion } from "../src/lib/config.ts";
+import { createScoringRunContext, defaultConfigVersion, defaultScoringConfig } from "../src/lib/config.ts";
+import { applyDeterministicScore } from "../src/lib/scoring.ts";
 
 const defaultContext = createScoringRunContext(defaultConfigVersion);
 
@@ -168,6 +169,69 @@ test("valid model selection produces the exact PRD display format", async () => 
     assert.equal(result.audit.model_id, "test-model");
     assert.deepEqual(result.explanation, output);
     assert.match(formatGroundedExplanation(result.explanation), /^Priority Score: 94\/100\nBand: Hot\nConfidence: High\nReason: /);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("OpenAI display text is derived from its approved claim IDs", async () => {
+  const originalFetch = globalThis.fetch;
+  const { output } = validOutput();
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ ...output, reason: "unsupported summary" }) } }] }), { status: 200 });
+  try {
+    const result = await explainLeadWithOpenRouter(byId("golden-normal"), defaultContext, {
+      apiKey: "test", model: "test", endpoint: "https://api.openai.com/v1/chat/completions", enforceZdr: false,
+    });
+    assert.equal(result.audit.outcome, "validated");
+    assert.notEqual(result.explanation.reason, "unsupported summary");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("OpenAI no-hook schema requires an empty array without an empty enum", async () => {
+  const originalFetch = globalThis.fetch;
+  let hookClaimIds: { items: { enum?: string[] }; maxItems: number } | undefined;
+  globalThis.fetch = async (_input, init) => {
+    const body = JSON.parse(String(init?.body));
+    hookClaimIds = body.response_format.json_schema.schema.properties.hook_claim_ids;
+    return new Response(JSON.stringify({ choices: [{ message: { content: "{}" } }] }), { status: 200 });
+  };
+  try {
+    await explainLeadWithOpenRouter(byId("weak-opens"), defaultContext, {
+      apiKey: "test", model: "test", endpoint: "https://api.openai.com/v1/chat/completions", enforceZdr: false,
+    });
+    assert.equal(hookClaimIds?.maxItems, 0);
+    assert.equal(hookClaimIds?.items.enum, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("OpenAI schema accepts configured fractional priority scores", async () => {
+  const originalFetch = globalThis.fetch;
+  let priorityScore: { type: string; enum: number[] } | undefined;
+  globalThis.fetch = async (_input, init) => {
+    const body = JSON.parse(String(init?.body));
+    priorityScore = body.response_format.json_schema.schema.properties.priority_score;
+    return new Response(JSON.stringify({ choices: [{ message: { content: "{}" } }] }), { status: 200 });
+  };
+  const context = createScoringRunContext({
+    ...defaultConfigVersion,
+    id: "score-fractional",
+    config: {
+      ...defaultScoringConfig,
+      categoryWeights: { icp_fit: 50.68, high_intent_actions: 15.53, engagement_quality: 19.59, public_timing_signals: 8.47, crm_process_context: 1.81, data_confidence: 3.92 },
+    },
+  });
+  const lead = applyDeterministicScore(byId("golden-normal"), context);
+  assert.ok(lead.priority_score !== null && !Number.isInteger(lead.priority_score));
+  try {
+    await explainLeadWithOpenRouter(lead, context, {
+      apiKey: "test", model: "test", endpoint: "https://api.openai.com/v1/chat/completions", enforceZdr: false,
+    });
+    assert.equal(priorityScore?.type, "number");
+    assert.deepEqual(priorityScore?.enum, [lead.priority_score]);
   } finally {
     globalThis.fetch = originalFetch;
   }

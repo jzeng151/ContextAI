@@ -1,12 +1,19 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { leads } from "../src/data/leads.ts";
 import {
+  dashboardDetailTabs,
   dashboardOutcomeEvents,
+  dashboardSummary,
+  hubSpotDashboardPackets,
   dashboardPromptVersion,
-  dashboardViewEvents
+  dashboardViewEvents,
+  rankDashboardLeads
 } from "../src/lib/dashboard.ts";
+import { defaultConfigVersion } from "../src/lib/config.ts";
 import { assertPilotEvent } from "../src/lib/instrumentation.ts";
+import { RuntimeStore } from "../src/lib/persistence.ts";
 
 test("dashboard outcomes emit contract-safe disposition and optional action events", () => {
   const packet = leads[0]!;
@@ -103,4 +110,68 @@ test("dashboard views emit one idempotent view and score event from a minimal pa
   events.forEach(assertPilotEvent);
   assert.deepEqual(dashboardViewEvents(input), events);
   assert.ok(!JSON.stringify(events).includes(lead.lead_identity.email));
+});
+
+test("live dashboard excludes evaluations that are not current HubSpot contacts", () => {
+  const store = new RuntimeStore(":memory:");
+  const identity = { requestId: "dashboard-live", tenantId: "tenant-live", actorId: "admin", role: "revops_admin" as const };
+  store.saveTenant(identity.tenantId, "Live dashboard");
+  store.saveConfigVersion(identity, defaultConfigVersion);
+  const current = structuredClone(leads[0]!);
+  current.lead_id = "hubspot-contact-1";
+  current.evaluation_id = "hubspot-evaluation-1";
+  const fixtureOnly = structuredClone(leads[1]!);
+  fixtureOnly.evaluation_id = "fixture-evaluation";
+  store.saveEvaluation({ tenantId: identity.tenantId, idempotencyKey: "current", packet: current });
+  store.saveEvaluation({ tenantId: identity.tenantId, idempotencyKey: "fixture", packet: fixtureOnly });
+
+  assert.deepEqual(hubSpotDashboardPackets(store, identity, ["hubspot-contact-1"]).map(({ lead_id }) => lead_id), ["hubspot-contact-1"]);
+  store.close();
+});
+
+test("dashboard ranking keeps manual review above numeric lower bands", () => {
+  assert.deepEqual(rankDashboardLeads(leads).map(({ lead_id }) => lead_id), [
+    "golden-normal", "no-public-signal", "no-usable-data", "stale-writeback", "weak-opens", "small-high-intent"
+  ]);
+});
+
+test("dashboard tabs and summaries are shared by server and client rendering", () => {
+  assert.deepEqual(dashboardDetailTabs, ["decision", "evidence", "crm", "score", "run", "audit"]);
+  assert.deepEqual(dashboardSummary(leads), { total: 6, hot: 2, review: 2, partial: 1, writebackReview: 2 });
+});
+
+test("dashboard runtime keeps refresh secure, bounded, auditable, and current", () => {
+  const server = readFileSync(new URL("../src/server.ts", import.meta.url), "utf8");
+  const page = readFileSync(new URL("../src/pages/index.astro", import.meta.url), "utf8");
+  assert.match(server, /isLoopbackAddress\(request\.socket\.remoteAddress\)/);
+  assert.match(server, /process\.env\.CONTEXTAI_LOCAL_DEMO === "1"/);
+  assert.match(server, /if \(localDemo && directLoopback/);
+  assert.match(server, /adminOrigins\.has\(request\.headers\.origin\)/);
+  assert.match(server, /contacts: contacts\.length, tenantId: identity\.tenantId/);
+  assert.match(server, /refreshedAt,\s*tenantId: identity\.tenantId/);
+  assert.match(server, /index \+= 4/);
+  assert.match(server, /evaluateLead\(\{\s*identity,/);
+  assert.match(server, /recordPilotOwner: false/);
+  assert.match(server, /result\.value\.packet/);
+  assert.match(page, /fetchDashboard\("\/dashboard"\)/);
+  assert.match(page, /data-tenant-id=\{dashboardTenantId\}/);
+  assert.match(page, /if \(!eventTenantId \|\| !desktopRows\.length\)/);
+  assert.match(page, /renderClientLeads/);
+  assert.match(page, /dataset\.clientLead/);
+  assert.match(page, /createClientDetail/);
+  assert.match(page, /dataset\.leadDetail/);
+  assert.match(page, /packets\[lead\.lead_id\]/);
+  assert.match(page, /bindDetailControls/);
+  assert.match(page, /dataset\.outcomeForm/);
+  assert.match(page, /groundedHookEvidence\(lead\)/);
+  assert.match(page, /eventTenantId = tenantId \?\? ""/);
+  assert.match(page, /renderClientLeads\(result\.leads \?\? \[\], result\.tenantId\)/);
+  assert.match(page, /renderClientLeads\(leads, tenantId\)/);
+  assert.match(page, /configVersion: packets\[leadId\]\.score_version/);
+  assert.match(page, /configVersion: packet\.score_version/);
+  assert.doesNotMatch(page, /tenantId: "pilot-workspace"/);
+  assert.doesNotMatch(page, /dataset\.configVersion/);
+  assert.match(page, /data-summary-total/);
+  assert.match(page, /leads = fixtureLeads/);
+  assert.doesNotMatch(page, /location\.reload\(\)/);
 });

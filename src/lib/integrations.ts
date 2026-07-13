@@ -19,6 +19,8 @@ export type OpenRouterConfig = {
   apiKey: string;
   model: string;
   appUrl?: string;
+  endpoint?: string;
+  enforceZdr?: boolean;
 };
 
 export type HubSpotConfig = {
@@ -74,6 +76,13 @@ export const openRouterConfigFromEnv = (env: Env = process.env): OpenRouterConfi
   model: env.OPENROUTER_MODEL || "openai/gpt-4.1-mini",
   appUrl: env.CONTEXTAI_APP_URL
 });
+
+export const modelConfigFromEnv = (env: Env = process.env): OpenRouterConfig => env.OPENAI_API_KEY ? {
+  apiKey: env.OPENAI_API_KEY,
+  model: env.OPENAI_MODEL || "gpt-4.1-mini",
+  endpoint: "https://api.openai.com/v1/chat/completions",
+  enforceZdr: false,
+} : openRouterConfigFromEnv(env);
 
 export const hubSpotConfigFromEnv = (env: Env = process.env): HubSpotConfig => ({
   accessToken: requireEnv(env, "HUBSPOT_ACCESS_TOKEN")
@@ -180,10 +189,41 @@ export const explainLeadWithOpenRouter = async (
   }
   let modelId = "not-configured";
   let content: string;
+  let strictGrounding = false;
   try {
-    const providerConfig = config ?? openRouterConfigFromEnv();
+    const providerConfig = config ?? modelConfigFromEnv();
+    const endpoint = providerConfig.endpoint ?? "https://openrouter.ai/api/v1/chat/completions";
+    const reasonDriver = lead.priority_band === "Needs Manual Review"
+      ? "manual_review"
+      : claims[0]?.driver;
+    const reasonOptions = claims.filter(({ driver }) => driver === reasonDriver);
+    const hookOptions = claims.filter(({ hook }) => hook !== null);
+    strictGrounding = endpoint === "https://api.openai.com/v1/chat/completions";
+    const responseFormat = strictGrounding ? {
+      type: "json_schema",
+      json_schema: {
+        name: "grounded_explanation",
+        strict: true,
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["priority_score", "band", "confidence", "reason", "reason_claim_ids", "hook_recommendation", "hook_claim_ids", "missing_stale_data", "crm_writeback"],
+          properties: {
+            priority_score: { type: fallback.priority_score === null ? "null" : "number", enum: [fallback.priority_score] },
+            band: { type: "string", enum: [fallback.band] },
+            confidence: { type: "string", enum: [fallback.confidence] },
+            reason: { type: "string", enum: reasonOptions.map(({ text }) => text) },
+            reason_claim_ids: { type: "array", items: { type: "string", enum: reasonOptions.map(({ claim_id }) => claim_id) }, minItems: 1, maxItems: 1 },
+            hook_recommendation: { type: "string", enum: hookOptions.length ? hookOptions.map(({ hook }) => hook) : [fallback.hook_recommendation] },
+            hook_claim_ids: { type: "array", items: hookOptions.length ? { type: "string", enum: hookOptions.map(({ claim_id }) => claim_id) } : { type: "string" }, minItems: hookOptions.length ? 1 : 0, maxItems: hookOptions.length ? 1 : 0 },
+            missing_stale_data: { type: "string", enum: [fallback.missing_stale_data] },
+            crm_writeback: { type: "string", enum: [fallback.crm_writeback] },
+          },
+        },
+      },
+    } : { type: "json_object" };
     modelId = providerConfig.model;
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    const response = await fetch(endpoint, {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${providerConfig.apiKey}`,
@@ -194,7 +234,7 @@ export const explainLeadWithOpenRouter = async (
       signal: AbortSignal.timeout(timeoutMs),
       body: JSON.stringify({
         model: providerConfig.model,
-        provider: { data_collection: "deny", zdr: true },
+        ...(providerConfig.enforceZdr === false ? {} : { provider: { data_collection: "deny", zdr: true } }),
         messages: [
           {
             role: "system",
@@ -208,7 +248,7 @@ export const explainLeadWithOpenRouter = async (
             })
           }
         ],
-        response_format: { type: "json_object" },
+        response_format: responseFormat,
         temperature: 0,
         max_completion_tokens: 320
       })
@@ -221,7 +261,15 @@ export const explainLeadWithOpenRouter = async (
   }
 
   try {
-    const explanation = validateGroundedExplanation(lead, claims, JSON.parse(content));
+    const parsed = JSON.parse(content) as Record<string, unknown>;
+    if (strictGrounding) {
+      const byId = new Map(claims.map((claim) => [claim.claim_id, claim]));
+      const reasonIds = Array.isArray(parsed.reason_claim_ids) ? parsed.reason_claim_ids.filter((id): id is string => typeof id === "string") : [];
+      const hookIds = Array.isArray(parsed.hook_claim_ids) ? parsed.hook_claim_ids.filter((id): id is string => typeof id === "string") : [];
+      parsed.reason = reasonIds.map((id) => byId.get(id)?.text ?? "").join(" ");
+      parsed.hook_recommendation = hookIds.length ? byId.get(hookIds[0])?.hook : fallback.hook_recommendation;
+    }
+    const explanation = validateGroundedExplanation(lead, claims, parsed);
     return { explanation, claims, audit: audit(modelId, "validated") };
   } catch {
     return { explanation: fallback, claims, audit: audit(modelId, "fallback", "invalid_output") };
@@ -264,6 +312,17 @@ export const listHubSpotContacts = async (
   if (after) url.searchParams.set("after", after);
 
   return hubSpotRequest<HubSpotContactList>(url.toString(), config);
+};
+
+export const listAllHubSpotContacts = async (config = hubSpotConfigFromEnv()) => {
+  const contacts: HubSpotContact[] = [];
+  let after: string | undefined;
+  do {
+    const page = await listHubSpotContacts(100, config, after);
+    contacts.push(...page.results);
+    after = page.paging?.next?.after;
+  } while (after);
+  return contacts;
 };
 
 export const getHubSpotContact = async (

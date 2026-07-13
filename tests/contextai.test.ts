@@ -23,6 +23,7 @@ import {
   hubSpotConfigFromEnv,
   hubSpotRequiredScopes,
   listHubSpotContacts,
+  modelConfigFromEnv,
   openRouterConfigFromEnv,
   refreshHubSpotAccessToken,
   revokeHubSpotRefreshToken,
@@ -674,9 +675,11 @@ test("OpenRouter prompt excludes disallowed provider text", async () => {
   let prompt = "";
   let systemPrompt = "";
   let provider: unknown;
+  let responseFormat: unknown;
   globalThis.fetch = async (_input, init) => {
     const body = JSON.parse(String(init?.body));
     provider = body.provider;
+    responseFormat = body.response_format;
     systemPrompt = body.messages[0].content;
     prompt = body.messages[1].content;
     return new Response(JSON.stringify({ choices: [{ message: { content: "{}" } }] }), { status: 200 });
@@ -696,6 +699,14 @@ test("OpenRouter prompt excludes disallowed provider text", async () => {
     assert.equal("tool_status" in payload, false);
     assert.match(systemPrompt, /untrusted data/i);
     assert.deepEqual(provider, { data_collection: "deny", zdr: true });
+    await explainLeadWithOpenRouter({ ...lead, disallowed_claims: [conflictText] }, defaultContext, {
+      apiKey: "test",
+      model: "test",
+      endpoint: "https://api.openai.com/v1/chat/completions",
+      enforceZdr: false,
+    });
+    assert.equal(provider, undefined);
+    assert.equal((responseFormat as { type: string }).type, "json_schema");
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -783,6 +794,12 @@ test("integration config requires secrets without hard-coding them", () => {
   assert.throws(() => openRouterConfigFromEnv({}), /OPENROUTER_API_KEY/);
   assert.throws(() => hubSpotConfigFromEnv({}), /HUBSPOT_ACCESS_TOKEN/);
   assert.equal(openRouterConfigFromEnv({ OPENROUTER_API_KEY: "test" }).model, "openai/gpt-4.1-mini");
+  assert.deepEqual(modelConfigFromEnv({ OPENAI_API_KEY: "test" }), {
+    apiKey: "test",
+    model: "gpt-4.1-mini",
+    endpoint: "https://api.openai.com/v1/chat/completions",
+    enforceZdr: false,
+  });
 });
 
 test("HubSpot OAuth requests least privilege and keeps secrets in request bodies", async () => {

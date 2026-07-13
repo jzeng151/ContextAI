@@ -1,7 +1,30 @@
 import type { LeadPacket } from "./contextai.ts";
 import { assertPilotEvent, type ActionType, type PilotEvent } from "./instrumentation.ts";
+import type { RuntimeStore } from "./persistence.ts";
+import type { RequestIdentity } from "./security.ts";
 
 export const dashboardPromptVersion = "grounding-v1";
+export const dashboardDetailTabs = ["decision", "evidence", "crm", "score", "run", "audit"] as const;
+
+const bandRank: Record<LeadPacket["priority_band"], number> = {
+  Hot: 4,
+  "Needs Manual Review": 3,
+  Warm: 2,
+  Cold: 1
+};
+
+export const rankDashboardLeads = (leads: readonly LeadPacket[]) => [...leads].sort((left, right) =>
+  bandRank[right.priority_band] - bandRank[left.priority_band] ||
+  (right.priority_score ?? -1) - (left.priority_score ?? -1)
+);
+
+export const dashboardSummary = (leads: readonly LeadPacket[]) => ({
+  total: leads.length,
+  hot: leads.filter(({ priority_band }) => priority_band === "Hot").length,
+  review: leads.filter(({ priority_band }) => priority_band === "Needs Manual Review").length,
+  partial: leads.filter((lead) => Object.values(lead.tool_status).some(({ status }) => !["success", "no_result"].includes(status))).length,
+  writebackReview: leads.filter(({ writeback_plan }) => writeback_plan?.decision === "Review").length
+});
 
 export type DashboardOutcomePacket = Readonly<Pick<
   LeadPacket,
@@ -91,3 +114,6 @@ export const dashboardViewEvents = (input: DashboardViewInput): PilotEvent[] => 
   events.forEach(assertPilotEvent);
   return events;
 };
+
+export const hubSpotDashboardPackets = (store: RuntimeStore, identity: RequestIdentity, contactIds: readonly string[]) =>
+  contactIds.flatMap((contactId) => store.getLatestEvaluationForCrmRecord(identity, "0-1", contactId)?.packet ?? []);
